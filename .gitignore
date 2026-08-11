@@ -1,0 +1,42 @@
+# Built artifacts
+**/build/
+**/captures/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# Local config
+local.properties
+*.iml
+.idea/
+.gradle/
+.cxx/
+.externalNativeBuild/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Kotlin / Gradle
+.kotlin/
+kotlin-js-store/
+.jdks/
+.jdk17.path
+build-log.txt
+
+# Signing
+*.jks
+*.keystore
+!debug.keystore
+
+# Logs
+*.log
+
+# Misc
+secrets.properties
+.env
+.env.*
