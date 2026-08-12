@@ -30,7 +30,6 @@ import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Shield
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -38,7 +37,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import ai.anya.companion.core.designsystem.component.AnyaInlineLoadingMark
+import ai.anya.companion.core.designsystem.component.AnyaPullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -117,7 +117,7 @@ public fun SessionsAskContent(
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    PullToRefreshBox(
+    AnyaPullToRefreshBox(
         isRefreshing = state.isRefreshing,
         onRefresh = onRefresh,
         modifier = modifier
@@ -140,7 +140,7 @@ public fun SessionsWorkspaceContent(
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    PullToRefreshBox(
+    AnyaPullToRefreshBox(
         isRefreshing = state.isRefreshing,
         onRefresh = onRefresh,
         modifier = modifier
@@ -471,12 +471,9 @@ public fun SessionSearchPanel(
             trailingIcon = {
                 when {
                     state.isSearchingMessages -> {
-                        CircularProgressIndicator(
-                            modifier = Modifier
-                                .padding(end = 10.dp)
-                                .size(18.dp),
-                            strokeWidth = 2.dp,
-                        )
+                        Box(modifier = Modifier.padding(end = 10.dp)) {
+                            AnyaInlineLoadingMark(size = 18.dp)
+                        }
                     }
                     state.query.isNotEmpty() -> {
                         IconButton(onClick = { onQueryChange("") }) {

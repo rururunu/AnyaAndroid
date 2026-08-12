@@ -16,6 +16,7 @@ import ai.anya.companion.core.domain.usecase.ObserveMessagesUseCase
 import ai.anya.companion.core.domain.usecase.ObserveModelsUseCase
 import ai.anya.companion.core.domain.usecase.ObservePlanTasksUseCase
 import ai.anya.companion.core.domain.usecase.RefreshAttachCatalogUseCase
+import ai.anya.companion.core.domain.usecase.LoadCachedAttachCatalogUseCase
 import ai.anya.companion.core.domain.usecase.RefreshComposeUseCase
 import ai.anya.companion.core.domain.usecase.RefreshModelsUseCase
 import ai.anya.companion.core.domain.usecase.RespondAskUseCase
@@ -67,8 +68,14 @@ public data class ChatUiState(
     public val compose: SessionCompose = SessionCompose(),
     public val models: List<ChatModelInfo> = emptyList(),
     public val tasks: List<PlanTaskItem> = emptyList(),
+    /** Plan messages already approved via 批准并执行 — their button must not re-fire. */
+    public val planApprovedMessageIds: Set<String> = emptySet(),
     /** When opened from search, scroll to this message once history is ready. */
     public val focusMessageId: String? = null,
+    /** True until the initial history fetch for this session completes. */
+    public val historyLoading: Boolean = true,
+    /** Gateway link state — drives the disconnect banner and blocks actions below. */
+    public val connectionState: ConnectionState = ConnectionState.Disconnected,
 )
 
 public data class AttachCatalogUiState(
@@ -89,6 +96,9 @@ private data class ChatCoreState(
     val draft: String,
     val sending: Boolean,
     val error: String?,
+    val planApprovedMessageIds: Set<String> = emptySet(),
+    val historyLoading: Boolean = true,
+    val connectionState: ConnectionState = ConnectionState.Disconnected,
 )
 
 @HiltViewModel
@@ -109,6 +119,7 @@ public class ChatViewModel @Inject constructor(
     private val refreshModels: RefreshModelsUseCase,
     private val approvePlanUseCase: ApprovePlanUseCase,
     private val refreshAttachCatalog: RefreshAttachCatalogUseCase,
+    private val loadCachedAttachCatalog: LoadCachedAttachCatalogUseCase,
     private val respondAsk: RespondAskUseCase,
     private val respondApproval: ai.anya.companion.core.domain.usecase.RespondApprovalUseCase,
 ) : ViewModel() {
@@ -119,6 +130,8 @@ public class ChatViewModel @Inject constructor(
     private val draft = MutableStateFlow("")
     private val sending = MutableStateFlow(false)
     private val error = MutableStateFlow<String?>(null)
+    private val planApprovedMessageIds = MutableStateFlow<Set<String>>(emptySet())
+    private val historyLoading = MutableStateFlow(true)
     private val _attachCatalog = MutableStateFlow(AttachCatalogUiState())
     public val attachCatalog: StateFlow<AttachCatalogUiState> = _attachCatalog.asStateFlow()
 
@@ -143,8 +156,23 @@ public class ChatViewModel @Inject constructor(
         ChatCoreState(emptyList(), emptyList(), "", false, null),
     )
 
-    public val state: StateFlow<ChatUiState> = combine(
+    // Approval flags + history-loading + link state live outside the five-flow
+    // combine limit; fold them in separately.
+    private val coreWithApprovals: StateFlow<ChatCoreState> = combine(
         core,
+        planApprovedMessageIds,
+        historyLoading,
+        connectionRepository.connectionState,
+    ) { c, ids, loading, connection ->
+        c.copy(planApprovedMessageIds = ids, historyLoading = loading, connectionState = connection)
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        ChatCoreState(emptyList(), emptyList(), "", false, null),
+    )
+
+    public val state: StateFlow<ChatUiState> = combine(
+        coreWithApprovals,
         observeCompose(sessionId),
         observeModels(),
         observePlanTasks(sessionId),
@@ -178,7 +206,10 @@ public class ChatViewModel @Inject constructor(
             compose = resolveComposeLabel(compose, models),
             models = models,
             tasks = tasks,
+            planApprovedMessageIds = c.planApprovedMessageIds,
             focusMessageId = focusMessageId,
+            historyLoading = c.historyLoading,
+            connectionState = c.connectionState,
         )
     }.stateIn(
         viewModelScope,
@@ -188,16 +219,66 @@ public class ChatViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
+            val cached = loadCachedAttachCatalog()
+            if (cached.skills.isNotEmpty() || cached.mcpServers.isNotEmpty()) {
+                _attachCatalog.update {
+                    it.copy(
+                        skills = cached.skills,
+                        mcpServers = cached.mcpServers,
+                    )
+                }
+            }
+        }
+        viewModelScope.launch {
             connectionRepository.connectionState
                 .map { it == ConnectionState.Connected }
                 .distinctUntilChanged()
                 .collect { connected ->
                     if (!connected) return@collect
-                    loadHistory(sessionId)
+                    try {
+                        loadHistory(sessionId)
+                    } finally {
+                        historyLoading.value = false
+                    }
                     refreshCompose(sessionId)
                     refreshModels()
+                    refreshAttachCatalog()
                 }
         }
+        // Opening a chat is a strong signal the user wants to be online *now* —
+        // don't just wait for the background reconnect loop (which backs off up
+        // to 8s between attempts, and can stall entirely while the process was
+        // suspended in the background) to eventually get around to it.
+        viewModelScope.launch { attemptReconnectIfNeeded() }
+    }
+
+    private suspend fun attemptReconnectIfNeeded() {
+        val current = connectionRepository.connectionState.value
+        if (current == ConnectionState.Connected ||
+            current == ConnectionState.Connecting ||
+            current == ConnectionState.Reconnecting
+        ) {
+            return
+        }
+        connectionRepository.connect()
+    }
+
+    /** Called from the disconnect banner's "重连" action. */
+    public fun retryConnection() {
+        viewModelScope.launch { attemptReconnectIfNeeded() }
+    }
+
+    /**
+     * Gate for anything that talks to the desktop (send/approve/answer/cancel).
+     * When offline, fail fast with a clear message and kick a reconnect attempt
+     * instead of letting the request go out, time out, or fail with a raw
+     * "Gateway is not connected" exception string.
+     */
+    private fun requireConnectedOrWarn(): Boolean {
+        if (connectionRepository.connectionState.value == ConnectionState.Connected) return true
+        error.value = "连接已断开，正在尝试重新连接…"
+        viewModelScope.launch { attemptReconnectIfNeeded() }
+        return false
     }
 
     public fun onDraftChange(value: String) = draft.update { value }
@@ -205,6 +286,7 @@ public class ChatViewModel @Inject constructor(
     public fun send() {
         val text = draft.value.trim()
         if (text.isEmpty()) return
+        if (!requireConnectedOrWarn()) return
         val compose = state.value.compose
         viewModelScope.launch {
             sending.value = true
@@ -228,6 +310,7 @@ public class ChatViewModel @Inject constructor(
 
     public fun stop() {
         val messageId = state.value.activeAssistantMessageId ?: return
+        if (!requireConnectedOrWarn()) return
         viewModelScope.launch {
             error.value = null
             when (val result = cancelChatMessage(messageId)) {
@@ -268,25 +351,49 @@ public class ChatViewModel @Inject constructor(
 
     public fun refreshAttachCatalog() {
         viewModelScope.launch {
+            val previous = _attachCatalog.value
             _attachCatalog.update { it.copy(loading = true) }
             val catalog = refreshAttachCatalog(sessionId)
+            val mergedSkills = if (catalog.skills.isNotEmpty()) catalog.skills else previous.skills
+            val mergedMcp = if (catalog.mcpServers.isNotEmpty()) catalog.mcpServers else previous.mcpServers
+            val mergedFiles = catalog.files ?: previous.files
+            val remoteFiles = catalog.files
+            val mergedTree = if (remoteFiles != null) {
+                buildFileTree(remoteFiles.files)
+            } else {
+                previous.fileTree
+            }
             _attachCatalog.value = AttachCatalogUiState(
                 loading = false,
-                files = catalog.files,
-                fileTree = buildFileTree(catalog.files?.files.orEmpty()),
-                skills = catalog.skills,
-                mcpServers = catalog.mcpServers,
+                files = mergedFiles,
+                fileTree = mergedTree,
+                skills = mergedSkills,
+                mcpServers = mergedMcp,
                 filesError = catalog.filesError,
                 skillsError = catalog.skillsError,
                 mcpError = catalog.mcpError,
             )
+            if (mergedSkills.isNotEmpty() || mergedMcp.isNotEmpty()) {
+                // Persist + remap remote icons to local file:// paths, then refresh UI.
+                val cached = loadCachedAttachCatalog.save(mergedSkills, mergedMcp)
+                _attachCatalog.update {
+                    it.copy(
+                        skills = cached.skills.ifEmpty { it.skills },
+                        mcpServers = cached.mcpServers.ifEmpty { it.mcpServers },
+                    )
+                }
+            }
         }
     }
 
-    public fun approvePlan() {
+    public fun approvePlan(messageId: String) {
+        if (messageId in planApprovedMessageIds.value) return
+        if (!requireConnectedOrWarn()) return
+        planApprovedMessageIds.update { it + messageId }
         viewModelScope.launch {
             when (val result = approvePlanUseCase(sessionId)) {
                 is AnyaResult.Failure -> {
+                    planApprovedMessageIds.update { it - messageId }
                     error.value = result.error.toString()
                 }
                 is AnyaResult.Success -> {
@@ -301,6 +408,7 @@ public class ChatViewModel @Inject constructor(
         skipped: Boolean = false,
     ) {
         val ask = state.value.pendingAsk ?: return
+        if (!requireConnectedOrWarn()) return
         val questions = ask.questions
         val payload = buildJsonObject {
             put("skipped", skipped)
@@ -339,6 +447,7 @@ public class ChatViewModel @Inject constructor(
     public fun answerToolApproval(decision: ai.anya.companion.core.model.approval.ApprovalDecision) {
         val ask = state.value.pendingAsk ?: return
         if (ask.kind != ApprovalKind.Tool) return
+        if (!requireConnectedOrWarn()) return
         viewModelScope.launch {
             when (val result = respondApproval(ask.requestId, decision)) {
                 is AnyaResult.Success -> Unit

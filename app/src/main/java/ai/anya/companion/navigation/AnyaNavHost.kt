@@ -1,10 +1,13 @@
 package ai.anya.companion.navigation
 
-import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -13,6 +16,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavType
@@ -26,7 +32,7 @@ import ai.anya.companion.feature.chat.ChatRoute
 import ai.anya.companion.feature.pairing.PairingRoute
 import ai.anya.companion.feature.workspace.WorkspaceRoute
 import ai.anya.companion.ui.RootViewModel
-import kotlinx.coroutines.delay
+import android.net.Uri
 
 object Routes {
     const val Pairing = "pairing"
@@ -53,30 +59,34 @@ fun AnyaNavHost(
     val rootState by rootViewModel.state.collectAsStateWithLifecycle()
     val startDestination = if (rootState.hasCredential) Routes.Main else Routes.Pairing
 
-    var coldStartPending by remember { mutableStateOf(rootState.hasCredential) }
-    var showBootSplash by remember { mutableStateOf(rootState.hasCredential) }
+    // Only block cold start while actively connecting — already-connected users enter main immediately.
+    var coldStart by remember { mutableStateOf(rootState.hasCredential) }
+    var showBootSplash by remember {
+        mutableStateOf(
+            rootState.hasCredential &&
+                (
+                    rootState.connectionState == ConnectionState.Connecting ||
+                        rootState.connectionState == ConnectionState.Reconnecting
+                    ),
+        )
+    }
     LaunchedEffect(rootState.connectionState, rootState.hasCredential) {
         if (!rootState.hasCredential) {
-            coldStartPending = false
+            coldStart = false
             showBootSplash = false
             return@LaunchedEffect
         }
-        if (!coldStartPending) return@LaunchedEffect
         when (rootState.connectionState) {
-            ConnectionState.Connected, ConnectionState.Error -> {
-                delay(280)
+            ConnectionState.Connected -> {
                 showBootSplash = false
-                coldStartPending = false
+                coldStart = false
             }
             ConnectionState.Connecting, ConnectionState.Reconnecting -> {
-                showBootSplash = true
+                if (coldStart) showBootSplash = true
             }
-            ConnectionState.Disconnected -> {
-                delay(1_600)
-                if (coldStartPending && rootState.connectionState == ConnectionState.Disconnected) {
-                    showBootSplash = false
-                    coldStartPending = false
-                }
+            ConnectionState.Error, ConnectionState.Disconnected -> {
+                showBootSplash = false
+                coldStart = false
             }
         }
     }
@@ -130,16 +140,40 @@ fun AnyaNavHost(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.background),
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                MaterialTheme.colorScheme.background,
+                                MaterialTheme.colorScheme.surface,
+                                MaterialTheme.colorScheme.background,
+                            ),
+                        ),
+                    ),
                 contentAlignment = Alignment.Center,
             ) {
-                AnyaLoadingIndicator(
-                    label = when (rootState.connectionState) {
-                        ConnectionState.Reconnecting -> "正在重新连接…"
-                        ConnectionState.Error -> "连接失败，请稍后重试"
-                        else -> "请稍等，正在为您准备……"
-                    },
-                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    AnyaLoadingIndicator(
+                        size = 112.dp,
+                        label = null,
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Anya",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onBackground,
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = when (rootState.connectionState) {
+                            ConnectionState.Reconnecting -> "正在重新连接…"
+                            ConnectionState.Error -> "连接失败，请稍后重试"
+                            else -> "正在为你准备…"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }

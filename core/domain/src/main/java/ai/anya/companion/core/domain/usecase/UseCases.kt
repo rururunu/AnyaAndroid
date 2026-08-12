@@ -223,6 +223,31 @@ public class RefreshAttachCatalogUseCase @Inject constructor(
     }
 }
 
+public class LoadCachedAttachCatalogUseCase @Inject constructor(
+    private val workspaceRepository: WorkspaceRepository,
+) {
+    public suspend operator fun invoke(): AttachCatalog {
+        val (skills, mcp) = workspaceRepository.loadCachedAttachCatalog()
+        return AttachCatalog(
+            files = workspaceRepository.filesCatalog.value,
+            skills = skills,
+            mcpServers = mcp,
+        )
+    }
+
+    public suspend fun save(
+        skills: List<ai.anya.companion.core.model.workspace.SkillSummary>,
+        mcpServers: List<ai.anya.companion.core.model.workspace.McpServerSummary>,
+    ): AttachCatalog {
+        val (savedSkills, savedMcp) = workspaceRepository.persistAttachCatalog(skills, mcpServers)
+        return AttachCatalog(
+            files = workspaceRepository.filesCatalog.value,
+            skills = savedSkills,
+            mcpServers = savedMcp,
+        )
+    }
+}
+
 public data class AttachCatalog(
     public val files: WorkspaceFilesCatalog?,
     public val skills: List<SkillSummary>,

@@ -8,6 +8,7 @@ import ai.anya.companion.core.domain.repository.ConnectionRepository
 import ai.anya.companion.core.domain.repository.ConnectionState
 import ai.anya.companion.core.domain.repository.SessionRepository
 import ai.anya.companion.core.domain.repository.WorkspaceRepository
+import ai.anya.companion.core.data.local.AttachCatalogStore
 import ai.anya.companion.core.data.local.CredentialStore
 import ai.anya.companion.core.model.approval.ApprovalDecision
 import ai.anya.companion.core.model.approval.ApprovalKind
@@ -161,6 +162,27 @@ public class DefaultConnectionRepository @Inject constructor(
                 }
             }
         }
+        // Safety net: if we ever sit in Connecting/Reconnecting for too long — e.g. a
+        // socket opens but, for whatever reason, nothing ends up sending hello for it —
+        // don't leave the user staring at "连接中" forever (or until they notice and
+        // manually disconnect/reconnect). Force a clean restart of the connect flow.
+        appScope.launch {
+            var stuckWatchdog: Job? = null
+            connectionState.collect { current ->
+                stuckWatchdog?.cancel()
+                if (current == ConnectionState.Connecting || current == ConnectionState.Reconnecting) {
+                    stuckWatchdog = launch {
+                        delay(15_000)
+                        if (_connectionState.value != current) return@launch
+                        if (!wantConnected.value) return@launch
+                        Timber.w("Connection stuck in %s for 15s; forcing a clean reconnect", current)
+                        gateway.disconnect()
+                        reconnectJob?.cancel()
+                        scheduleReconnect()
+                    }
+                }
+            }
+        }
     }
 
     override suspend fun pair(payload: PairingPayload): AnyaResult<DeviceCredential> {
@@ -176,6 +198,7 @@ public class DefaultConnectionRepository @Inject constructor(
         credentialStore.save(credential)
         _credential.value = credential
         wantConnected.value = true
+        reconnectJob?.cancel()
         ensureConnected(credential)
         return AnyaResult.Success(credential)
     }
@@ -232,9 +255,15 @@ public class DefaultConnectionRepository @Inject constructor(
         }
     }
 
+    // NOTE: deliberately does NOT cancel `reconnectJob` here — `scheduleReconnect()`'s
+    // own retry loop calls this function on every attempt, and it *is* running inside
+    // that same job. Cancelling it from in here would cancel its own coroutine mid-call,
+    // silently killing the retry loop after a single attempt (it would throw out of this
+    // very suspend call via CancellationException). Callers that need to supersede a
+    // pending reconnect loop (e.g. an explicit user-initiated connect) cancel it themselves
+    // before calling in.
     private suspend fun ensureConnected(credential: DeviceCredential): AnyaResult<Unit> =
         connectMutex.withLock {
-            reconnectJob?.cancel()
             when (gateway.state.value) {
                 GatewaySocketState.Open -> {
                     if (_connectionState.value == ConnectionState.Connected) {
@@ -364,13 +393,48 @@ public class DefaultSessionRepository @Inject constructor(
 
     override suspend fun refreshSessions(): AnyaResult<List<ChatSessionSummary>> {
         val requestId = UUID.randomUUID().toString()
-        return gateway.send(ClientMessage.SessionList(requestId)).map { _sessions.value }
+        return when (val result = gateway.request(ClientMessage.SessionList(requestId), requestId)) {
+            is AnyaResult.Failure -> result
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                if (!rpc.ok) {
+                    AnyaResult.Failure(AnyaError.Network(rpc.error ?: "session.list failed"))
+                } else {
+                    // handleRpc() (fed by gateway.incoming) applies the same payload to
+                    // _sessions as a side effect of this same response; by the time we
+                    // get here that update has already happened, but read defensively.
+                    AnyaResult.Success(_sessions.value)
+                }
+            }
+        }
     }
 
     override suspend fun loadHistory(sessionId: String): AnyaResult<List<ChatMessage>> {
         val requestId = UUID.randomUUID().toString()
-        return gateway.send(ClientMessage.SessionHistory(requestId, sessionId))
-            .map { messagesBySession.value[sessionId].orEmpty() }
+        return when (
+            val result = gateway.request(ClientMessage.SessionHistory(requestId, sessionId), requestId)
+        ) {
+            is AnyaResult.Failure -> result
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                if (!rpc.ok) {
+                    AnyaResult.Failure(AnyaError.Network(rpc.error ?: "session.history failed"))
+                } else {
+                    val payload = rpc.data as? JsonObject
+                    val messages = payload?.get("messages")?.let { element ->
+                        runCatching {
+                            json.decodeFromJsonElement<List<ChatMessage>>(element)
+                        }.getOrNull()
+                    }
+                    if (messages != null) {
+                        messagesBySession.update { it + (sessionId to messages) }
+                        AnyaResult.Success(messages)
+                    } else {
+                        AnyaResult.Success(messagesBySession.value[sessionId].orEmpty())
+                    }
+                }
+            }
+        }
     }
 
     override suspend fun findSessionsByMessage(
@@ -1188,6 +1252,7 @@ public class DefaultApprovalRepository @Inject constructor(
 public class DefaultWorkspaceRepository @Inject constructor(
     private val gateway: RemoteGatewayClient,
     private val json: Json,
+    private val attachCatalogStore: AttachCatalogStore,
 ) : WorkspaceRepository {
 
     private val _snapshot = MutableStateFlow<WorkspaceSnapshot?>(null)
@@ -1346,6 +1411,24 @@ public class DefaultWorkspaceRepository @Inject constructor(
                 AnyaResult.Success(servers)
             }
         }
+    }
+
+    override suspend fun loadCachedAttachCatalog(): Pair<List<SkillSummary>, List<McpServerSummary>> {
+        val cached = attachCatalogStore.load()
+        if (cached.skills.isNotEmpty()) _skills.value = cached.skills
+        if (cached.mcpServers.isNotEmpty()) _mcpServers.value = cached.mcpServers
+        return cached.skills to cached.mcpServers
+    }
+
+    override suspend fun persistAttachCatalog(
+        skills: List<SkillSummary>,
+        mcpServers: List<McpServerSummary>,
+    ): Pair<List<SkillSummary>, List<McpServerSummary>> {
+        attachCatalogStore.save(skills, mcpServers)
+        val cached = attachCatalogStore.load()
+        if (cached.skills.isNotEmpty()) _skills.value = cached.skills
+        if (cached.mcpServers.isNotEmpty()) _mcpServers.value = cached.mcpServers
+        return cached.skills to cached.mcpServers
     }
 
     private fun JsonObject.string(key: String): String? =

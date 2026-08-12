@@ -2,6 +2,8 @@ package ai.anya.companion.core.designsystem.component
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
@@ -53,6 +55,9 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshState
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -78,6 +83,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import ai.anya.companion.core.designsystem.R
+import ai.anya.companion.core.designsystem.haptic.rememberAnyaHaptics
 import ai.anya.companion.core.designsystem.theme.AnyaColors
 import ai.anya.companion.core.designsystem.theme.AnyaSpace
 import kotlin.math.roundToInt
@@ -126,60 +132,231 @@ public fun AnyaLoadingIndicator(
 ) {
     val transition = rememberInfiniteTransition(label = "anyaLoad")
     val scale by transition.animateFloat(
-        initialValue = 0.92f,
-        targetValue = 1.05f,
+        initialValue = 0.94f,
+        targetValue = 1.04f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1100, easing = FastOutSlowInEasing),
+            animation = tween(durationMillis = 1400, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse,
         ),
         label = "anyaLoadScale",
     )
-    val alpha by transition.animateFloat(
-        initialValue = 0.72f,
-        targetValue = 1f,
+    val glowAlpha by transition.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 0.85f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1100, easing = FastOutSlowInEasing),
+            animation = tween(durationMillis = 1400, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse,
         ),
-        label = "anyaLoadAlpha",
+        label = "anyaLoadGlow",
     )
+    val orbit by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2400, easing = LinearEasing),
+        ),
+        label = "anyaLoadOrbit",
+    )
+    val dotPhases = listOf(0f, 0.33f, 0.66f)
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(AnyaSpace.Lg),
     ) {
-        val dark = androidx.compose.foundation.isSystemInDarkTheme()
-        val invertMatrix = remember {
-            ColorMatrix(
-                floatArrayOf(
-                    -1f, 0f, 0f, 0f, 255f,
-                    0f, -1f, 0f, 0f, 255f,
-                    0f, 0f, -1f, 0f, 255f,
-                    0f, 0f, 0f, 1f, 0f,
-                ),
+        Box(
+            modifier = Modifier.size(size * 1.35f),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(size * 1.2f)
+                    .graphicsLayer { rotationZ = orbit }
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.04f)),
+            )
+            Box(
+                modifier = Modifier
+                    .size(size * 1.05f)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = glowAlpha * 0.06f)),
+            )
+            val dark = androidx.compose.foundation.isSystemInDarkTheme()
+            val invertMatrix = remember {
+                ColorMatrix(
+                    floatArrayOf(
+                        -1f, 0f, 0f, 0f, 255f,
+                        0f, -1f, 0f, 0f, 255f,
+                        0f, 0f, -1f, 0f, 255f,
+                        0f, 0f, 0f, 1f, 0f,
+                    ),
+                )
+            }
+            Image(
+                painter = painterResource(R.drawable.anya_icon),
+                contentDescription = null,
+                modifier = Modifier
+                    .size(size)
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                    }
+                    .clip(RoundedCornerShape((size.value * 0.22f).dp)),
+                contentScale = ContentScale.Fit,
+                colorFilter = if (dark) ColorFilter.colorMatrix(invertMatrix) else null,
             )
         }
-        Image(
-            painter = painterResource(R.drawable.anya_icon),
-            contentDescription = null,
-            modifier = Modifier
-                .size(size)
-                .graphicsLayer {
-                    scaleX = scale
-                    scaleY = scale
-                    this.alpha = alpha
-                }
-                .clip(RoundedCornerShape((size.value * 0.22f).dp)),
-            contentScale = ContentScale.Fit,
-            colorFilter = if (dark) ColorFilter.colorMatrix(invertMatrix) else null,
-        )
         if (!label.isNullOrBlank()) {
             Text(
                 text = label,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                dotPhases.forEach { phase ->
+                    val dotScale by transition.animateFloat(
+                        initialValue = 0.55f,
+                        targetValue = 1f,
+                        animationSpec = infiniteRepeatable(
+                            animation = tween(
+                                durationMillis = 900,
+                                delayMillis = (phase * 900).toInt(),
+                                easing = FastOutSlowInEasing,
+                            ),
+                            repeatMode = RepeatMode.Reverse,
+                        ),
+                        label = "anyaLoadDot$phase",
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .graphicsLayer {
+                                scaleX = dotScale
+                                scaleY = dotScale
+                            }
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)),
+                    )
+                }
+            }
         }
+    }
+}
+
+/** Compact pulsing mark for inline loading slots (search field, list headers). */
+@Composable
+public fun AnyaInlineLoadingMark(
+    modifier: Modifier = Modifier,
+    size: androidx.compose.ui.unit.Dp = 18.dp,
+) {
+    val transition = rememberInfiniteTransition(label = "anyaInlineLoad")
+    val scale by transition.animateFloat(
+        initialValue = 0.86f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "anyaInlineScale",
+    )
+    AnyaBrandMark(
+        size = size,
+        modifier = modifier.graphicsLayer {
+            scaleX = scale
+            scaleY = scale
+        },
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+public fun AnyaPullToRefreshBox(
+    isRefreshing: Boolean,
+    onRefresh: () -> Unit,
+    modifier: Modifier = Modifier,
+    state: PullToRefreshState = rememberPullToRefreshState(),
+    content: @Composable () -> Unit,
+) {
+    PullToRefreshBox(
+        isRefreshing = isRefreshing,
+        onRefresh = onRefresh,
+        state = state,
+        modifier = modifier,
+        indicator = {
+            AnyaPullRefreshIndicator(
+                state = state,
+                isRefreshing = isRefreshing,
+                modifier = Modifier.align(Alignment.TopCenter),
+            )
+        },
+    ) {
+        content()
+    }
+}
+
+@Composable
+private fun AnyaPullRefreshIndicator(
+    state: PullToRefreshState,
+    isRefreshing: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    if (!isRefreshing && state.distanceFraction <= 0.02f) return
+    val targetScale = if (isRefreshing) 1f else (0.72f + state.distanceFraction * 0.28f).coerceIn(0.72f, 1f)
+    val scale by animateFloatAsState(targetScale, label = "pullRefreshScale")
+    Surface(
+        modifier = modifier
+            .padding(top = 10.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            },
+        shape = RoundedCornerShape(999.dp),
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 4.dp,
+        tonalElevation = 0.dp,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            AnyaBrandMark(size = 20.dp)
+            Text(
+                text = if (isRefreshing) "正在刷新…" else "下拉刷新",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** Top-bar icon action matching pill chips (search, etc.). */
+@Composable
+public fun AnyaTopBarIconChip(
+    icon: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .height(32.dp)
+            .defaultMinSize(minWidth = 32.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        androidx.compose.material3.Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            modifier = Modifier.size(18.dp),
+            tint = MaterialTheme.colorScheme.onBackground,
+        )
     }
 }
 
@@ -257,6 +434,7 @@ public fun AnyaSegmentedControl(
     /** When set (e.g. pager `page + offset`), thumb tracks continuously without spring. */
     selectedProgress: Float? = null,
 ) {
+    val haptics = rememberAnyaHaptics()
     val count = options.size.coerceAtLeast(1)
     val safeIndex = selectedIndex.coerceIn(0, (count - 1).coerceAtLeast(0))
     val progress = selectedProgress?.coerceIn(0f, (count - 1).toFloat()) ?: safeIndex.toFloat()
@@ -313,7 +491,12 @@ public fun AnyaSegmentedControl(
                         .weight(1f)
                         .fillMaxHeight()
                         .clip(RoundedCornerShape(999.dp))
-                        .clickable { onSelect(index) },
+                        .clickable {
+                            if (index != safeIndex) {
+                                haptics.linearTick()
+                            }
+                            onSelect(index)
+                        },
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
@@ -502,10 +685,11 @@ public fun AnyaConnectionChip(
     }
     Row(
         modifier = modifier
+            .height(32.dp)
             .clip(RoundedCornerShape(999.dp))
             .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -539,6 +723,7 @@ public fun AnyaBottomNavBar(
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val haptics = rememberAnyaHaptics()
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -591,7 +776,12 @@ public fun AnyaBottomNavBar(
                             .weight(1f)
                             .clip(RoundedCornerShape(22.dp))
                             .background(highlight)
-                            .clickable { onSelect(item.id) }
+                            .clickable {
+                                if (!selected) {
+                                    haptics.linearTick()
+                                }
+                                onSelect(item.id)
+                            }
                             .padding(horizontal = 4.dp, vertical = 8.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -633,8 +823,12 @@ public fun AnyaFloatingActionButton(
     contentDescription: String,
     modifier: Modifier = Modifier,
 ) {
+    val haptics = rememberAnyaHaptics()
     FloatingActionButton(
-        onClick = onClick,
+        onClick = {
+            haptics.buttonPress()
+            onClick()
+        },
         modifier = modifier.size(56.dp),
         shape = CircleShape,
         containerColor = MaterialTheme.colorScheme.primary,
@@ -835,8 +1029,12 @@ public fun AnyaPrimaryButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
+    val haptics = rememberAnyaHaptics()
     Button(
-        onClick = onClick,
+        onClick = {
+            haptics.buttonPress()
+            onClick()
+        },
         enabled = enabled,
         modifier = modifier
             .fillMaxWidth()
@@ -858,8 +1056,12 @@ public fun AnyaSecondaryButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
+    val haptics = rememberAnyaHaptics()
     OutlinedButton(
-        onClick = onClick,
+        onClick = {
+            haptics.buttonPress()
+            onClick()
+        },
         enabled = enabled,
         modifier = modifier
             .fillMaxWidth()
@@ -913,6 +1115,7 @@ public fun AnyaSegmentedControl(
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val haptics = rememberAnyaHaptics()
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -931,7 +1134,12 @@ public fun AnyaSegmentedControl(
                         if (selected) MaterialTheme.colorScheme.surface
                         else Color.Transparent,
                     )
-                    .clickable { onSelect(option.id) }
+                    .clickable {
+                        if (!selected) {
+                            haptics.linearTick()
+                        }
+                        onSelect(option.id)
+                    }
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,

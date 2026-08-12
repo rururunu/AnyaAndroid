@@ -16,21 +16,22 @@ import androidx.compose.material.icons.rounded.Inbox
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.padding as layoutPadding
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -44,6 +45,8 @@ import ai.anya.companion.core.designsystem.component.AnyaSecondaryButton
 import ai.anya.companion.core.designsystem.component.AnyaStatusTone
 import ai.anya.companion.core.designsystem.component.AnyaSurfaceCard
 import ai.anya.companion.core.designsystem.component.AnyaTopBar
+import ai.anya.companion.core.designsystem.component.AnyaTopBarIconChip
+import ai.anya.companion.core.designsystem.haptic.rememberAnyaHaptics
 import ai.anya.companion.core.designsystem.icon.AnyaIcons
 import ai.anya.companion.core.designsystem.theme.AnyaSpace
 import ai.anya.companion.core.domain.repository.ConnectionState
@@ -58,6 +61,9 @@ import ai.anya.companion.feature.sessions.SessionsWorkspaceContent
 import ai.anya.companion.feature.settings.SettingsTabContent
 import ai.anya.companion.feature.settings.SettingsViewModel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import kotlin.math.roundToInt
 
 /** Continuous pager pages: Ask → Workspace → Inbox → Settings. */
@@ -96,6 +102,7 @@ fun MainRoute(
     approvalViewModel: ApprovalViewModel = hiltViewModel(),
     settingsViewModel: SettingsViewModel = hiltViewModel(),
 ) {
+    val haptics = rememberAnyaHaptics()
     val pagerState = rememberPagerState(
         initialPage = MainPage.Ask,
         pageCount = { MainPage.Count },
@@ -105,6 +112,7 @@ fun MainRoute(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val searchSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
+    var suppressNextSettleHaptic by rememberSaveable { mutableStateOf(false) }
 
     val sessionsState by sessionsViewModel.state.collectAsStateWithLifecycle()
     val searchState by sessionsViewModel.searchState.collectAsStateWithLifecycle()
@@ -141,7 +149,22 @@ fun MainRoute(
         ConnectionState.Disconnected -> "未连接"
     }
 
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.settledPage }
+            .distinctUntilChanged()
+            .drop(1)
+            .filter { pagerState.currentPageOffsetFraction == 0f }
+            .collect {
+                if (suppressNextSettleHaptic) {
+                    suppressNextSettleHaptic = false
+                } else {
+                    haptics.linearTick()
+                }
+            }
+    }
+
     fun selectPage(page: Int) {
+        suppressNextSettleHaptic = true
         scope.launch {
             pagerState.animateScrollToPage(page.coerceIn(0, MainPage.Count - 1))
         }
@@ -166,19 +189,28 @@ fun MainRoute(
                 showBrand = true,
                 subtitle = topSubtitle,
                 actions = {
-                    IconButton(onClick = { showSearchPanel = true }) {
-                        Icon(
-                            imageVector = Icons.Rounded.Search,
+                    Row(
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
+                        modifier = Modifier.layoutPadding(end = AnyaSpace.Sm),
+                    ) {
+                        AnyaTopBarIconChip(
+                            icon = Icons.Rounded.Search,
                             contentDescription = "搜索对话",
-                            tint = MaterialTheme.colorScheme.onSurface,
+                            onClick = {
+                                haptics.buttonPress()
+                                showSearchPanel = true
+                            },
+                        )
+                        AnyaConnectionChip(
+                            label = statusLabel,
+                            tone = tone,
+                            onClick = {
+                                haptics.buttonPress()
+                                showConnectionPanel = true
+                            },
                         )
                     }
-                    AnyaConnectionChip(
-                        label = statusLabel,
-                        tone = tone,
-                        modifier = Modifier.layoutPadding(end = AnyaSpace.Sm),
-                        onClick = { showConnectionPanel = true },
-                    )
                 },
             )
         },
@@ -240,22 +272,37 @@ fun MainRoute(
                     MainPage.Ask -> {
                         SessionsAskContent(
                             state = sessionsState,
-                            onOpenSession = { id -> onOpenSession(id, null) },
-                            onRefresh = sessionsViewModel::refresh,
+                            onOpenSession = { id ->
+                                haptics.linearTick()
+                                onOpenSession(id, null)
+                            },
+                            onRefresh = {
+                                haptics.buttonPress()
+                                sessionsViewModel.refresh()
+                            },
                         )
                     }
                     MainPage.Workspace -> {
                         SessionsWorkspaceContent(
                             state = sessionsState,
                             onToggleWorkspace = sessionsViewModel::toggleWorkspace,
-                            onOpenSession = { id -> onOpenSession(id, null) },
-                            onRefresh = sessionsViewModel::refresh,
+                            onOpenSession = { id ->
+                                haptics.linearTick()
+                                onOpenSession(id, null)
+                            },
+                            onRefresh = {
+                                haptics.buttonPress()
+                                sessionsViewModel.refresh()
+                            },
                         )
                     }
                     MainPage.Approvals -> {
                         ApprovalTabContent(
                             state = approvalState,
-                            onOpenSession = { id -> onOpenSession(id, null) },
+                            onOpenSession = { id ->
+                                haptics.linearTick()
+                                onOpenSession(id, null)
+                            },
                         )
                     }
                     else -> {
@@ -281,11 +328,14 @@ fun MainRoute(
                 sessionsViewModel.clearSearch()
             },
             sheetState = searchSheetState,
+            containerColor = MaterialTheme.colorScheme.background,
+            tonalElevation = 0.dp,
         ) {
             SessionSearchPanel(
                 state = searchState,
                 onQueryChange = sessionsViewModel::onSearchQueryChange,
                 onOpenSession = { sessionId, messageId ->
+                    haptics.linearTick()
                     // Navigate immediately; do not wait for sheet hide (can stall).
                     showSearchPanel = false
                     sessionsViewModel.clearSearch()
@@ -299,6 +349,8 @@ fun MainRoute(
         ModalBottomSheet(
             onDismissRequest = { showConnectionPanel = false },
             sheetState = sheetState,
+            containerColor = MaterialTheme.colorScheme.background,
+            tonalElevation = 0.dp,
         ) {
             ConnectionPanel(
                 connectionState = sessionsState.connectionState,
@@ -358,9 +410,14 @@ private fun ConnectionPanel(
         verticalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
     ) {
         Text(
-            text = "连接",
-            style = MaterialTheme.typography.titleLarge,
+            text = "连接状态",
+            style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = "查看桌面端连接与配对信息",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         AnyaSurfaceCard {
             Row(

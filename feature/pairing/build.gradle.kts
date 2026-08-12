@@ -7,5 +7,6 @@ android {
 }
 
 dependencies {
+    implementation(libs.androidx.activity.compose)
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 }

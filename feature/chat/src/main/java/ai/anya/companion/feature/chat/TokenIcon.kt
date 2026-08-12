@@ -23,12 +23,15 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -39,9 +42,10 @@ internal fun TokenIcon(
     fallbackLetter: String? = null,
     size: Dp = 14.dp,
 ) {
+    val context = LocalContext.current
     var bitmap by remember(iconUrl) { mutableStateOf<ImageBitmap?>(null) }
     LaunchedEffect(iconUrl) {
-        bitmap = iconUrl?.let { loadRemoteImageBitmap(it) }
+        bitmap = iconUrl?.let { loadCachedOrRemoteIcon(context.filesDir, it) }
     }
     when {
         bitmap != null -> {
@@ -81,28 +85,56 @@ internal fun TokenIcon(
     }
 }
 
-private suspend fun loadRemoteImageBitmap(url: String): ImageBitmap? = withContext(Dispatchers.IO) {
+private suspend fun loadCachedOrRemoteIcon(
+    filesDir: File,
+    url: String,
+): ImageBitmap? = withContext(Dispatchers.IO) {
     runCatching {
         when {
-            url.startsWith("data:", ignoreCase = true) -> {
-                val comma = url.indexOf(',')
-                if (comma <= 0) return@runCatching null
-                val payload = url.substring(comma + 1)
-                val bytes = Base64.decode(payload, Base64.DEFAULT)
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+            url.startsWith("file://", ignoreCase = true) -> {
+                val path = url.removePrefix("file://")
+                BitmapFactory.decodeFile(path)?.asImageBitmap()
             }
-            url.startsWith("http://", ignoreCase = true) ||
-                url.startsWith("https://", ignoreCase = true) -> {
-                val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 8_000
-                    readTimeout = 8_000
-                    instanceFollowRedirects = true
-                }
-                connection.inputStream.use { stream ->
-                    BitmapFactory.decodeStream(stream)?.asImageBitmap()
-                }
+            url.startsWith("/") -> {
+                BitmapFactory.decodeFile(url)?.asImageBitmap()
             }
-            else -> null
+            else -> {
+                val cacheDir = File(filesDir, "icon_cache").also { it.mkdirs() }
+                val key = sha1(url)
+                val cached = File(cacheDir, "$key.png")
+                if (cached.exists() && cached.length() > 0L) {
+                    return@runCatching BitmapFactory.decodeFile(cached.absolutePath)?.asImageBitmap()
+                }
+                val decoded = when {
+                    url.startsWith("data:", ignoreCase = true) -> {
+                        val comma = url.indexOf(',')
+                        if (comma <= 0) return@runCatching null
+                        val bytes = Base64.decode(url.substring(comma + 1), Base64.DEFAULT)
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    }
+                    url.startsWith("http://", ignoreCase = true) ||
+                        url.startsWith("https://", ignoreCase = true) -> {
+                        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                            connectTimeout = 8_000
+                            readTimeout = 8_000
+                            instanceFollowRedirects = true
+                        }
+                        connection.inputStream.use { BitmapFactory.decodeStream(it) }
+                    }
+                    else -> null
+                } ?: return@runCatching null
+                runCatching {
+                    cached.outputStream().use { out ->
+                        decoded.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+                    }
+                }
+                decoded.asImageBitmap()
+            }
         }
     }.getOrNull()
+}
+
+private fun sha1(value: String): String {
+    val digest = MessageDigest.getInstance("SHA-1").digest(value.toByteArray())
+    return digest.joinToString("") { "%02x".format(it) }
 }

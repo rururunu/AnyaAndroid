@@ -14,6 +14,24 @@ import androidx.compose.ui.platform.LocalContext
  * is a no-op on many OEM builds / when the system "touch vibration" toggle is off.
  */
 public class AnyaHaptics(private val context: Context) {
+    /**
+     * Linear-feeling switch haptic with stronger energy for tab/menu/session transitions.
+     */
+    public fun linearTick() {
+        vibrate(
+            timings = longArrayOf(0, 12, 10, 14),
+            amplitudes = intArrayOf(0, 72, 132, 192),
+        )
+    }
+
+    /** Button press — strong at top, easing downward like a physical tap. */
+    public fun buttonPress() {
+        vibrate(
+            timings = longArrayOf(0, 10, 8, 12, 8),
+            amplitudes = intArrayOf(0, 200, 150, 100, 60),
+        )
+    }
+
     public fun tick() {
         vibrate(longArrayOf(0, 18), amplitudes = intArrayOf(0, 90))
     }

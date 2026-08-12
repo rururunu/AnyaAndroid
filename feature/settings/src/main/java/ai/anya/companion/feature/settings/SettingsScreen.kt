@@ -11,9 +11,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Link
@@ -31,7 +31,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -167,42 +166,34 @@ public fun SettingsTabContent(
                         .background(toneColor),
                 )
             }
-        }
-
-        Column(verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm)) {
-            Text(
-                text = "桌面端",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
             )
-            AnyaSurfaceCard {
-                if (credential == null) {
-                    Text(
-                        text = "尚未配对",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Medium,
-                    )
-                    Text(
-                        text = "扫码或输入配对码，与桌面工作台绑定后即可同步对话与审批。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    SettingsDetailRow(label = "主机", value = credential.host)
-                    HorizontalDivider(
-                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
-                    )
-                    SettingsDetailRow(label = "端口", value = credential.port.toString())
-                    HorizontalDivider(
-                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
-                    )
-                    SettingsDetailRow(
-                        label = "设备 ID",
-                        value = credential.deviceId,
-                        mono = true,
-                    )
-                }
+            if (credential == null) {
+                Text(
+                    text = "尚未配对",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    text = "扫码或输入配对码，与桌面工作台绑定后即可同步对话与审批。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                SettingsDetailRow(label = "主机", value = credential.host, mono = true)
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+                )
+                SettingsDetailRow(label = "端口", value = credential.port.toString())
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+                )
+                SettingsDetailRow(
+                    label = "设备 ID",
+                    value = credential.deviceId,
+                    mono = true,
+                )
             }
         }
 
@@ -246,36 +237,23 @@ private fun SettingsDetailRow(
     value: String,
     mono: Boolean = false,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 2.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
+        verticalAlignment = Alignment.Top,
     ) {
         Text(
             text = label,
-            style = MaterialTheme.typography.labelMedium,
+            style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(80.dp),
         )
         Text(
             text = value,
             style = MaterialTheme.typography.bodyLarge,
             fontWeight = FontWeight.Medium,
             fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default,
-            maxLines = if (mono) 2 else 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier
-                .fillMaxWidth()
-                .then(
-                    if (mono) {
-                        Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f))
-                            .padding(horizontal = 10.dp, vertical = 8.dp)
-                    } else {
-                        Modifier
-                    },
-                ),
+            modifier = Modifier.weight(1f),
         )
     }
 }

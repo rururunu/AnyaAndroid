@@ -115,7 +115,13 @@ public fun AnyaMarkdown(
         parts.forEach { part ->
             when (part) {
                 is MarkdownPart.Text -> {
-                    val markdownState = rememberMarkdownState(part.value)
+                    // The bundled markdown-renderer version doesn't offer `retainState`
+                    // (bumping it crashes at runtime: its compiled bytecode calls a
+                    // Compose runtime `Updater` overload our Compose BOM no longer has —
+                    // an ABI mismatch, not a source-compat one). Parsing per-message
+                    // chat text synchronously is cheap enough that forcing `immediate`
+                    // parsing sidesteps the async "loading flash" entirely instead.
+                    val markdownState = rememberMarkdownState(part.value, immediate = true)
                     Markdown(
                         markdownState = markdownState,
                         colors = colors,

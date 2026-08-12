@@ -103,4 +103,13 @@ public interface WorkspaceRepository {
 
     public suspend fun refreshSkills(): AnyaResult<List<SkillSummary>>
     public suspend fun refreshMcpServers(): AnyaResult<List<McpServerSummary>>
+
+    /** Disk-cached skills/MCP from the last successful sync (works offline). */
+    public suspend fun loadCachedAttachCatalog(): Pair<List<SkillSummary>, List<McpServerSummary>>
+
+    /** Persist skills/MCP and remap remote icons to local file:// paths. */
+    public suspend fun persistAttachCatalog(
+        skills: List<SkillSummary>,
+        mcpServers: List<McpServerSummary>,
+    ): Pair<List<SkillSummary>, List<McpServerSummary>>
 }
