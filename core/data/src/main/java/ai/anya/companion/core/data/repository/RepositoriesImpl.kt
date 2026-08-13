@@ -34,7 +34,13 @@ import ai.anya.companion.core.model.session.SessionSearchMatchKind
 import ai.anya.companion.core.model.session.ToolActivity
 import ai.anya.companion.core.model.session.ToolApprovalMode
 import ai.anya.companion.core.model.session.ToolPreviewPayload
+import ai.anya.companion.core.model.session.ChatSharedFile
+import ai.anya.companion.core.model.session.SharedFileStatus
 import ai.anya.companion.core.model.session.wireValue
+import ai.anya.companion.core.model.workspace.CompanionFileOffer
+import ai.anya.companion.core.model.workspace.CompanionUrlOffer
+import ai.anya.companion.core.model.workspace.DownloadedWorkspaceFile
+import ai.anya.companion.core.model.workspace.UploadedCompanionFile
 import ai.anya.companion.core.model.workspace.FileContent
 import ai.anya.companion.core.model.workspace.McpServerSummary
 import ai.anya.companion.core.model.workspace.SkillSummary
@@ -43,17 +49,34 @@ import ai.anya.companion.core.model.workspace.WorkspaceSnapshot
 import ai.anya.companion.core.model.workspace.WorkspaceSummary
 import ai.anya.companion.core.network.gateway.GatewaySocketState
 import ai.anya.companion.core.network.gateway.RemoteGatewayClient
+import android.content.ContentValues
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import androidx.core.content.FileProvider
+import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.File
+import java.io.FileOutputStream
 import timber.log.Timber
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -63,6 +86,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -70,12 +94,14 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 public class DefaultConnectionRepository @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val credentialStore: CredentialStore,
     private val gateway: RemoteGatewayClient,
     @ApplicationScope private val appScope: CoroutineScope,
@@ -91,13 +117,33 @@ public class DefaultConnectionRepository @Inject constructor(
     private val wantConnected = MutableStateFlow(true)
     private val connectMutex = Mutex()
     private var reconnectJob: Job? = null
+    private val lastAttempt = java.util.concurrent.atomic.AtomicReference<DeviceCredential?>(null)
+    private val lastGoodEndpoint = java.util.concurrent.atomic.AtomicReference<String?>(null)
+
+    /** Epoch ms of the last server app-level ping (or hello.ok). */
+    private val lastServerAliveAt = java.util.concurrent.atomic.AtomicLong(0L)
+    /** True after hello.ok in this process. Cold-start failures must not retry forever. */
+    private val sessionReachedConnected = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private companion object {
+        /** No server ping within this window ⇒ treat the socket as half-open. */
+        const val STALE_DEADLINE_MS: Long = 45_000L
+        /** Phone → desktop keep-alive so proxies see bidirectional traffic. */
+        const val CLIENT_HEARTBEAT_MS: Long = 20_000L
+        /** How often to check for a stale link. */
+        const val STALE_POLL_MS: Long = 5_000L
+        /** Desktop hello window is 20s; wait a bit less so we can still fallback. */
+        const val HELLO_TIMEOUT_MS: Long = 15_000L
+    }
 
     init {
         appScope.launch {
             credentialStore.credentialFlow.collect { saved ->
                 _credential.value = saved
+                saved?.lastGoodEndpointKey()?.let { lastGoodEndpoint.compareAndSet(null, it) }
                 if (saved == null) {
                     wantConnected.value = true
+                    sessionReachedConnected.set(false)
                     reconnectJob?.cancel()
                     gateway.disconnect()
                     _connectionState.value = ConnectionState.Disconnected
@@ -124,19 +170,26 @@ public class DefaultConnectionRepository @Inject constructor(
                     }
                     GatewaySocketState.Failed -> {
                         _connectionState.value = ConnectionState.Error
-                        scheduleReconnect()
+                        if (shouldKeepRetrying()) {
+                            scheduleReconnect()
+                        } else {
+                            reconnectJob?.cancel()
+                        }
                     }
                     GatewaySocketState.Idle,
                     GatewaySocketState.Closed,
                     GatewaySocketState.Closing,
                     -> {
-                        if (wantConnected.value && _credential.value != null) {
+                        if (shouldKeepRetrying()) {
                             if (_connectionState.value == ConnectionState.Connected) {
                                 _connectionState.value = ConnectionState.Reconnecting
                             }
                             scheduleReconnect()
                         } else if (!wantConnected.value) {
                             _connectionState.value = ConnectionState.Disconnected
+                        } else {
+                            reconnectJob?.cancel()
+                            _connectionState.value = ConnectionState.Error
                         }
                     }
                 }
@@ -146,8 +199,11 @@ public class DefaultConnectionRepository @Inject constructor(
             gateway.incoming.collect { message ->
                 when (message) {
                     is ServerMessage.HelloOk -> {
+                        lastServerAliveAt.set(System.currentTimeMillis())
+                        sessionReachedConnected.set(true)
                         reconnectJob?.cancel()
                         _connectionState.value = ConnectionState.Connected
+                        lastAttempt.get()?.let { rememberLastGood(it) }
                     }
                     is ServerMessage.HelloError -> {
                         _connectionState.value = ConnectionState.Error
@@ -155,6 +211,7 @@ public class DefaultConnectionRepository @Inject constructor(
                         gateway.disconnect()
                     }
                     is ServerMessage.Ping -> {
+                        lastServerAliveAt.set(System.currentTimeMillis())
                         // Bidirectional keep-alive for Cloudflare / NAT (WS pings alone often die).
                         gateway.send(ClientMessage.Pong(message.ts))
                     }
@@ -162,6 +219,9 @@ public class DefaultConnectionRepository @Inject constructor(
                 }
             }
         }
+        registerNetworkCallback()
+        startClientHeartbeat()
+        startStaleWatchdog()
         // Safety net: if we ever sit in Connecting/Reconnecting for too long — e.g. a
         // socket opens but, for whatever reason, nothing ends up sending hello for it —
         // don't leave the user staring at "连接中" forever (or until they notice and
@@ -175,12 +235,56 @@ public class DefaultConnectionRepository @Inject constructor(
                         delay(15_000)
                         if (_connectionState.value != current) return@launch
                         if (!wantConnected.value) return@launch
-                        Timber.w("Connection stuck in %s for 15s; forcing a clean reconnect", current)
+                        // Handshake / LAN→public fallback can take >15s. Only recycle a
+                        // socket that opened but never finished hello.
+                        if (gateway.state.value != GatewaySocketState.Open) return@launch
+                        Timber.w("Connection stuck in %s for 15s with socket open; forcing a clean reconnect", current)
                         gateway.disconnect()
                         reconnectJob?.cancel()
-                        scheduleReconnect()
+                        if (shouldKeepRetrying()) {
+                            scheduleReconnect()
+                        } else {
+                            _connectionState.value = ConnectionState.Error
+                        }
                     }
                 }
+            }
+        }
+    }
+
+    /** Phone-initiated keep-alive: proxies that only forward client→server traffic stay warm. */
+    private fun startClientHeartbeat() {
+        appScope.launch {
+            while (isActive) {
+                delay(CLIENT_HEARTBEAT_MS)
+                if (!wantConnected.value) continue
+                if (_connectionState.value != ConnectionState.Connected) continue
+                if (gateway.state.value != GatewaySocketState.Open) continue
+                gateway.send(ClientMessage.Pong(System.currentTimeMillis()))
+            }
+        }
+    }
+
+    /**
+     * If the desktop's 15s app-level pings stop arriving, the socket is almost certainly
+     * half-open (carrier NAT / tunnel blip). Recycle immediately instead of waiting for
+     * the next failed send.
+     */
+    private fun startStaleWatchdog() {
+        appScope.launch {
+            while (isActive) {
+                delay(STALE_POLL_MS)
+                if (!wantConnected.value) continue
+                if (_connectionState.value != ConnectionState.Connected) continue
+                if (gateway.state.value != GatewaySocketState.Open) continue
+                val last = lastServerAliveAt.get()
+                if (last == 0L) continue
+                val idle = System.currentTimeMillis() - last
+                if (idle < STALE_DEADLINE_MS) continue
+                Timber.w("No server ping for %dms; recycling gateway socket", idle)
+                gateway.disconnect()
+                reconnectJob?.cancel()
+                scheduleReconnect()
             }
         }
     }
@@ -194,6 +298,8 @@ public class DefaultConnectionRepository @Inject constructor(
             port = payload.port,
             scheme = payload.scheme,
             pairedAtEpochMs = System.currentTimeMillis(),
+            lanHost = payload.lanHost,
+            lanPort = payload.lanPort,
         )
         credentialStore.save(credential)
         _credential.value = credential
@@ -224,16 +330,113 @@ public class DefaultConnectionRepository @Inject constructor(
         _credential.value = null
     }
 
-    private fun scheduleReconnect() {
+    override fun nudge() {
         if (!wantConnected.value || _credential.value == null) return
+        if (isSocketHealthy() || isHandshakeInProgress()) return
+        reconnectJob?.cancel()
+        scheduleReconnect()
+    }
+
+    override fun abandonUnreachableBoot() {
+        if (sessionReachedConnected.get()) return
+        reconnectJob?.cancel()
+        gateway.disconnect()
+        _connectionState.value = ConnectionState.Error
+    }
+
+    private fun shouldKeepRetrying(): Boolean =
+        wantConnected.value &&
+            _credential.value != null &&
+            sessionReachedConnected.get()
+
+    /**
+     * Reconnect immediately on real default-network transitions (Wi-Fi ↔ cellular).
+     * OEM devices often emit a new [android.net.Network] handle on resume without
+     * changing transport; tearing down a live Cloudflare socket for that is what
+     * made the link drop for a moment after leaving the app.
+     */
+    private fun registerNetworkCallback() {
+        val connectivity =
+            context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                ?: return
+        val lastNetwork = java.util.concurrent.atomic.AtomicReference<android.net.Network?>(null)
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) {
+                val previous = lastNetwork.getAndSet(network)
+                if (!wantConnected.value || _credential.value == null) return
+                val pathChanged = previous != null &&
+                    !sameDefaultPath(connectivity, previous, network)
+                if (pathChanged) {
+                    Timber.i("Default network path changed; recycling gateway socket")
+                    gateway.disconnect()
+                    reconnectJob?.cancel()
+                    scheduleReconnect()
+                    return
+                }
+                if (isSocketHealthy() || isHandshakeInProgress()) return
+                reconnectJob?.cancel()
+                scheduleReconnect()
+            }
+
+            override fun onLost(network: android.net.Network) {
+                lastNetwork.compareAndSet(network, null)
+                // Don't flip UI to Reconnecting: OEMs fire onLost when backgrounding
+                // even though the socket is still alive. Closed/Failed + stale watchdog
+                // cover a real drop.
+            }
+        }
+        runCatching { connectivity.registerDefaultNetworkCallback(callback) }
+            .onFailure { Timber.w(it, "registerDefaultNetworkCallback failed") }
+    }
+
+    private fun isSocketHealthy(): Boolean =
+        _connectionState.value == ConnectionState.Connected &&
+            gateway.state.value == GatewaySocketState.Open
+
+    private fun isHandshakeInProgress(): Boolean {
+        val socket = gateway.state.value
+        val conn = _connectionState.value
+        return socket == GatewaySocketState.Connecting ||
+            (socket == GatewaySocketState.Open &&
+                (conn == ConnectionState.Connecting || conn == ConnectionState.Reconnecting))
+    }
+
+    private fun sameDefaultPath(
+        connectivity: ConnectivityManager,
+        previous: android.net.Network,
+        current: android.net.Network,
+    ): Boolean {
+        if (previous == current) return true
+        val prevCaps = connectivity.getNetworkCapabilities(previous) ?: return false
+        val currCaps = connectivity.getNetworkCapabilities(current) ?: return false
+        if (!currCaps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return false
+        return defaultTransports(prevCaps) == defaultTransports(currCaps)
+    }
+
+    private fun defaultTransports(caps: NetworkCapabilities): Set<Int> = buildSet {
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+            add(NetworkCapabilities.TRANSPORT_WIFI)
+        }
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+            add(NetworkCapabilities.TRANSPORT_CELLULAR)
+        }
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) {
+            add(NetworkCapabilities.TRANSPORT_ETHERNET)
+        }
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+            add(NetworkCapabilities.TRANSPORT_VPN)
+        }
+    }
+
+    private fun scheduleReconnect() {
+        if (!shouldKeepRetrying()) return
         if (reconnectJob?.isActive == true) return
         reconnectJob = appScope.launch {
             var attempt = 0
-            while (isActive && wantConnected.value) {
+            while (isActive && shouldKeepRetrying()) {
                 val credential = _credential.value ?: return@launch
-                val state = gateway.state.value
-                if (state == GatewaySocketState.Open) return@launch
-                if (state == GatewaySocketState.Connecting) {
+                if (isSocketHealthy()) return@launch
+                if (isHandshakeInProgress()) {
                     delay(500)
                     continue
                 }
@@ -248,9 +451,14 @@ public class DefaultConnectionRepository @Inject constructor(
                     else -> 8_000L
                 }
                 delay(backoffMs)
-                if (!wantConnected.value) return@launch
+                if (!shouldKeepRetrying()) return@launch
+                if (isSocketHealthy()) return@launch
+                if (isHandshakeInProgress()) continue
                 ensureConnected(credential)
-                if (gateway.state.value == GatewaySocketState.Open) return@launch
+                if (isSocketHealthy()) return@launch
+            }
+            if (!sessionReachedConnected.get() && wantConnected.value) {
+                _connectionState.value = ConnectionState.Error
             }
         }
     }
@@ -282,17 +490,142 @@ public class DefaultConnectionRepository @Inject constructor(
                     if (_connectionState.value != ConnectionState.Reconnecting) {
                         _connectionState.value = ConnectionState.Connecting
                     }
-                    val opened = gateway.connect(credential)
-                    if (opened is AnyaResult.Failure) {
-                        _connectionState.value = ConnectionState.Error
-                        return@withLock opened
-                    }
-                    val ready = waitForOpenOrFail()
-                    if (ready is AnyaResult.Failure) return@withLock ready
-                    sendHello(credential)
+                    openWithFallback(credential)
                 }
             }
         }
+
+    /**
+     * Try last-good endpoint first, then LAN (when on Wi-Fi), then the public host.
+     * Same-Wi-Fi phones skip Cloudflare entirely — much more stable in China.
+     */
+    private suspend fun openWithFallback(credential: DeviceCredential): AnyaResult<Unit> {
+        val candidates = orderedCandidates(credential)
+        if (candidates.isEmpty()) {
+            _connectionState.value = ConnectionState.Error
+            return AnyaResult.Failure(AnyaError.Network("No reachable gateway endpoint"))
+        }
+        var lastFailure: AnyaResult.Failure? = null
+        for ((index, candidate) in candidates.withIndex()) {
+            Timber.i(
+                "Gateway connect attempt %d/%d → %s://%s:%d",
+                index + 1,
+                candidates.size,
+                candidate.scheme,
+                candidate.host,
+                candidate.port,
+            )
+            lastAttempt.set(candidate)
+            val timeoutMs = connectTimeoutMs(credential, candidate, candidates.size)
+            val handshakeTries = 1
+            var openedOk = false
+            handshake@ for (tryIndex in 0 until handshakeTries) {
+                val opened = gateway.connect(candidate, timeoutMs)
+                if (opened is AnyaResult.Failure) {
+                    lastFailure = opened
+                    continue
+                }
+                val startedAt = System.currentTimeMillis()
+                when (val ready = waitForOpenOrFail(timeoutMs)) {
+                    is AnyaResult.Success -> {
+                        openedOk = true
+                        break@handshake
+                    }
+                    is AnyaResult.Failure -> {
+                        lastFailure = ready
+                        val elapsed = System.currentTimeMillis() - startedAt
+                        if (tryIndex < handshakeTries - 1 && elapsed < 4_000L) {
+                            Timber.w(
+                                "Public gateway handshake dropped in %dms; retrying same endpoint",
+                                elapsed,
+                            )
+                            delay(250)
+                        }
+                    }
+                }
+            }
+            if (!openedOk) continue
+            // Always hello with the stored credential identity (deviceId / token);
+            // only the transport endpoint differs per candidate.
+            when (val hello = sendHello(credential)) {
+                is AnyaResult.Success -> return hello
+                is AnyaResult.Failure -> {
+                    lastFailure = hello
+                    if (!wantConnected.value) break
+                    Timber.w(
+                        "hello failed on %s://%s:%d — trying next candidate",
+                        candidate.scheme,
+                        candidate.host,
+                        candidate.port,
+                    )
+                    gateway.disconnect()
+                }
+            }
+        }
+        _connectionState.value = ConnectionState.Error
+        return lastFailure ?: AnyaResult.Failure(AnyaError.Network("Gateway connect failed"))
+    }
+
+    private fun orderedCandidates(credential: DeviceCredential): List<DeviceCredential> {
+        var list = credential.connectCandidates()
+        if (!shouldProbeLan()) {
+            val lan = credential.lanHost?.trim().orEmpty()
+            if (lan.isNotEmpty()) {
+                list = list.filterNot { it.host == lan && it.scheme == "ws" }
+            }
+        }
+        val prefer = lastGoodEndpoint.get() ?: credential.lastGoodEndpointKey()
+        if (prefer != null) {
+            val sticky = list.filter { it.endpointKey() == prefer }
+            val rest = list.filter { it.endpointKey() != prefer }
+            list = sticky + rest
+        }
+        return list
+    }
+
+    private fun shouldProbeLan(): Boolean {
+        val connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return true
+        val network = connectivity.activeNetwork ?: return false
+        val caps = connectivity.getNetworkCapabilities(network) ?: return false
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+    }
+
+    private fun connectTimeoutMs(
+        credential: DeviceCredential,
+        candidate: DeviceCredential,
+        candidateCount: Int,
+    ): Long {
+        val lan = credential.lanHost?.trim().orEmpty()
+        val lanProbe = candidateCount > 1 &&
+            candidate.scheme == "ws" &&
+            lan.isNotEmpty() &&
+            candidate.host == lan
+        return if (lanProbe) {
+            RemoteGatewayClient.LAN_CONNECT_TIMEOUT_MS
+        } else {
+            RemoteGatewayClient.CONNECT_TIMEOUT_MS
+        }
+    }
+
+    private fun rememberLastGood(candidate: DeviceCredential) {
+        lastGoodEndpoint.set(candidate.endpointKey())
+        val current = _credential.value ?: return
+        if (current.lastGoodHost == candidate.host &&
+            current.lastGoodPort == candidate.port &&
+            current.lastGoodScheme == candidate.scheme
+        ) {
+            return
+        }
+        val updated = current.copy(
+            lastGoodHost = candidate.host,
+            lastGoodPort = candidate.port,
+            lastGoodScheme = candidate.scheme,
+        )
+        _credential.value = updated
+        appScope.launch { credentialStore.save(updated) }
+    }
 
     private suspend fun sendHello(credential: DeviceCredential): AnyaResult<Unit> {
         if (_connectionState.value == ConnectionState.Connected) {
@@ -312,18 +645,27 @@ public class DefaultConnectionRepository @Inject constructor(
         }
         // hello.ok flips Connected via the incoming collector; wait briefly so callers
         // that refresh right after connect() see an authenticated session.
-        val authed = withTimeoutOrNull(10_000) {
+        val authed = withTimeoutOrNull(HELLO_TIMEOUT_MS) {
             connectionState.first { it == ConnectionState.Connected || it == ConnectionState.Error }
         }
         return when (authed) {
             ConnectionState.Connected -> AnyaResult.Success(Unit)
-            ConnectionState.Error -> AnyaResult.Failure(AnyaError.Unauthorized("hello rejected"))
+            ConnectionState.Error -> {
+                val socket = gateway.state.value
+                if (socket == GatewaySocketState.Failed || socket == GatewaySocketState.Closed) {
+                    AnyaResult.Failure(AnyaError.Network("connection dropped during hello"))
+                } else {
+                    AnyaResult.Failure(AnyaError.Unauthorized("hello rejected"))
+                }
+            }
             else -> AnyaResult.Failure(AnyaError.Network("hello timed out"))
         }
     }
 
-    private suspend fun waitForOpenOrFail(): AnyaResult<Unit> {
-        val terminal = withTimeoutOrNull(RemoteGatewayClient.CONNECT_TIMEOUT_MS) {
+    private suspend fun waitForOpenOrFail(
+        timeoutMs: Long = RemoteGatewayClient.CONNECT_TIMEOUT_MS,
+    ): AnyaResult<Unit> {
+        val terminal = withTimeoutOrNull(timeoutMs) {
             gateway.state.first {
                 it == GatewaySocketState.Open ||
                     it == GatewaySocketState.Failed ||
@@ -334,8 +676,7 @@ public class DefaultConnectionRepository @Inject constructor(
             GatewaySocketState.Open -> AnyaResult.Success(Unit)
             null -> {
                 gateway.disconnect()
-                _connectionState.value = ConnectionState.Error
-                AnyaResult.Failure(AnyaError.Network("连接超时（超过 1 分钟），已自动断开"))
+                AnyaResult.Failure(AnyaError.Network("连接超时，已自动断开并重试"))
             }
             else -> AnyaResult.Failure(AnyaError.Network("Gateway connect failed"))
         }
@@ -355,7 +696,14 @@ public class DefaultSessionRepository @Inject constructor(
     private val _workspaces = MutableStateFlow<List<WorkspaceSummary>>(emptyList())
     override val workspaces: StateFlow<List<WorkspaceSummary>> = _workspaces.asStateFlow()
 
+    private val _fileOffers = MutableSharedFlow<CompanionFileOffer>(extraBufferCapacity = 8)
+    override val fileOffers: SharedFlow<CompanionFileOffer> = _fileOffers.asSharedFlow()
+    private val _urlOffers = MutableSharedFlow<CompanionUrlOffer>(extraBufferCapacity = 8)
+    override val urlOffers: SharedFlow<CompanionUrlOffer> = _urlOffers.asSharedFlow()
+
     private val messagesBySession = MutableStateFlow<Map<String, List<ChatMessage>>>(emptyMap())
+    /** Companion-only shared-file cards; survive desktop history reloads. */
+    private val localSharedBySession = MutableStateFlow<Map<String, List<ChatMessage>>>(emptyMap())
     private val composeBySession = MutableStateFlow<Map<String, SessionCompose>>(emptyMap())
     private val tasksBySession = MutableStateFlow<Map<String, List<PlanTaskItem>>>(emptyMap())
     private val _models = MutableStateFlow<List<ChatModelInfo>>(emptyList())
@@ -370,6 +718,7 @@ public class DefaultSessionRepository @Inject constructor(
                         appScope.launch {
                             refreshSessions()
                             refreshModels()
+                            settleIdleStreaming()
                         }
                     }
                     is ServerMessage.Event -> handleEvent(message.name, message.data)
@@ -381,7 +730,9 @@ public class DefaultSessionRepository @Inject constructor(
     }
 
     override fun messages(sessionId: String): Flow<List<ChatMessage>> =
-        messagesBySession.map { it[sessionId].orEmpty() }
+        combine(messagesBySession, localSharedBySession) { remote, local ->
+            mergeRemoteAndLocal(remote[sessionId].orEmpty(), local[sessionId].orEmpty())
+        }
 
     override fun compose(sessionId: String): Flow<SessionCompose> =
         composeBySession.map { it[sessionId] ?: SessionCompose() }
@@ -424,14 +775,44 @@ public class DefaultSessionRepository @Inject constructor(
                     val messages = payload?.get("messages")?.let { element ->
                         runCatching {
                             json.decodeFromJsonElement<List<ChatMessage>>(element)
+                        }.onFailure { error ->
+                            Timber.w(error, "session.history decode failed for %s", sessionId)
                         }.getOrNull()
                     }
                     if (messages != null) {
-                        messagesBySession.update { it + (sessionId to messages) }
-                        AnyaResult.Success(messages)
+                        val runState = _sessions.value.find { it.id == sessionId }?.runState
+                        messagesBySession.update { map ->
+                            val local = map[sessionId].orEmpty()
+                            map + (sessionId to mergeHistory(local, messages, runState))
+                        }
+                        AnyaResult.Success(messagesBySession.value[sessionId].orEmpty())
                     } else {
                         AnyaResult.Success(messagesBySession.value[sessionId].orEmpty())
                     }
+                }
+            }
+        }
+    }
+
+    override suspend fun deleteSession(sessionId: String): AnyaResult<Unit> {
+        val requestId = UUID.randomUUID().toString()
+        return when (
+            val result = gateway.request(ClientMessage.SessionDelete(requestId, sessionId), requestId)
+        ) {
+            is AnyaResult.Failure -> result
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                if (!rpc.ok) {
+                    AnyaResult.Failure(AnyaError.Network(rpc.error ?: "session.delete failed"))
+                } else {
+                    // Desktop broadcasts a fresh snapshot too; drop local state now
+                    // so the row disappears without waiting for the round trip.
+                    _sessions.update { list -> list.filterNot { it.id == sessionId } }
+                    messagesBySession.update { it - sessionId }
+                    localSharedBySession.update { it - sessionId }
+                    composeBySession.update { it - sessionId }
+                    tasksBySession.update { it - sessionId }
+                    AnyaResult.Success(Unit)
                 }
             }
         }
@@ -479,6 +860,7 @@ public class DefaultSessionRepository @Inject constructor(
         toolApprovalMode: ToolApprovalMode?,
         chatModel: String?,
         chatModelProvider: String?,
+        workspaceId: String?,
     ): AnyaResult<String> {
         val requestId = UUID.randomUUID().toString()
         val targetSession = sessionId.orEmpty()
@@ -493,18 +875,33 @@ public class DefaultSessionRepository @Inject constructor(
             )
             upsertMessage(targetSession, optimistic)
         }
-        val send = gateway.send(
-            ClientMessage.ChatSend(
-                requestId = requestId,
-                sessionId = sessionId,
-                message = message,
-                chatMode = chatMode?.wireValue(),
-                toolApprovalMode = toolApprovalMode?.wireValue(),
-                chatModel = chatModel,
-                chatModelProvider = chatModelProvider,
-            ),
+        val clientMessage = ClientMessage.ChatSend(
+            requestId = requestId,
+            sessionId = sessionId,
+            message = message,
+            workspaceId = workspaceId,
+            chatMode = chatMode?.wireValue(),
+            toolApprovalMode = toolApprovalMode?.wireValue(),
+            chatModel = chatModel,
+            chatModelProvider = chatModelProvider,
         )
-        return when (send) {
+        if (targetSession.isBlank()) {
+            // Brand-new session: wait for the RPC so we learn the desktop-assigned id.
+            return when (val result = gateway.request(clientMessage, requestId, timeoutMs = 30_000)) {
+                is AnyaResult.Failure -> result
+                is AnyaResult.Success -> {
+                    val rpc = result.data
+                    val newSessionId = (rpc.data as? JsonObject)?.string("sessionId")
+                    when {
+                        !rpc.ok -> AnyaResult.Failure(AnyaError.Network(rpc.error ?: "chat.send failed"))
+                        newSessionId.isNullOrBlank() ->
+                            AnyaResult.Failure(AnyaError.Protocol("chat.send returned no sessionId"))
+                        else -> AnyaResult.Success(newSessionId)
+                    }
+                }
+            }
+        }
+        return when (val send = gateway.send(clientMessage)) {
             is AnyaResult.Success -> AnyaResult.Success(requestId)
             is AnyaResult.Failure -> send
         }
@@ -683,6 +1080,51 @@ public class DefaultSessionRepository @Inject constructor(
         }
     }
 
+    override fun upsertLocalSharedMessage(message: ChatMessage) {
+        val sessionId = message.sessionId
+        if (sessionId.isBlank()) return
+        localSharedBySession.update { map ->
+            val current = map[sessionId].orEmpty().toMutableList()
+            val idx = current.indexOfFirst { it.id == message.id }
+            if (idx >= 0) current[idx] = message else current.add(message)
+            map + (sessionId to current)
+        }
+    }
+
+    override fun patchLocalSharedFile(
+        sessionId: String,
+        offerId: String,
+        transform: (ChatSharedFile) -> ChatSharedFile,
+    ) {
+        localSharedBySession.update { map ->
+            val current = map[sessionId].orEmpty()
+            if (current.isEmpty()) return@update map
+            val next = current.map { message ->
+                if (message.sharedFiles.none { it.offerId == offerId }) {
+                    message
+                } else {
+                    message.copy(
+                        sharedFiles = message.sharedFiles.map { file ->
+                            if (file.offerId == offerId) transform(file) else file
+                        },
+                    )
+                }
+            }
+            map + (sessionId to next)
+        }
+    }
+
+    private fun mergeRemoteAndLocal(
+        remote: List<ChatMessage>,
+        local: List<ChatMessage>,
+    ): List<ChatMessage> {
+        if (local.isEmpty()) return remote
+        val remoteIds = remote.mapTo(HashSet()) { it.id }
+        val extras = local.filter { it.id !in remoteIds }
+        if (extras.isEmpty()) return remote
+        return (remote + extras).sortedBy { it.createdAtEpochMs }
+    }
+
     private fun handleEvent(name: String, data: JsonObject) {
         when (name) {
             "session.snapshot" -> applySnapshot(data)
@@ -830,6 +1272,33 @@ public class DefaultSessionRepository @Inject constructor(
                     }
                 }
             }
+            "file.offer", "file-offer", "FileOffer" -> {
+                val sessionId = data.string("sessionId") ?: return
+                val path = data.string("path") ?: return
+                val offer = CompanionFileOffer(
+                    sessionId = sessionId,
+                    offerId = data.string("offerId").orEmpty(),
+                    path = path,
+                    name = data.string("name")
+                        ?: path.replace('\\', '/').substringAfterLast('/'),
+                    mime = data.string("mime"),
+                    size = data["size"]?.jsonPrimitive?.longOrNull ?: 0L,
+                    workspaceId = data.string("workspaceId"),
+                )
+                _fileOffers.tryEmit(offer)
+            }
+            "url.offer", "url-offer", "UrlOffer" -> {
+                val sessionId = data.string("sessionId") ?: return
+                val publicUrl = data.string("publicUrl") ?: return
+                val offer = CompanionUrlOffer(
+                    sessionId = sessionId,
+                    offerId = data.string("offerId").orEmpty(),
+                    label = data.string("label").orEmpty().ifBlank { "Preview" },
+                    publicUrl = publicUrl,
+                    originUrl = data.string("originUrl").orEmpty(),
+                )
+                _urlOffers.tryEmit(offer)
+            }
             else -> Unit
         }
     }
@@ -844,10 +1313,17 @@ public class DefaultSessionRepository @Inject constructor(
             }
             if (payload.containsKey("messages")) {
                 val sessionId = payload.string("sessionId") ?: return
-                val messages = runCatching {
+                val incoming = runCatching {
                     json.decodeFromJsonElement<List<ChatMessage>>(payload["messages"]!!)
-                }.getOrElse { emptyList() }
-                messagesBySession.update { it + (sessionId to messages) }
+                }.getOrElse { error ->
+                    Timber.w(error, "Failed to decode session history for %s", sessionId)
+                    return
+                }
+                val runState = _sessions.value.find { it.id == sessionId }?.runState
+                messagesBySession.update { map ->
+                    val local = map[sessionId].orEmpty()
+                    map + (sessionId to mergeHistory(local, incoming, runState))
+                }
                 return
             }
             if (payload.containsKey("compose")) {
@@ -883,6 +1359,95 @@ public class DefaultSessionRepository @Inject constructor(
         }.onFailure { error ->
             Timber.w(error, "Failed to apply session snapshot")
         }
+        settleIdleStreaming()
+    }
+
+    /** Desktop runState is Idle/Error: local Streaming bubbles were missed `chat.finished`. */
+    private fun settleIdleStreaming() {
+        val byId = _sessions.value.associateBy { it.id }
+        messagesBySession.update { map ->
+            map.mapValues { (sessionId, messages) ->
+                val runState = byId[sessionId]?.runState ?: return@mapValues messages
+                if (runState == AgentRunState.Streaming ||
+                    runState == AgentRunState.WaitingApproval ||
+                    runState == AgentRunState.WaitingAskUser
+                ) {
+                    return@mapValues messages
+                }
+                val terminal = if (runState == AgentRunState.Error) {
+                    MessageStatus.Error
+                } else {
+                    MessageStatus.Complete
+                }
+                messages.map { message ->
+                    if (message.status == MessageStatus.Streaming ||
+                        message.status == MessageStatus.Pending
+                    ) {
+                        message.copy(status = terminal)
+                    } else {
+                        message
+                    }
+                }
+            }
+        }
+    }
+
+    private fun mergeHistory(
+        local: List<ChatMessage>,
+        incoming: List<ChatMessage>,
+        runState: AgentRunState?,
+    ): List<ChatMessage> {
+        val localById = local.associateBy { it.id }
+        val merged = incoming.map { remote ->
+            val prev = localById[remote.id] ?: return@map remote
+            mergeRemoteMessage(prev, remote)
+        }
+        val incomingIds = incoming.mapTo(HashSet()) { it.id }
+        val stillRunning = runState == AgentRunState.Streaming ||
+            runState == AgentRunState.WaitingApproval ||
+            runState == AgentRunState.WaitingAskUser
+        val extras = local.filter { message ->
+            message.id !in incomingIds &&
+                message.role == ChatRole.Assistant &&
+                (message.status == MessageStatus.Streaming || message.status == MessageStatus.Pending) &&
+                stillRunning
+        }
+        return (merged + extras).sortedBy { it.createdAtEpochMs }
+    }
+
+    private fun mergeRemoteMessage(local: ChatMessage, incoming: ChatMessage): ChatMessage {
+        val incomingLive = incoming.status == MessageStatus.Streaming ||
+            incoming.status == MessageStatus.Pending
+        val content = if (incomingLive) {
+            if (local.content.length > incoming.content.length) local.content else incoming.content
+        } else {
+            incoming.content.ifBlank { local.content }
+        }
+        val localReasoning = local.reasoning.orEmpty()
+        val incomingReasoning = incoming.reasoning.orEmpty()
+        val reasoning = if (incomingLive) {
+            when {
+                localReasoning.length > incomingReasoning.length -> local.reasoning
+                incomingReasoning.isNotBlank() -> incoming.reasoning
+                else -> local.reasoning
+            }
+        } else {
+            incoming.reasoning?.takeIf { it.isNotBlank() } ?: local.reasoning
+        }
+        return incoming.copy(
+            content = content,
+            reasoning = reasoning,
+            toolActivities = incoming.toolActivities.ifEmpty { local.toolActivities },
+            codeChanges = incoming.codeChanges.ifEmpty { local.codeChanges },
+            planTasks = incoming.planTasks.ifEmpty { local.planTasks },
+            sharedFiles = incoming.sharedFiles.ifEmpty { local.sharedFiles },
+            sharedUrls = incoming.sharedUrls.ifEmpty { local.sharedUrls },
+            createdAtEpochMs = if (incoming.createdAtEpochMs > 0L) {
+                incoming.createdAtEpochMs
+            } else {
+                local.createdAtEpochMs
+            },
+        )
     }
 
     private fun patchRunState(sessionId: String, runState: AgentRunState) {
@@ -1171,9 +1736,19 @@ public class DefaultApprovalRepository @Inject constructor(
     init {
         appScope.launch {
             gateway.incoming.collect { message ->
-                if (message !is ServerMessage.Event) return@collect
-                when (message.name) {
-                    "tool.approval", "tool-approval", "AskUser", "ask.user", "ask-user" -> {
+                when (message) {
+                    is ServerMessage.HelloOk -> {
+                        // Old desktops have no interaction.snapshot; drop stale cards
+                        // so replay (or the snapshot that follows) is the authority.
+                        _pending.value = emptyList()
+                    }
+                    is ServerMessage.Event -> when (message.name) {
+                    "interaction.snapshot", "interaction-snapshot" -> {
+                        applyInteractionSnapshot(message.data)
+                    }
+                    "tool.approval", "tool-approval", "AskUser", "ask.user", "ask-user",
+                    "path.permission", "path-permission", "PathPermission",
+                    -> {
                         val requestId = message.data.string("requestId") ?: return@collect
                         val sessionId = message.data.string("sessionId").orEmpty()
                         val title = message.data.string("title")
@@ -1181,6 +1756,8 @@ public class DefaultApprovalRepository @Inject constructor(
                             ?: "需要审批"
                         val kind = when (message.name) {
                             "AskUser", "ask.user", "ask-user" -> ApprovalKind.AskUser
+                            "path.permission", "path-permission", "PathPermission" ->
+                                ApprovalKind.PathPermission
                             else -> ApprovalKind.Tool
                         }
                         val questions = message.data["questions"]?.let { element ->
@@ -1204,6 +1781,8 @@ public class DefaultApprovalRepository @Inject constructor(
                     "interaction.resolved", "interaction-resolved" -> {
                         val requestId = message.data.string("requestId") ?: return@collect
                         _pending.update { list -> list.filterNot { it.requestId == requestId } }
+                    }
+                    else -> Unit
                     }
                     else -> Unit
                 }
@@ -1244,6 +1823,37 @@ public class DefaultApprovalRepository @Inject constructor(
         return result
     }
 
+    private fun applyInteractionSnapshot(data: JsonObject) {
+        val items = data["pending"]?.let { element ->
+            runCatching { json.decodeFromJsonElement<List<JsonObject>>(element) }.getOrNull()
+        }.orEmpty()
+        val now = System.currentTimeMillis()
+        _pending.value = items.mapNotNull { obj ->
+            val requestId = obj.string("requestId") ?: return@mapNotNull null
+            val kind = when (obj.string("kind").orEmpty().lowercase()) {
+                "ask_user", "ask-user", "askuser" -> ApprovalKind.AskUser
+                "path_permission", "path-permission", "pathpermission" -> ApprovalKind.PathPermission
+                else -> ApprovalKind.Tool
+            }
+            val questions = obj["questions"]?.let { element ->
+                runCatching { json.decodeFromJsonElement<List<AskUserQuestion>>(element) }
+                    .getOrElse { emptyList() }
+            }.orEmpty()
+            PendingApproval(
+                requestId = requestId,
+                sessionId = obj.string("sessionId").orEmpty(),
+                kind = kind,
+                title = obj.string("title")
+                    ?: obj.string("toolName")
+                    ?: "需要审批",
+                toolName = obj.string("toolName"),
+                previewSummary = obj.string("preview"),
+                questions = questions,
+                createdAtEpochMs = now,
+            )
+        }
+    }
+
     private fun JsonObject.string(key: String): String? =
         this[key]?.jsonPrimitive?.contentOrNull
 }
@@ -1253,6 +1863,7 @@ public class DefaultWorkspaceRepository @Inject constructor(
     private val gateway: RemoteGatewayClient,
     private val json: Json,
     private val attachCatalogStore: AttachCatalogStore,
+    @ApplicationContext private val context: Context,
 ) : WorkspaceRepository {
 
     private val _snapshot = MutableStateFlow<WorkspaceSnapshot?>(null)
@@ -1266,6 +1877,13 @@ public class DefaultWorkspaceRepository @Inject constructor(
 
     private val _mcpServers = MutableStateFlow<List<McpServerSummary>>(emptyList())
     override val mcpServers: StateFlow<List<McpServerSummary>> = _mcpServers.asStateFlow()
+
+    private companion object {
+        const val MAX_UPLOAD_BYTES: Long = 500L * 1024L * 1024L
+        const val UPLOAD_CHUNK_BYTES: Int = 512 * 1024
+        const val DOWNLOAD_CHUNK_BYTES: Int = 512 * 1024
+        const val DOWNLOAD_CHUNK_TIMEOUT_MS: Long = 60_000
+    }
 
     override suspend fun refresh(sessionId: String?): AnyaResult<WorkspaceSnapshot> {
         val requestId = UUID.randomUUID().toString()
@@ -1315,10 +1933,192 @@ public class DefaultWorkspaceRepository @Inject constructor(
                 if (!rpc.ok) {
                     AnyaResult.Failure(AnyaError.Network(rpc.error ?: "workspace.readFile failed"))
                 } else {
-                    AnyaResult.Success(FileContent(path = path, content = rpc.data?.toString().orEmpty()))
+                    val payload = rpc.data as? JsonObject
+                    AnyaResult.Success(
+                        FileContent(
+                            path = payload?.string("path") ?: path,
+                            content = payload?.string("content").orEmpty(),
+                            truncated = payload?.get("truncated")?.jsonPrimitive?.booleanOrNull ?: false,
+                            size = payload?.get("size")?.jsonPrimitive?.longOrNull ?: 0L,
+                        ),
+                    )
                 }
             }
         }
+    }
+
+    override suspend fun downloadFile(
+        path: String,
+        sessionId: String?,
+        workspaceId: String?,
+    ): AnyaResult<DownloadedWorkspaceFile> = withContext(Dispatchers.IO) {
+        var dest: File? = null
+        runCatching {
+            var offset = 0L
+            var total = -1L
+            var name = path.replace('\\', '/').substringAfterLast('/').ifBlank { "file.bin" }
+            var mime = "application/octet-stream"
+            var relPath = path
+            var out: FileOutputStream? = null
+            try {
+                while (true) {
+                    val requestId = UUID.randomUUID().toString()
+                    val result = gateway.request(
+                        ClientMessage.WorkspaceReadFile(
+                            requestId = requestId,
+                            path = path,
+                            sessionId = sessionId,
+                            workspaceId = workspaceId,
+                            mode = "download",
+                            offset = offset,
+                            length = DOWNLOAD_CHUNK_BYTES.toLong(),
+                        ),
+                        requestId,
+                        timeoutMs = DOWNLOAD_CHUNK_TIMEOUT_MS,
+                    )
+                    val rpc = when (result) {
+                        is AnyaResult.Failure -> error(result.error.toString())
+                        is AnyaResult.Success -> result.data
+                    }
+                    if (!rpc.ok) {
+                        error(rpc.error ?: "workspace.readFile failed")
+                    }
+                    val payload = rpc.data as? JsonObject
+                        ?: error("workspace.readFile returned no payload")
+                    val size = payload["size"]?.jsonPrimitive?.longOrNull ?: 0L
+                    if (size > MAX_UPLOAD_BYTES) {
+                        error("file too large: $size bytes (max $MAX_UPLOAD_BYTES)")
+                    }
+                    if (total < 0L) {
+                        total = size
+                        name = payload.string("name") ?: name
+                        mime = payload.string("mime") ?: mime
+                        relPath = payload.string("path") ?: path
+                        val created = uniqueSharedCacheFile(name)
+                        dest = created
+                        out = FileOutputStream(created)
+                    } else if (size != total) {
+                        error("file size changed during download")
+                    }
+                    val encoded = payload.string("contentBase64").orEmpty()
+                    val bytes = if (encoded.isEmpty()) {
+                        ByteArray(0)
+                    } else {
+                        java.util.Base64.getDecoder().decode(encoded)
+                    }
+                    if (bytes.isNotEmpty()) {
+                        out?.write(bytes)
+                        offset += bytes.size.toLong()
+                    }
+                    val eof = payload["eof"]?.jsonPrimitive?.booleanOrNull
+                        ?: (bytes.isEmpty() || offset >= total)
+                    if (eof || bytes.isEmpty() || offset >= total) {
+                        break
+                    }
+                }
+                out?.flush()
+            } finally {
+                out?.close()
+            }
+            val cached = dest ?: error("download produced no file")
+            val uri = fileProviderUri(cached)
+            DownloadedWorkspaceFile(
+                path = relPath,
+                name = name,
+                mime = mime,
+                size = cached.length(),
+                localPath = cached.absolutePath,
+                localUri = uri.toString(),
+            )
+        }.fold(
+            onSuccess = { AnyaResult.Success(it) },
+            onFailure = { e ->
+                dest?.delete()
+                Timber.w(e, "Failed to cache downloaded file")
+                AnyaResult.Failure(AnyaError.Unknown(e.message ?: "缓存文件失败"))
+            },
+        )
+    }
+
+    override suspend fun exportCachedFileToDownloads(
+        localPath: String,
+        name: String,
+        mime: String,
+    ): AnyaResult<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val source = File(localPath)
+            if (!source.isFile) error("缓存文件不存在")
+            val uri = saveToDownloads(name, mime, source)
+            uri.toString()
+        }.fold(
+            onSuccess = { AnyaResult.Success(it) },
+            onFailure = { e ->
+                Timber.w(e, "Failed to export cached file")
+                AnyaResult.Failure(AnyaError.Unknown(e.message ?: "导出到下载失败"))
+            },
+        )
+    }
+
+    private fun uniqueSharedCacheFile(name: String): File {
+        val dir = File(context.filesDir, "shared").apply { mkdirs() }
+        val safeName = name.replace(Regex("""[\\/:*?"<>|]"""), "_").ifBlank { "shared.bin" }
+        var target = File(dir, safeName)
+        if (target.exists()) {
+            val base = safeName.substringBeforeLast('.', safeName)
+            val ext = safeName.substringAfterLast('.', "")
+            var index = 1
+            while (target.exists()) {
+                val candidate = if (ext.isEmpty()) "$base-$index" else "$base-$index.$ext"
+                target = File(dir, candidate)
+                index++
+            }
+        }
+        return target
+    }
+
+    private fun fileProviderUri(file: File): Uri {
+        val authority = "${context.packageName}.fileprovider"
+        return FileProvider.getUriForFile(context, authority, file)
+    }
+
+    private fun saveToDownloads(name: String, mime: String, source: File): Uri {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, name)
+                put(MediaStore.Downloads.MIME_TYPE, mime)
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            val resolver = context.contentResolver
+            val uri = resolver.insert(collection, values)
+                ?: error("无法写入系统下载目录")
+            resolver.openOutputStream(uri)?.use { output ->
+                source.inputStream().use { input -> input.copyTo(output) }
+            } ?: error("无法写入系统下载目录")
+            values.clear()
+            values.put(MediaStore.Downloads.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+            return uri
+        }
+        @Suppress("DEPRECATION")
+        val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        dir.mkdirs()
+        var target = File(dir, name)
+        // Avoid clobbering an existing download with the same name.
+        if (target.exists()) {
+            val base = name.substringBeforeLast('.', name)
+            val ext = name.substringAfterLast('.', "")
+            var index = 1
+            while (target.exists()) {
+                val candidate = if (ext.isEmpty()) "$base ($index)" else "$base ($index).$ext"
+                target = File(dir, candidate)
+                index++
+            }
+        }
+        source.inputStream().use { input ->
+            FileOutputStream(target).use { output -> input.copyTo(output) }
+        }
+        return Uri.fromFile(target)
     }
 
     override suspend fun refreshFiles(
@@ -1418,6 +2218,143 @@ public class DefaultWorkspaceRepository @Inject constructor(
         if (cached.skills.isNotEmpty()) _skills.value = cached.skills
         if (cached.mcpServers.isNotEmpty()) _mcpServers.value = cached.mcpServers
         return cached.skills to cached.mcpServers
+    }
+
+    override suspend fun uploadLocalFile(
+        sessionId: String?,
+        workspaceId: String?,
+        fileName: String,
+        size: Long,
+        mime: String?,
+        input: java.io.InputStream,
+        onProgress: (written: Long, total: Long) -> Unit,
+    ): AnyaResult<UploadedCompanionFile> = withContext(Dispatchers.IO) {
+        val maxBytes = MAX_UPLOAD_BYTES
+        if (size > maxBytes) {
+            return@withContext AnyaResult.Failure(
+                AnyaError.Protocol("file too large: $size bytes (max $maxBytes)"),
+            )
+        }
+        val beginId = UUID.randomUUID().toString()
+        val begun = gateway.request(
+            ClientMessage.FileUploadBegin(
+                requestId = beginId,
+                sessionId = sessionId,
+                workspaceId = workspaceId,
+                fileName = fileName,
+                size = size,
+                mime = mime,
+            ),
+            beginId,
+            timeoutMs = 30_000,
+        )
+        val beginRpc = when (begun) {
+            is AnyaResult.Failure -> return@withContext begun
+            is AnyaResult.Success -> begun.data
+        }
+        if (!beginRpc.ok) {
+            return@withContext AnyaResult.Failure(
+                AnyaError.Network(beginRpc.error ?: "file.upload.begin failed"),
+            )
+        }
+        val beginPayload = beginRpc.data as? JsonObject
+            ?: return@withContext AnyaResult.Failure(
+                AnyaError.Protocol("file.upload.begin returned no payload"),
+            )
+        val uploadId = beginPayload.string("uploadId")
+            ?: return@withContext AnyaResult.Failure(
+                AnyaError.Protocol("file.upload.begin returned no uploadId"),
+            )
+        val assignedSession = beginPayload.string("sessionId").orEmpty()
+        suspend fun abortQuietly() {
+            val abortId = UUID.randomUUID().toString()
+            gateway.request(
+                ClientMessage.FileUploadAbort(requestId = abortId, uploadId = uploadId),
+                abortId,
+                timeoutMs = 10_000,
+            )
+        }
+        try {
+            var offset = 0L
+            val buf = ByteArray(UPLOAD_CHUNK_BYTES)
+            input.use { stream ->
+                while (offset < size) {
+                    val n = stream.read(buf)
+                    if (n <= 0) break
+                    val encoded = android.util.Base64.encodeToString(
+                        buf,
+                        0,
+                        n,
+                        android.util.Base64.NO_WRAP,
+                    )
+                    val chunkId = UUID.randomUUID().toString()
+                    val chunked = gateway.request(
+                        ClientMessage.FileUploadChunk(
+                            requestId = chunkId,
+                            uploadId = uploadId,
+                            offset = offset,
+                            dataBase64 = encoded,
+                        ),
+                        chunkId,
+                        timeoutMs = 60_000,
+                    )
+                    val chunkRpc = when (chunked) {
+                        is AnyaResult.Failure -> {
+                            abortQuietly()
+                            return@withContext chunked
+                        }
+                        is AnyaResult.Success -> chunked.data
+                    }
+                    if (!chunkRpc.ok) {
+                        abortQuietly()
+                        return@withContext AnyaResult.Failure(
+                            AnyaError.Network(chunkRpc.error ?: "file.upload.chunk failed"),
+                        )
+                    }
+                    offset += n
+                    onProgress(offset, size)
+                }
+            }
+            val finishId = UUID.randomUUID().toString()
+            val finished = gateway.request(
+                ClientMessage.FileUploadFinish(requestId = finishId, uploadId = uploadId),
+                finishId,
+                timeoutMs = 60_000,
+            )
+            val finishRpc = when (finished) {
+                is AnyaResult.Failure -> {
+                    abortQuietly()
+                    return@withContext finished
+                }
+                is AnyaResult.Success -> finished.data
+            }
+            if (!finishRpc.ok) {
+                abortQuietly()
+                return@withContext AnyaResult.Failure(
+                    AnyaError.Network(finishRpc.error ?: "file.upload.finish failed"),
+                )
+            }
+            val finishPayload = finishRpc.data as? JsonObject
+                ?: return@withContext AnyaResult.Failure(
+                    AnyaError.Protocol("file.upload.finish returned no payload"),
+                )
+            val path = finishPayload.string("path")
+                ?: beginPayload.string("relPath")
+                ?: return@withContext AnyaResult.Failure(
+                    AnyaError.Protocol("file.upload.finish returned no path"),
+                )
+            AnyaResult.Success(
+                UploadedCompanionFile(
+                    sessionId = finishPayload.string("sessionId") ?: assignedSession,
+                    path = path,
+                    name = finishPayload.string("name") ?: fileName,
+                    size = finishPayload["size"]?.jsonPrimitive?.longOrNull ?: size,
+                ),
+            )
+        } catch (t: Throwable) {
+            abortQuietly()
+            AnyaResult.Failure(AnyaError.Unknown(t.message ?: "upload failed", t))
+        }
     }
 
     override suspend fun persistAttachCatalog(

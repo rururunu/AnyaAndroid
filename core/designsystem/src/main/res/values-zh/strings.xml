@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="pull_refresh_hint">下拉刷新</string>
+    <string name="pull_refreshing">正在刷新…</string>
+    <string name="loading_please_wait">请稍等，正在为您准备……</string>
+</resources>

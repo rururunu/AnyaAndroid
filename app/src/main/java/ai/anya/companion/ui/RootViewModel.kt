@@ -21,7 +21,7 @@ data class RootUiState(
 
 @HiltViewModel
 class RootViewModel @Inject constructor(
-    connectionRepository: ConnectionRepository,
+    private val connectionRepository: ConnectionRepository,
 ) : ViewModel() {
     val hasCredential: StateFlow<Boolean> = connectionRepository.credential
         .map { it != null }
@@ -43,4 +43,8 @@ class RootViewModel @Inject constructor(
             bootConnecting = bootConnecting,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, RootUiState())
+
+    fun onBootConnectTimedOut() {
+        connectionRepository.abandonUnreachableBoot()
+    }
 }

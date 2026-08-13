@@ -16,6 +16,9 @@ public data class PairingPayload(
     public val pairingToken: String,
     public val deviceName: String? = null,
     public val scheme: String = "wss",
+    /** Optional same-LAN endpoint advertised alongside a public tunnel host. */
+    public val lanHost: String? = null,
+    public val lanPort: Int? = null,
 )
 
 @Serializable
@@ -26,7 +29,50 @@ public data class DeviceCredential(
     public val port: Int,
     public val scheme: String = "wss",
     public val pairedAtEpochMs: Long,
-)
+    /** Prefer this LAN endpoint when reachable (same Wi-Fi as desktop). */
+    public val lanHost: String? = null,
+    public val lanPort: Int? = null,
+    /** Last endpoint that completed hello.ok — tried first on reconnect. */
+    public val lastGoodHost: String? = null,
+    public val lastGoodPort: Int? = null,
+    public val lastGoodScheme: String? = null,
+) {
+    public fun endpointKey(): String = "$scheme://$host:$port"
+
+    public fun lastGoodEndpointKey(): String? {
+        val host = lastGoodHost?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val scheme = lastGoodScheme?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val port = lastGoodPort?.takeIf { it in 1..65535 } ?: return null
+        return "$scheme://$host:$port"
+    }
+
+    /** Ordered connect candidates: LAN first (ws), then the primary public/LAN host. */
+    public fun connectCandidates(): List<DeviceCredential> {
+        val primary = takeUnless { isLoopbackLanHost(host) }
+        val lan = lanHost?.trim()?.takeIf { it.isNotEmpty() }?.let { host ->
+            // Loopback is the desktop itself — on the phone it is never the gateway.
+            if (isLoopbackLanHost(host)) return@let null
+            val port = lanPort?.takeIf { it in 1..65535 } ?: this.port
+            // Skip a duplicate of the primary endpoint.
+            if (primary != null && host == primary.host && port == primary.port && primary.scheme == "ws") {
+                null
+            } else {
+                copy(host = host, port = port, scheme = "ws")
+            }
+        }
+        return listOfNotNull(lan, primary)
+    }
+}
+
+internal fun isLoopbackLanHost(host: String): Boolean {
+    val h = host.trim().trimStart('[').trimEnd(']').trimEnd('.').lowercase()
+    return h == "localhost" ||
+        h == "::1" ||
+        h == "0.0.0.0" ||
+        h.startsWith("127.") ||
+        h == "::ffff:127.0.0.1" ||
+        h.endsWith("127.0.0.1")
+}
 
 @Serializable
 public sealed class ClientMessage {
@@ -68,6 +114,13 @@ public sealed class ClientMessage {
     @Serializable
     @SerialName("session.history")
     public data class SessionHistory(
+        public val requestId: String,
+        public val sessionId: String,
+    ) : ClientMessage()
+
+    @Serializable
+    @SerialName("session.delete")
+    public data class SessionDelete(
         public val requestId: String,
         public val sessionId: String,
     ) : ClientMessage()
@@ -140,6 +193,14 @@ public sealed class ClientMessage {
         public val requestId: String,
         public val path: String,
         public val maxBytes: Int = 200_000,
+        public val sessionId: String? = null,
+        public val workspaceId: String? = null,
+        /** "text" (default) or "download" (one base64 slice; loop until eof). */
+        public val mode: String? = null,
+        /** Download-mode byte offset; each RPC returns one slice. */
+        public val offset: Long? = null,
+        /** Requested slice length; desktop caps at 512KB. */
+        public val length: Long? = null,
     ) : ClientMessage()
 
     @Serializable
@@ -160,6 +221,40 @@ public sealed class ClientMessage {
     @SerialName("mcp.list")
     public data class McpList(
         public val requestId: String,
+    ) : ClientMessage()
+
+    @Serializable
+    @SerialName("file.upload.begin")
+    public data class FileUploadBegin(
+        public val requestId: String,
+        public val sessionId: String? = null,
+        public val workspaceId: String? = null,
+        public val fileName: String,
+        public val size: Long,
+        public val mime: String? = null,
+    ) : ClientMessage()
+
+    @Serializable
+    @SerialName("file.upload.chunk")
+    public data class FileUploadChunk(
+        public val requestId: String,
+        public val uploadId: String,
+        public val offset: Long,
+        public val dataBase64: String,
+    ) : ClientMessage()
+
+    @Serializable
+    @SerialName("file.upload.finish")
+    public data class FileUploadFinish(
+        public val requestId: String,
+        public val uploadId: String,
+    ) : ClientMessage()
+
+    @Serializable
+    @SerialName("file.upload.abort")
+    public data class FileUploadAbort(
+        public val requestId: String,
+        public val uploadId: String,
     ) : ClientMessage()
 
     public companion object {

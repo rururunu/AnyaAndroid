@@ -30,8 +30,11 @@ build-log.txt
 
 # Signing
 *.jks
+*.p12
 *.keystore
 !debug.keystore
+keystore.properties
+keystore/
 
 # Logs
 *.log

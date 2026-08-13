@@ -1,7 +1,10 @@
 package ai.anya.companion.feature.sessions
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,16 +15,19 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.ExpandMore
@@ -30,19 +36,21 @@ import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import ai.anya.companion.core.designsystem.component.AnyaInlineLoadingMark
 import ai.anya.companion.core.designsystem.component.AnyaPullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -52,7 +60,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -60,7 +70,10 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ai.anya.companion.core.designsystem.component.AnyaEmptyState
+import ai.anya.companion.core.designsystem.component.AnyaPrimaryButton
+import ai.anya.companion.core.designsystem.component.AnyaSecondaryButton
 import ai.anya.companion.core.designsystem.component.AnyaSegmentedControl
+import ai.anya.companion.core.designsystem.haptic.rememberAnyaHaptics
 import ai.anya.companion.core.designsystem.theme.AnyaColors
 import ai.anya.companion.core.designsystem.theme.AnyaSpace
 import ai.anya.companion.core.model.session.AgentRunState
@@ -87,6 +100,7 @@ public fun SessionsRoute(
         onOpenSession = onOpenSession,
         onToggleWorkspace = viewModel::toggleWorkspace,
         onRefresh = viewModel::refresh,
+        onDeleteSession = viewModel::deleteSession,
     )
 }
 
@@ -98,7 +112,10 @@ public fun SessionsSegmentHeader(
     selectedProgress: Float? = null,
 ) {
     AnyaSegmentedControl(
-        options = listOf("随问", "工作区"),
+        options = listOf(
+            stringResource(R.string.sessions_ask),
+            stringResource(R.string.sessions_workspace),
+        ),
         selectedIndex = selectedIndex.coerceIn(0, 1),
         selectedProgress = selectedProgress,
         onSelect = onSegmentSelect,
@@ -116,7 +133,9 @@ public fun SessionsAskContent(
     onOpenSession: (String) -> Unit,
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
+    onDeleteSession: ((String) -> Unit)? = null,
 ) {
+    var pendingDelete by remember { mutableStateOf<ChatSessionSummary?>(null) }
     AnyaPullToRefreshBox(
         isRefreshing = state.isRefreshing,
         onRefresh = onRefresh,
@@ -127,6 +146,17 @@ public fun SessionsAskContent(
         QuickAskPane(
             sessions = state.quickAskSessions,
             onOpenSession = onOpenSession,
+            onLongPressSession = onDeleteSession?.let { { session -> pendingDelete = session } },
+        )
+    }
+    pendingDelete?.let { session ->
+        SessionDeleteConfirmSheet(
+            session = session,
+            onConfirm = {
+                pendingDelete = null
+                onDeleteSession?.invoke(session.id)
+            },
+            onDismiss = { pendingDelete = null },
         )
     }
 }
@@ -139,7 +169,10 @@ public fun SessionsWorkspaceContent(
     onOpenSession: (String) -> Unit,
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
+    onDeleteSession: ((String) -> Unit)? = null,
+    onNewSessionInWorkspace: ((String) -> Unit)? = null,
 ) {
+    var pendingDelete by remember { mutableStateOf<ChatSessionSummary?>(null) }
     AnyaPullToRefreshBox(
         isRefreshing = state.isRefreshing,
         onRefresh = onRefresh,
@@ -152,6 +185,18 @@ public fun SessionsWorkspaceContent(
             expandedIds = state.expandedWorkspaceIds,
             onToggleWorkspace = onToggleWorkspace,
             onOpenSession = onOpenSession,
+            onLongPressSession = onDeleteSession?.let { { session -> pendingDelete = session } },
+            onNewSessionInWorkspace = onNewSessionInWorkspace,
+        )
+    }
+    pendingDelete?.let { session ->
+        SessionDeleteConfirmSheet(
+            session = session,
+            onConfirm = {
+                pendingDelete = null
+                onDeleteSession?.invoke(session.id)
+            },
+            onDismiss = { pendingDelete = null },
         )
     }
 }
@@ -164,6 +209,8 @@ public fun SessionsTabContent(
     onOpenSession: (String) -> Unit,
     onToggleWorkspace: (String) -> Unit,
     onRefresh: () -> Unit,
+    onDeleteSession: ((String) -> Unit)? = null,
+    onNewSessionInWorkspace: ((String) -> Unit)? = null,
 ) {
     val segment = segmentIndex.coerceIn(0, 1)
     Column(modifier = Modifier.fillMaxSize()) {
@@ -176,13 +223,81 @@ public fun SessionsTabContent(
                 state = state,
                 onOpenSession = onOpenSession,
                 onRefresh = onRefresh,
+                onDeleteSession = onDeleteSession,
             )
             else -> SessionsWorkspaceContent(
                 state = state,
                 onToggleWorkspace = onToggleWorkspace,
                 onOpenSession = onOpenSession,
                 onRefresh = onRefresh,
+                onDeleteSession = onDeleteSession,
+                onNewSessionInWorkspace = onNewSessionInWorkspace,
             )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SessionDeleteConfirmSheet(
+    session: ChatSessionSummary,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val haptics = rememberAnyaHaptics()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.background,
+        tonalElevation = 0.dp,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AnyaSpace.Screen)
+                .padding(bottom = AnyaSpace.Xxl),
+            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.DeleteOutline,
+                    contentDescription = null,
+                    tint = AnyaColors.Danger,
+                    modifier = Modifier.size(22.dp),
+                )
+                Text(
+                    text = stringResource(R.string.sessions_delete_title),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            Text(
+                text = stringResource(
+                    R.string.sessions_delete_body,
+                    session.title.ifBlank { stringResource(R.string.sessions_delete_untitled) },
+                ),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            AnyaPrimaryButton(
+                text = stringResource(R.string.sessions_delete_confirm),
+                onClick = {
+                    haptics.confirm()
+                    onConfirm()
+                },
+            )
+            AnyaSecondaryButton(
+                text = stringResource(R.string.sessions_delete_cancel),
+                onClick = {
+                    haptics.tick()
+                    onDismiss()
+                },
+            )
+            Spacer(modifier = Modifier.height(AnyaSpace.Sm))
         }
     }
 }
@@ -191,23 +306,29 @@ public fun SessionsTabContent(
 private fun QuickAskPane(
     sessions: List<ChatSessionSummary>,
     onOpenSession: (String) -> Unit,
+    onLongPressSession: ((ChatSessionSummary) -> Unit)? = null,
 ) {
     if (sessions.isEmpty()) {
         AnyaEmptyState(
             icon = Icons.Outlined.ChatBubbleOutline,
-            title = "暂无随问对话",
-            subtitle = "桌面端新建随问后会同步到这里",
+            title = stringResource(R.string.sessions_ask_empty_title),
+            subtitle = stringResource(R.string.sessions_ask_empty_subtitle),
             modifier = Modifier.fillMaxSize(),
         )
         return
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = AnyaSpace.Xxl),
+        // Leave room for the circular new-chat FAB above the bottom nav.
+        contentPadding = PaddingValues(bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
     ) {
         items(sessions, key = ChatSessionSummary::id) { session ->
-            SessionCard(session = session, onClick = { onOpenSession(session.id) })
+            SessionCard(
+                session = session,
+                onClick = { onOpenSession(session.id) },
+                onLongClick = onLongPressSession?.let { { it(session) } },
+            )
         }
     }
 }
@@ -218,19 +339,21 @@ private fun WorkspacePane(
     expandedIds: Set<String>,
     onToggleWorkspace: (String) -> Unit,
     onOpenSession: (String) -> Unit,
+    onLongPressSession: ((ChatSessionSummary) -> Unit)? = null,
+    onNewSessionInWorkspace: ((String) -> Unit)? = null,
 ) {
     if (groups.isEmpty()) {
         AnyaEmptyState(
             icon = Icons.Outlined.FolderOpen,
-            title = "暂无工作区",
-            subtitle = "桌面端添加工作区后会显示在这里",
+            title = stringResource(R.string.sessions_workspace_none_title),
+            subtitle = stringResource(R.string.sessions_workspace_none_subtitle),
             modifier = Modifier.fillMaxSize(),
         )
         return
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = AnyaSpace.Xxl),
+        contentPadding = PaddingValues(bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
     ) {
         groups.forEach { group ->
@@ -240,13 +363,16 @@ private fun WorkspacePane(
                     count = group.sessions.size,
                     expanded = group.workspace.id in expandedIds,
                     onToggle = { onToggleWorkspace(group.workspace.id) },
+                    onNewSession = onNewSessionInWorkspace?.let {
+                        { it(group.workspace.id) }
+                    },
                 )
             }
             if (group.workspace.id in expandedIds) {
                 if (group.sessions.isEmpty()) {
                     item(key = "empty-${group.workspace.id}") {
                         Text(
-                            text = "此工作区还没有对话",
+                            text = stringResource(R.string.sessions_workspace_empty),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(
@@ -261,6 +387,7 @@ private fun WorkspacePane(
                             session = session,
                             onClick = { onOpenSession(session.id) },
                             indented = true,
+                            onLongClick = onLongPressSession?.let { { it(session) } },
                         )
                     }
                 }
@@ -275,14 +402,16 @@ private fun WorkspaceHeader(
     count: Int,
     expanded: Boolean,
     onToggle: () -> Unit,
+    onNewSession: (() -> Unit)? = null,
 ) {
+    val haptics = rememberAnyaHaptics()
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(AnyaSpace.ControlRadius))
             .background(MaterialTheme.colorScheme.surface)
             .clickable(onClick = onToggle)
-            .padding(horizontal = AnyaSpace.Md, vertical = AnyaSpace.Md),
+            .padding(horizontal = AnyaSpace.Md, vertical = AnyaSpace.Sm),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
     ) {
@@ -311,22 +440,49 @@ private fun WorkspaceHeader(
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        if (onNewSession != null) {
+            IconButton(
+                onClick = {
+                    haptics.buttonPress()
+                    onNewSession()
+                },
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Add,
+                    contentDescription = stringResource(R.string.sessions_new_in_workspace),
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SessionCard(
     session: ChatSessionSummary,
     onClick: () -> Unit,
     indented: Boolean = false,
+    onLongClick: (() -> Unit)? = null,
 ) {
+    val haptics = rememberAnyaHaptics()
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(start = if (indented) AnyaSpace.Lg else 0.dp)
             .clip(RoundedCornerShape(AnyaSpace.CardRadius))
             .background(MaterialTheme.colorScheme.surface)
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick?.let {
+                    {
+                        haptics.buttonPress()
+                        it()
+                    }
+                },
+            )
             .padding(horizontal = AnyaSpace.Lg, vertical = AnyaSpace.Md),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
@@ -336,7 +492,7 @@ private fun SessionCard(
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Text(
-                text = session.title.ifBlank { "新对话" },
+                text = session.title.ifBlank { stringResource(R.string.sessions_delete_untitled) },
                 style = MaterialTheme.typography.titleMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -392,12 +548,13 @@ private fun SessionStatusIcon(runState: AgentRunState) {
     }
 }
 
+@Composable
 private fun statusLabel(runState: AgentRunState): String = when (runState) {
-    AgentRunState.Idle -> "空闲"
-    AgentRunState.Streaming -> "正在运行"
-    AgentRunState.WaitingApproval -> "待审批"
-    AgentRunState.WaitingAskUser -> "等待回答"
-    AgentRunState.Error -> "出错"
+    AgentRunState.Idle -> stringResource(R.string.sessions_run_idle)
+    AgentRunState.Streaming -> stringResource(R.string.sessions_run_streaming)
+    AgentRunState.WaitingApproval -> stringResource(R.string.sessions_run_waiting_approval)
+    AgentRunState.WaitingAskUser -> stringResource(R.string.sessions_run_waiting_ask)
+    AgentRunState.Error -> stringResource(R.string.sessions_run_error)
 }
 
 @Composable
@@ -419,7 +576,12 @@ private fun formatSessionTime(epochMs: Long): String {
             SimpleDateFormat("HH:mm", Locale.getDefault()).format(date)
         }
         now.get(Calendar.YEAR) == target.get(Calendar.YEAR) -> {
-            SimpleDateFormat("M月d日 HH:mm", Locale.getDefault()).format(date)
+            val pattern = if (Locale.getDefault().language.startsWith("zh")) {
+                "M月d日 HH:mm"
+            } else {
+                "MMM d HH:mm"
+            }
+            SimpleDateFormat(pattern, Locale.getDefault()).format(date)
         }
         else -> SimpleDateFormat("yyyy/M/d", Locale.getDefault()).format(date)
     }
@@ -434,6 +596,7 @@ public fun SessionSearchPanel(
 ) {
     val focusRequester = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
+    val haptic = rememberAnyaHaptics()
     LaunchedEffect(Unit) {
         delay(80)
         focusRequester.requestFocus()
@@ -443,72 +606,39 @@ public fun SessionSearchPanel(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 420.dp)
             .padding(horizontal = AnyaSpace.Screen)
-            .padding(bottom = AnyaSpace.Xxl),
+            .navigationBarsPadding()
+            .padding(bottom = AnyaSpace.Md),
         verticalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
     ) {
-        Text(
-            text = "搜索对话",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.SemiBold,
-        )
-        OutlinedTextField(
-            value = state.query,
-            onValueChange = onQueryChange,
-            modifier = Modifier
-                .fillMaxWidth()
-                .focusRequester(focusRequester),
-            placeholder = { Text("标题或消息内容") },
-            singleLine = true,
-            leadingIcon = {
-                Icon(
-                    imageVector = Icons.Rounded.Search,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            },
-            trailingIcon = {
-                when {
-                    state.isSearchingMessages -> {
-                        Box(modifier = Modifier.padding(end = 10.dp)) {
-                            AnyaInlineLoadingMark(size = 18.dp)
-                        }
-                    }
-                    state.query.isNotEmpty() -> {
-                        IconButton(onClick = { onQueryChange("") }) {
-                            Icon(
-                                imageVector = Icons.Rounded.Clear,
-                                contentDescription = "清除",
-                            )
-                        }
-                    }
-                }
-            },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
-            shape = RoundedCornerShape(AnyaSpace.ControlRadius),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = MaterialTheme.colorScheme.primary,
-                unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                focusedContainerColor = MaterialTheme.colorScheme.background,
-                unfocusedContainerColor = MaterialTheme.colorScheme.background,
-            ),
+        Column {
+            Text(
+                text = stringResource(R.string.sessions_search),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = stringResource(R.string.sessions_search_help),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+        SearchQueryField(
+            query = state.query,
+            onQueryChange = onQueryChange,
+            isSearching = state.isSearchingMessages,
+            focusRequester = focusRequester,
+            onSearch = { keyboard?.hide() },
         )
 
         when {
-            state.query.isBlank() -> {
-                Text(
-                    text = "可按对话标题搜索，也可按对话内消息内容找到对应会话。",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            state.query.isBlank() -> Unit
             state.results.isEmpty() && !state.isSearchingMessages -> {
                 AnyaEmptyState(
                     icon = Icons.Rounded.Search,
-                    title = "没有匹配的对话",
-                    subtitle = "试试别的关键词",
+                    title = stringResource(R.string.sessions_search_empty_title),
+                    subtitle = stringResource(R.string.sessions_search_empty_subtitle),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(vertical = AnyaSpace.Xl),
@@ -518,31 +648,108 @@ public fun SessionSearchPanel(
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f, fill = false)
                         .heightIn(max = 480.dp),
                     verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
-                    contentPadding = PaddingValues(bottom = AnyaSpace.Lg),
+                    contentPadding = PaddingValues(bottom = AnyaSpace.Sm),
                 ) {
                     items(state.results, key = { "${it.matchKind}-${it.session.id}" }) { hit ->
                         SearchResultCard(
                             hit = hit,
-                            onClick = { onOpenSession(hit.session.id, hit.messageId) },
+                            onClick = {
+                                haptic.linearTick()
+                                onOpenSession(hit.session.id, hit.messageId)
+                            },
                         )
                     }
                     if (state.isSearchingMessages) {
                         item(key = "searching") {
-                            Text(
-                                text = "正在搜索消息…",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(vertical = AnyaSpace.Sm),
-                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = AnyaSpace.Sm),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
+                            ) {
+                                AnyaInlineLoadingMark(size = 14.dp)
+                                Text(
+                                    text = stringResource(R.string.sessions_searching_messages),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                     }
                 }
             }
         }
-        Spacer(modifier = Modifier.height(AnyaSpace.Sm))
+    }
+}
+
+@Composable
+private fun SearchQueryField(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    isSearching: Boolean,
+    focusRequester: FocusRequester,
+    onSearch: () -> Unit,
+) {
+    val dark = isSystemInDarkTheme()
+    val fill = if (dark) Color(0xFF2A2A2C) else Color(0xFFF2F2F2)
+    val placeholder = if (dark) Color(0xFF8E8E93) else Color(0xFF9A9A9A)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(AnyaSpace.ControlRadius))
+            .background(fill)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.Search,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        BasicTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            modifier = Modifier
+                .weight(1f)
+                .focusRequester(focusRequester),
+            singleLine = true,
+            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                color = MaterialTheme.colorScheme.onBackground,
+            ),
+            cursorBrush = SolidColor(MaterialTheme.colorScheme.onBackground),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { onSearch() }),
+            decorationBox = { inner ->
+                Box {
+                    if (query.isEmpty()) {
+                        Text(
+                            text = stringResource(R.string.sessions_search_hint),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = placeholder,
+                        )
+                    }
+                    inner()
+                }
+            },
+        )
+        when {
+            isSearching -> AnyaInlineLoadingMark(size = 16.dp)
+            query.isNotEmpty() -> {
+                Icon(
+                    imageVector = Icons.Rounded.Clear,
+                    contentDescription = stringResource(R.string.sessions_search_clear),
+                    modifier = Modifier
+                        .size(18.dp)
+                        .clickable { onQueryChange("") },
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 
@@ -552,8 +759,8 @@ private fun SearchResultCard(
     onClick: () -> Unit,
 ) {
     val matchLabel = when (hit.matchKind) {
-        SessionSearchMatchKind.Title -> "标题"
-        SessionSearchMatchKind.Message -> "消息"
+        SessionSearchMatchKind.Title -> stringResource(R.string.sessions_match_title)
+        SessionSearchMatchKind.Message -> stringResource(R.string.sessions_match_message)
     }
     Column(
         modifier = Modifier
@@ -564,29 +771,16 @@ private fun SearchResultCard(
             .padding(horizontal = AnyaSpace.Lg, vertical = AnyaSpace.Md),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = hit.session.title.ifBlank { "新对话" },
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                text = matchLabel,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(start = AnyaSpace.Sm),
-            )
-        }
+        Text(
+            text = hit.session.title.ifBlank { stringResource(R.string.sessions_delete_untitled) },
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
         if (hit.matchKind == SessionSearchMatchKind.Message && hit.snippet.isNotBlank()) {
             Text(
                 text = hit.snippet,
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
@@ -598,6 +792,16 @@ private fun SearchResultCard(
         ) {
             Text(
                 text = formatSessionTime(hit.session.updatedAtEpochMs),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "·",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = matchLabel,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

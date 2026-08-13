@@ -17,6 +17,7 @@ import ai.anya.companion.core.model.session.PlanTaskItem
 import ai.anya.companion.core.model.session.SessionCompose
 import ai.anya.companion.core.model.session.SessionSearchHit
 import ai.anya.companion.core.model.session.ToolApprovalMode
+import ai.anya.companion.core.model.workspace.DownloadedWorkspaceFile
 import ai.anya.companion.core.model.workspace.FileContent
 import ai.anya.companion.core.model.workspace.McpServerSummary
 import ai.anya.companion.core.model.workspace.SkillSummary
@@ -62,8 +63,17 @@ public class SendChatMessageUseCase @Inject constructor(
         toolApprovalMode: ToolApprovalMode? = null,
         chatModel: String? = null,
         chatModelProvider: String? = null,
+        workspaceId: String? = null,
     ): AnyaResult<String> =
-        sessionRepository.sendMessage(sessionId, message, chatMode, toolApprovalMode, chatModel, chatModelProvider)
+        sessionRepository.sendMessage(
+            sessionId,
+            message,
+            chatMode,
+            toolApprovalMode,
+            chatModel,
+            chatModelProvider,
+            workspaceId,
+        )
 }
 
 public class ObserveMessagesUseCase @Inject constructor(
@@ -78,6 +88,13 @@ public class LoadHistoryUseCase @Inject constructor(
 ) {
     public suspend operator fun invoke(sessionId: String): AnyaResult<List<ChatMessage>> =
         sessionRepository.loadHistory(sessionId)
+}
+
+public class DeleteSessionUseCase @Inject constructor(
+    private val sessionRepository: SessionRepository,
+) {
+    public suspend operator fun invoke(sessionId: String): AnyaResult<Unit> =
+        sessionRepository.deleteSession(sessionId)
 }
 
 public class FindSessionsByMessageUseCase @Inject constructor(
@@ -187,15 +204,25 @@ public class ReadWorkspaceFileUseCase @Inject constructor(
 public class RefreshAttachCatalogUseCase @Inject constructor(
     private val workspaceRepository: WorkspaceRepository,
 ) {
-    public suspend operator fun invoke(sessionId: String?): AttachCatalog {
-        val files = workspaceRepository.refreshFiles(sessionId)
+    public suspend operator fun invoke(
+        sessionId: String?,
+        workspaceId: String? = null,
+    ): AttachCatalog {
+        val files = workspaceRepository.refreshFiles(sessionId, workspaceId)
         val skills = workspaceRepository.refreshSkills()
         val mcp = workspaceRepository.refreshMcpServers()
         return AttachCatalog(
             files = when (files) {
                 is AnyaResult.Success -> files.data
-                is AnyaResult.Failure -> workspaceRepository.filesCatalog.value
-                    ?: WorkspaceFilesCatalog(error = errorMessage(files.error))
+                is AnyaResult.Failure -> if (workspaceId != null) {
+                    WorkspaceFilesCatalog(
+                        workspaceId = workspaceId,
+                        error = errorMessage(files.error),
+                    )
+                } else {
+                    workspaceRepository.filesCatalog.value
+                        ?: WorkspaceFilesCatalog(error = errorMessage(files.error))
+                }
             },
             skills = when (skills) {
                 is AnyaResult.Success -> skills.data
@@ -221,6 +248,51 @@ public class RefreshAttachCatalogUseCase @Inject constructor(
         is ai.anya.companion.core.common.result.AnyaError.NotPaired -> error.message
         is ai.anya.companion.core.common.result.AnyaError.Unknown -> error.message
     }
+}
+
+public class DownloadWorkspaceFileUseCase @Inject constructor(
+    private val workspaceRepository: WorkspaceRepository,
+) {
+    public suspend operator fun invoke(
+        path: String,
+        sessionId: String? = null,
+        workspaceId: String? = null,
+    ): AnyaResult<DownloadedWorkspaceFile> =
+        workspaceRepository.downloadFile(path, sessionId, workspaceId)
+}
+
+public class ExportCachedFileUseCase @Inject constructor(
+    private val workspaceRepository: WorkspaceRepository,
+) {
+    public suspend operator fun invoke(
+        localPath: String,
+        name: String,
+        mime: String,
+    ): AnyaResult<String> =
+        workspaceRepository.exportCachedFileToDownloads(localPath, name, mime)
+}
+
+public class UploadLocalFileUseCase @Inject constructor(
+    private val workspaceRepository: WorkspaceRepository,
+) {
+    public suspend operator fun invoke(
+        sessionId: String?,
+        workspaceId: String?,
+        fileName: String,
+        size: Long,
+        mime: String?,
+        input: java.io.InputStream,
+        onProgress: (written: Long, total: Long) -> Unit = { _, _ -> },
+    ): AnyaResult<ai.anya.companion.core.model.workspace.UploadedCompanionFile> =
+        workspaceRepository.uploadLocalFile(
+            sessionId,
+            workspaceId,
+            fileName,
+            size,
+            mime,
+            input,
+            onProgress,
+        )
 }
 
 public class LoadCachedAttachCatalogUseCase @Inject constructor(

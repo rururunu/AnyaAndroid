@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="pairing_title">Connect Anya</string>
+    <string name="pairing_subtitle">Open “Connect phone” on the desktop workbench and scan the QR code.</string>
+    <string name="pairing_top_subtitle">Scan or enter pairing details</string>
+    <string name="pairing_scan">Scan QR code</string>
+    <string name="pairing_scan_hint">Recommended · connects automatically after scan</string>
+    <string name="pairing_manual">Enter manually</string>
+    <string name="pairing_collapse">Collapse</string>
+    <string name="pairing_expand">Expand</string>
+    <string name="pairing_host">Host / public hostname</string>
+    <string name="pairing_port">Port</string>
+    <string name="pairing_token">Pairing token</string>
+    <string name="pairing_scheme">Protocol</string>
+    <string name="pairing_scheme_lan">LAN ws</string>
+    <string name="pairing_scheme_wan">Public wss</string>
+    <string name="pairing_scan_title">Scan pairing code</string>
+    <string name="pairing_scan_align">Point at the QR code in desktop “Connect phone”</string>
+    <string name="pairing_submit">Pair and connect</string>
+    <string name="pairing_submitting">Connecting…</string>
+    <string name="pairing_connecting_host">Connecting to %1$s…</string>
+    <string name="pairing_connecting">Pairing and connecting…</string>
+    <string name="pairing_close">Close</string>
+    <string name="pairing_torch_on">Turn flashlight on</string>
+    <string name="pairing_torch_off">Turn flashlight off</string>
+    <string name="pairing_camera_denied">Camera permission was denied. You can enter pairing details below.</string>
+    <string name="pairing_token_need_host">Pairing code recognized. Enter the host to connect.</string>
+    <string name="pairing_qr_unrecognized">Couldn’t read this QR code. Scan the pairing code in desktop “Connect phone”.</string>
+    <string name="pairing_recognized_connecting">Recognized %1$s, connecting…</string>
+    <string name="pairing_fill_required">Enter host, port, and pairing token</string>
+    <string name="pairing_error_timeout">Connection timed out. Make sure the desktop app is online and the public tunnel is on.</string>
+    <string name="pairing_error_rejected">Pairing was rejected. Refresh the QR code on desktop and try again.</string>
+    <string name="pairing_error_unreachable">Couldn’t reach the host. Check the network or hostname.</string>
+    <string name="pairing_error_generic">Couldn’t connect to the desktop app</string>
+    <string name="pairing_error_unauthorized">Pairing token is invalid or expired. Scan again.</string>
+    <string name="pairing_error_not_paired">Not paired</string>
+    <string name="pairing_error_protocol">Protocol error. Update the app and try again.</string>
+    <string name="pairing_error_unknown">Pairing failed. Please try again.</string>
+</resources>

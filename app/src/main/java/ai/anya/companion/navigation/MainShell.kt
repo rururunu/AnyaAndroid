@@ -1,6 +1,8 @@
 package ai.anya.companion.navigation
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -8,10 +10,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Inbox
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Inbox
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
@@ -28,16 +33,21 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import ai.anya.companion.R
 import androidx.compose.foundation.layout.padding as layoutPadding
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ai.anya.companion.core.designsystem.component.AnyaBottomNavBar
 import ai.anya.companion.core.designsystem.component.AnyaBottomNavItem
 import ai.anya.companion.core.designsystem.component.AnyaConnectionChip
+import ai.anya.companion.core.designsystem.component.AnyaFloatingActionButton
 import ai.anya.companion.core.designsystem.component.AnyaMetaRow
 import ai.anya.companion.core.designsystem.component.AnyaPrimaryButton
 import ai.anya.companion.core.designsystem.component.AnyaScreen
@@ -80,12 +90,6 @@ private object MainPage {
         else -> "settings"
     }
 
-    fun subtitle(page: Int): String = when (page) {
-        Approvals -> "收件"
-        Settings -> "设置"
-        else -> "对话"
-    }
-
     fun fromBottomNavId(id: String, currentPage: Int): Int = when (id) {
         "conversations" -> if (currentPage == Workspace) Workspace else Ask
         "approvals" -> Approvals
@@ -97,6 +101,10 @@ private object MainPage {
 @Composable
 fun MainRoute(
     onOpenSession: (sessionId: String, messageId: String?) -> Unit,
+    onNewSession: (workspaceId: String?) -> Unit,
+    onOpenConnectionSettings: () -> Unit,
+    onOpenGeneralSettings: () -> Unit,
+    onOpenAboutSettings: () -> Unit,
     onRePair: () -> Unit,
     sessionsViewModel: SessionsViewModel = hiltViewModel(),
     approvalViewModel: ApprovalViewModel = hiltViewModel(),
@@ -124,7 +132,11 @@ fun MainRoute(
     val selectedNavId = MainPage.bottomNavId(
         absolutePage.roundToInt().coerceIn(0, MainPage.Count - 1),
     )
-    val topSubtitle = MainPage.subtitle(currentPage)
+    val topSubtitle = when (currentPage) {
+        MainPage.Approvals -> stringResource(R.string.nav_subtitle_inbox)
+        MainPage.Settings -> stringResource(R.string.nav_subtitle_settings)
+        else -> stringResource(R.string.nav_subtitle_chats)
+    }
     val segmentProgress = absolutePage.coerceIn(0f, 1f)
     val showSegmentHeader = absolutePage < 2f
     val segmentHeaderAlpha = when {
@@ -142,11 +154,16 @@ fun MainRoute(
     val statusLabel = when (sessionsState.connectionState) {
         ConnectionState.Connected -> {
             val pending = sessionsState.pendingApprovals.size
-            if (pending > 0) "已连接 · $pending" else "已连接"
+            if (pending > 0) {
+                stringResource(R.string.status_connected_pending, pending)
+            } else {
+                stringResource(R.string.status_connected)
+            }
         }
-        ConnectionState.Connecting, ConnectionState.Reconnecting -> "连接中"
-        ConnectionState.Error -> "连接失败"
-        ConnectionState.Disconnected -> "未连接"
+        ConnectionState.Connecting, ConnectionState.Reconnecting ->
+            stringResource(R.string.status_connecting)
+        ConnectionState.Error -> stringResource(R.string.status_error)
+        ConnectionState.Disconnected -> stringResource(R.string.status_disconnected)
     }
 
     LaunchedEffect(pagerState) {
@@ -196,7 +213,7 @@ fun MainRoute(
                     ) {
                         AnyaTopBarIconChip(
                             icon = Icons.Rounded.Search,
-                            contentDescription = "搜索对话",
+                            contentDescription = stringResource(R.string.nav_search_chats),
                             onClick = {
                                 haptics.buttonPress()
                                 showSearchPanel = true
@@ -219,22 +236,23 @@ fun MainRoute(
                 items = listOf(
                     AnyaBottomNavItem(
                         id = "conversations",
-                        label = "对话",
+                        label = stringResource(R.string.nav_conversations),
                         icon = AnyaIcons.ChatCircleOutline,
                         selectedIcon = AnyaIcons.ChatCircle,
                     ),
                     AnyaBottomNavItem(
                         id = "approvals",
-                        label = "收件",
+                        label = stringResource(R.string.nav_inbox),
                         icon = Icons.Outlined.Inbox,
                         selectedIcon = Icons.Rounded.Inbox,
                         badge = sessionsState.pendingApprovals.size,
                     ),
                     AnyaBottomNavItem(
                         id = "settings",
-                        label = "设置",
+                        label = stringResource(R.string.nav_settings),
                         icon = Icons.Rounded.Settings,
                         selectedIcon = Icons.Rounded.Settings,
+                        badge = if (settingsState.availableUpdateVersion != null) 1 else 0,
                     ),
                 ),
                 selectedId = selectedNavId,
@@ -242,6 +260,7 @@ fun MainRoute(
             )
         },
     ) {
+        Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Segment stays pinned; only the pager content below slides.
             if (showSegmentHeader) {
@@ -280,6 +299,7 @@ fun MainRoute(
                                 haptics.buttonPress()
                                 sessionsViewModel.refresh()
                             },
+                            onDeleteSession = sessionsViewModel::deleteSession,
                         )
                     }
                     MainPage.Workspace -> {
@@ -293,6 +313,11 @@ fun MainRoute(
                             onRefresh = {
                                 haptics.buttonPress()
                                 sessionsViewModel.refresh()
+                            },
+                            onDeleteSession = sessionsViewModel::deleteSession,
+                            onNewSessionInWorkspace = { workspaceId ->
+                                haptics.buttonPress()
+                                onNewSession(workspaceId)
                             },
                         )
                     }
@@ -308,16 +333,36 @@ fun MainRoute(
                     else -> {
                         SettingsTabContent(
                             state = settingsState,
-                            onDisconnect = settingsViewModel::disconnect,
-                            onConnect = settingsViewModel::connect,
-                            onUnpair = {
-                                settingsViewModel.unpair()
-                                onRePair()
+                            onOpenConnection = {
+                                haptics.linearTick()
+                                onOpenConnectionSettings()
+                            },
+                            onOpenGeneral = {
+                                haptics.linearTick()
+                                onOpenGeneralSettings()
+                            },
+                            onOpenAbout = {
+                                haptics.linearTick()
+                                onOpenAboutSettings()
                             },
                         )
                     }
                 }
             }
+        }
+
+        // Circular new-chat FAB: 随问 only — workspaces create sessions from the row +.
+        if (absolutePage < 1f) {
+            AnyaFloatingActionButton(
+                onClick = { onNewSession(null) },
+                icon = Icons.Rounded.Add,
+                contentDescription = stringResource(R.string.nav_new_chat),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .layoutPadding(end = AnyaSpace.Screen, bottom = AnyaSpace.Xl)
+                    .graphicsLayer { alpha = (1f - absolutePage).coerceIn(0f, 1f) },
+            )
+        }
         }
     }
 
@@ -330,6 +375,7 @@ fun MainRoute(
             sheetState = searchSheetState,
             containerColor = MaterialTheme.colorScheme.background,
             tonalElevation = 0.dp,
+            dragHandle = { AnyaSheetDragHandle() },
         ) {
             SessionSearchPanel(
                 state = searchState,
@@ -351,6 +397,7 @@ fun MainRoute(
             sheetState = sheetState,
             containerColor = MaterialTheme.colorScheme.background,
             tonalElevation = 0.dp,
+            dragHandle = { AnyaSheetDragHandle() },
         ) {
             ConnectionPanel(
                 connectionState = sessionsState.connectionState,
@@ -378,6 +425,17 @@ fun MainRoute(
             )
         }
     }
+}
+
+@Composable
+private fun AnyaSheetDragHandle() {
+    Box(
+        modifier = Modifier
+            .padding(top = 10.dp, bottom = 6.dp)
+            .size(width = 36.dp, height = 4.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.18f)),
+    )
 }
 
 @Composable
@@ -410,12 +468,12 @@ private fun ConnectionPanel(
         verticalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
     ) {
         Text(
-            text = "连接状态",
+            text = stringResource(R.string.connection_panel_title),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
         )
         Text(
-            text = "查看桌面端连接与配对信息",
+            text = stringResource(R.string.connection_panel_subtitle),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -424,36 +482,36 @@ private fun ConnectionPanel(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text(text = "状态", style = MaterialTheme.typography.bodyMedium)
+                Text(text = stringResource(R.string.connection_panel_status), style = MaterialTheme.typography.bodyMedium)
                 AnyaConnectionChip(label = statusLabel, tone = tone)
             }
             if (credential == null) {
                 Text(
-                    text = "尚未配对桌面端，请先扫码或输入配对码。",
+                    text = stringResource(R.string.connection_panel_not_paired),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
-                AnyaMetaRow(label = "主机", value = credential.host)
-                AnyaMetaRow(label = "端口", value = credential.port.toString())
-                AnyaMetaRow(label = "设备", value = credential.deviceId.take(8) + "…")
+                AnyaMetaRow(label = stringResource(R.string.connection_panel_host), value = credential.host)
+                AnyaMetaRow(label = stringResource(R.string.connection_panel_port), value = credential.port.toString())
+                AnyaMetaRow(label = stringResource(R.string.connection_panel_device), value = credential.deviceId.take(8) + "…")
             }
         }
         if (pendingCount > 0) {
             AnyaSecondaryButton(
-                text = "查看收件（$pendingCount）",
+                text = stringResource(R.string.connection_panel_view_inbox, pendingCount),
                 onClick = onOpenInbox,
             )
         }
         when {
-            canConnect -> AnyaPrimaryButton(text = "重新连接", onClick = onConnect)
-            canDisconnect -> AnyaPrimaryButton(text = "断开连接", onClick = onDisconnect)
-            credential == null -> AnyaPrimaryButton(text = "去配对", onClick = onGoPair)
+            canConnect -> AnyaPrimaryButton(text = stringResource(R.string.connection_panel_reconnect), onClick = onConnect)
+            canDisconnect -> AnyaPrimaryButton(text = stringResource(R.string.connection_panel_disconnect), onClick = onDisconnect)
+            credential == null -> AnyaPrimaryButton(text = stringResource(R.string.connection_panel_go_pair), onClick = onGoPair)
         }
         if (credential != null) {
-            AnyaSecondaryButton(text = "解除配对", onClick = onUnpair)
+            AnyaSecondaryButton(text = stringResource(R.string.connection_panel_unpair), onClick = onUnpair)
         }
-        AnyaSecondaryButton(text = "关闭", onClick = onDismiss)
+        AnyaSecondaryButton(text = stringResource(R.string.connection_panel_close), onClick = onDismiss)
         Spacer(modifier = Modifier.height(AnyaSpace.Sm))
     }
 }

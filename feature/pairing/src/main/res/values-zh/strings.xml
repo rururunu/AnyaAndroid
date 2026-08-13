@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="pairing_title">连接 Anya</string>
+    <string name="pairing_subtitle">在桌面工作台打开「连接手机」，扫描二维码即可连接。</string>
+    <string name="pairing_top_subtitle">扫码或手动填写配对信息</string>
+    <string name="pairing_scan">扫描二维码</string>
+    <string name="pairing_scan_hint">推荐 · 识别后自动连接</string>
+    <string name="pairing_manual">手动填写</string>
+    <string name="pairing_collapse">收起</string>
+    <string name="pairing_expand">展开</string>
+    <string name="pairing_host">主机 / 公网域名</string>
+    <string name="pairing_port">端口</string>
+    <string name="pairing_token">配对令牌</string>
+    <string name="pairing_scheme">协议</string>
+    <string name="pairing_scheme_lan">局域网 ws</string>
+    <string name="pairing_scheme_wan">公网 wss</string>
+    <string name="pairing_scan_title">扫描配对码</string>
+    <string name="pairing_scan_align">对准桌面「连接手机」里的二维码</string>
+    <string name="pairing_submit">配对并连接</string>
+    <string name="pairing_submitting">连接中…</string>
+    <string name="pairing_connecting_host">正在连接 %1$s…</string>
+    <string name="pairing_connecting">正在配对并连接…</string>
+    <string name="pairing_close">关闭</string>
+    <string name="pairing_torch_on">打开手电筒</string>
+    <string name="pairing_torch_off">关闭手电筒</string>
+    <string name="pairing_camera_denied">未授予相机权限，可在下方手动填写配对信息</string>
+    <string name="pairing_token_need_host">已识别配对码，请填写主机后连接</string>
+    <string name="pairing_qr_unrecognized">无法识别该二维码，请扫描桌面「连接手机」中的配对码</string>
+    <string name="pairing_recognized_connecting">已识别 %1$s，正在连接…</string>
+    <string name="pairing_fill_required">请填写主机、端口与配对令牌</string>
+    <string name="pairing_error_timeout">连接超时，请确认桌面端在线，且公网隧道已开启</string>
+    <string name="pairing_error_rejected">配对被拒绝，请在桌面刷新二维码后重试</string>
+    <string name="pairing_error_unreachable">无法连上主机，请检查网络或 Hostname</string>
+    <string name="pairing_error_generic">无法连接桌面端</string>
+    <string name="pairing_error_unauthorized">配对令牌无效或已过期，请重新扫码</string>
+    <string name="pairing_error_not_paired">尚未配对</string>
+    <string name="pairing_error_protocol">协议错误，请更新应用后重试</string>
+    <string name="pairing_error_unknown">配对失败，请重试</string>
+</resources>

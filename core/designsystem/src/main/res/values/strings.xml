@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="pull_refresh_hint">Pull to refresh</string>
+    <string name="pull_refreshing">Refreshing…</string>
+    <string name="loading_please_wait">Please wait…</string>
+</resources>

@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,6 +26,8 @@ import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.QrCode2
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -41,6 +44,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -74,6 +78,7 @@ public fun PairingRoute(
         onHostChange = viewModel::onHostChange,
         onPortChange = viewModel::onPortChange,
         onTokenChange = viewModel::onTokenChange,
+        onSchemeChange = viewModel::onSchemeChange,
         onScanResult = { viewModel.applyPairLink(it, autoSubmit = true) },
         onSubmit = viewModel::submit,
         onCameraDenied = viewModel::onCameraPermissionDenied,
@@ -86,6 +91,7 @@ public fun PairingScreen(
     onHostChange: (String) -> Unit,
     onPortChange: (String) -> Unit,
     onTokenChange: (String) -> Unit,
+    onSchemeChange: (String) -> Unit,
     onScanResult: (String) -> Unit,
     onSubmit: () -> Unit,
     onCameraDenied: () -> Unit = {},
@@ -115,7 +121,7 @@ public fun PairingScreen(
         if (!state.info.isNullOrBlank() && state.error == null) haptic.tick()
     }
     LaunchedEffect(state.token, state.host, state.info) {
-        if (state.token.isNotBlank() && (state.host.isBlank() || state.info?.contains("主机") == true)) {
+        if (state.token.isNotBlank() && state.host.isBlank()) {
             manualOpen = true
         }
     }
@@ -135,8 +141,8 @@ public fun PairingScreen(
     AnyaScreen(
         topBar = {
             AnyaTopBar(
-                title = "连接桌面",
-                subtitle = "扫码或手动填写配对信息",
+                title = stringResource(R.string.pairing_title),
+                subtitle = stringResource(R.string.pairing_top_subtitle),
                 showBrand = true,
             )
         },
@@ -151,12 +157,12 @@ public fun PairingScreen(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm)) {
                     Text(
-                        text = "配对手机",
+                        text = stringResource(R.string.pairing_title),
                         style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        text = "在桌面工作台打开「连接手机」，扫描二维码即可连接。",
+                        text = stringResource(R.string.pairing_subtitle),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -206,12 +212,12 @@ public fun PairingScreen(
                             verticalArrangement = Arrangement.spacedBy(2.dp),
                         ) {
                             Text(
-                                text = "扫描二维码",
+                                text = stringResource(R.string.pairing_scan),
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Text(
-                                text = "推荐 · 识别后自动连接",
+                                text = stringResource(R.string.pairing_scan_hint),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.background.copy(alpha = 0.72f),
                             )
@@ -245,7 +251,7 @@ public fun PairingScreen(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
-                            text = "手动填写",
+                            text = stringResource(R.string.pairing_manual),
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Medium,
                             modifier = Modifier.weight(1f),
@@ -256,7 +262,11 @@ public fun PairingScreen(
                             } else {
                                 Icons.Rounded.ExpandMore
                             },
-                            contentDescription = if (manualOpen) "收起" else "展开",
+                            contentDescription = if (manualOpen) {
+                                stringResource(R.string.pairing_collapse)
+                            } else {
+                                stringResource(R.string.pairing_expand)
+                            },
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -267,20 +277,29 @@ public fun PairingScreen(
                         AnyaField(
                             value = state.host,
                             onValueChange = onHostChange,
-                            label = "主机 / 公网域名",
+                            label = stringResource(R.string.pairing_host),
                         )
                         AnyaField(
                             value = state.port,
                             onValueChange = onPortChange,
-                            label = "端口",
+                            label = stringResource(R.string.pairing_port),
+                        )
+                        SchemePicker(
+                            scheme = state.scheme,
+                            onSchemeChange = onSchemeChange,
+                            enabled = !state.isSubmitting,
                         )
                         AnyaField(
                             value = state.token,
                             onValueChange = onTokenChange,
-                            label = "配对令牌",
+                            label = stringResource(R.string.pairing_token),
                         )
                         AnyaPrimaryButton(
-                            text = if (state.isSubmitting) "连接中…" else "配对并连接",
+                            text = if (state.isSubmitting) {
+                                stringResource(R.string.pairing_submitting)
+                            } else {
+                                stringResource(R.string.pairing_submit)
+                            },
                             onClick = {
                                 haptic.tick()
                                 onSubmit()
@@ -311,9 +330,9 @@ public fun PairingScreen(
                         )
                         Text(
                             text = if (state.host.isNotBlank()) {
-                                "正在连接 ${state.host}…"
+                                stringResource(R.string.pairing_connecting_host, state.host)
                             } else {
-                                "正在配对并连接…"
+                                stringResource(R.string.pairing_connecting)
                             },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -347,6 +366,47 @@ private fun FeedbackBanner(text: String, danger: Boolean) {
                 .fillMaxWidth()
                 .padding(horizontal = 14.dp, vertical = 12.dp),
         )
+    }
+}
+
+@Composable
+private fun SchemePicker(
+    scheme: String,
+    onSchemeChange: (String) -> Unit,
+    enabled: Boolean,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm)) {
+        Text(
+            text = stringResource(R.string.pairing_scheme),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
+        ) {
+            listOf(
+                "ws" to stringResource(R.string.pairing_scheme_lan),
+                "wss" to stringResource(R.string.pairing_scheme_wan),
+            ).forEach { (value, label) ->
+                val selected = scheme.equals(value, ignoreCase = true)
+                FilterChip(
+                    selected = selected,
+                    onClick = { onSchemeChange(value) },
+                    enabled = enabled,
+                    label = {
+                        Text(
+                            text = label,
+                            modifier = Modifier.widthIn(min = 72.dp),
+                        )
+                    },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.onBackground,
+                        selectedLabelColor = MaterialTheme.colorScheme.background,
+                    ),
+                )
+            }
+        }
     }
 }
 

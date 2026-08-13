@@ -8,6 +8,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,11 +27,15 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsBottomHeight
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -51,29 +56,36 @@ import androidx.compose.material.icons.automirrored.rounded.Assignment
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Stop
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.material.icons.rounded.UploadFile
+import ai.anya.companion.core.designsystem.component.AnyaLoadingIndicator
+import ai.anya.companion.core.designsystem.component.AnyaSegmentedControl
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.zIndex
 import ai.anya.companion.core.model.workspace.McpServerSummary
 import ai.anya.companion.core.model.workspace.SkillSummary
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import ai.anya.companion.core.designsystem.component.AnyaLoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -83,11 +95,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -98,10 +108,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import ai.anya.companion.core.designsystem.haptic.rememberAnyaHaptics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -114,16 +126,23 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ai.anya.companion.core.designsystem.component.AnyaChatContent
 import ai.anya.companion.core.designsystem.component.AnyaEmptyState
-import ai.anya.companion.core.designsystem.component.AnyaMessageNavRail
-import ai.anya.companion.core.designsystem.component.AnyaScreen
+import ai.anya.companion.core.designsystem.component.AnyaInlineLoadingMark
 import ai.anya.companion.core.designsystem.component.AnyaTopBarIconChip
 import ai.anya.companion.core.designsystem.icon.AnyaIcons
 import ai.anya.companion.core.designsystem.theme.AnyaSpace
+import dev.chrisbanes.haze.HazeProgressive
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.HazeTint
+import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.hazeSource
+import dev.chrisbanes.haze.rememberHazeState
 import ai.anya.companion.core.domain.repository.ConnectionState
 import ai.anya.companion.core.model.session.ChatMessage
 import ai.anya.companion.core.model.session.ChatMode
 import ai.anya.companion.core.model.session.ChatModelInfo
 import ai.anya.companion.core.model.session.ChatRole
+import ai.anya.companion.core.model.session.ChatSharedFile
+import ai.anya.companion.core.model.session.SharedFileStatus
 import ai.anya.companion.core.model.session.CodeChangeEntry
 import ai.anya.companion.core.model.session.MessageStatus
 import ai.anya.companion.core.model.session.PlanTaskItem
@@ -176,6 +195,85 @@ private suspend fun androidx.compose.foundation.lazy.LazyListState.animateSettle
  * blocked state visible up front and offers a one-tap retry, instead of
  * silently interrupting the user's action once they've already committed to it.
  */
+/** Inline banner above the composer showing file download progress / outcome. */
+@Composable
+private fun DownloadNoticeBanner(
+    download: FileDownloadUiState,
+    onDismiss: () -> Unit,
+) {
+    val haptic = rememberAnyaHaptics()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AnyaSpace.Screen)
+            .padding(bottom = AnyaSpace.Xs)
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (download.inProgress) {
+            AnyaInlineLoadingMark(size = 16.dp)
+        } else {
+            Icon(
+                imageVector = Icons.Rounded.Description,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(
+            text = download.message.orEmpty(),
+            style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        if (!download.inProgress && download.localUri != null) {
+            Text(
+                text = stringResource(R.string.shared_file_open),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .clickable {
+                        haptic.buttonPress()
+                        openSharedFile(
+                            context,
+                            ChatSharedFile(
+                                offerId = "",
+                                path = "",
+                                name = download.fileName.orEmpty(),
+                                mime = download.mime ?: "*/*",
+                                exportedUri = download.localUri,
+                                status = SharedFileStatus.Ready,
+                            ),
+                        )
+                    }
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+        }
+        if (!download.inProgress) {
+            Icon(
+                imageVector = Icons.Rounded.Close,
+                contentDescription = stringResource(R.string.shared_file_close),
+                modifier = Modifier
+                    .size(22.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .clickable {
+                        haptic.tick()
+                        onDismiss()
+                    }
+                    .padding(3.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
 @Composable
 private fun ConnectionLostBanner(
     connectionState: ConnectionState,
@@ -183,10 +281,10 @@ private fun ConnectionLostBanner(
 ) {
     val haptic = rememberAnyaHaptics()
     val (label, showRetry) = when (connectionState) {
-        ConnectionState.Connecting -> "正在连接…" to false
-        ConnectionState.Reconnecting -> "连接已断开，正在自动重连…" to false
-        ConnectionState.Error -> "连接失败，发送和操作暂时无法送达" to true
-        ConnectionState.Disconnected -> "连接已断开，发送和操作暂时无法送达" to true
+        ConnectionState.Connecting -> stringResource(R.string.chat_connecting) to false
+        ConnectionState.Reconnecting -> stringResource(R.string.chat_reconnecting) to false
+        ConnectionState.Error -> stringResource(R.string.chat_connection_error) to true
+        ConnectionState.Disconnected -> stringResource(R.string.chat_disconnected) to true
         ConnectionState.Connected -> return
     }
     Row(
@@ -222,7 +320,7 @@ private fun ConnectionLostBanner(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "重连",
+                    text = stringResource(R.string.chat_reconnect),
                     style = MaterialTheme.typography.labelMedium.copy(
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
@@ -234,30 +332,14 @@ private fun ConnectionLostBanner(
     }
 }
 
-/** Vertical extent (root coordinates) of one expanded "已完成" fold, plus its meta label. */
-private data class FoldBounds(val top: Float, val bottom: Float, val meta: String?)
-
-/**
- * Tracks every currently-expanded "已完成" fold's on-screen bounds so
- * [ChatScreen] can decide which one (if any) has scrolled its own header out
- * of view while the user is still scrolled through its body — that's the one
- * that gets a floating duplicate header pinned to the top, matching desktop's
- * `position: sticky` fold summary.
- */
+/** Tracks which completed-turn "已完成" folds are expanded. */
 private class CompletedFoldController {
     val expanded = mutableStateMapOf<String, Boolean>()
-    val bounds = mutableStateMapOf<String, FoldBounds>()
-    var listTop by mutableFloatStateOf(0f)
 
     fun isExpanded(messageId: String): Boolean = expanded[messageId] == true
 
     fun setExpanded(messageId: String, value: Boolean) {
         expanded[messageId] = value
-        if (!value) bounds.remove(messageId)
-    }
-
-    fun setBounds(messageId: String, value: FoldBounds?) {
-        if (value == null) bounds.remove(messageId) else bounds[messageId] = value
     }
 }
 
@@ -267,6 +349,21 @@ private fun userMessagePreview(content: String): String {
     return if (compact.length > 72) compact.take(72) + "…" else compact
 }
 
+private fun formatUserTurnTime(epochMs: Long): String {
+    if (epochMs <= 0L) return ""
+    val then = java.util.Calendar.getInstance().apply { timeInMillis = epochMs }
+    val now = java.util.Calendar.getInstance()
+    val time = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(then.time)
+    val sameDay = now.get(java.util.Calendar.YEAR) == then.get(java.util.Calendar.YEAR) &&
+        now.get(java.util.Calendar.DAY_OF_YEAR) == then.get(java.util.Calendar.DAY_OF_YEAR)
+    val sameYear = now.get(java.util.Calendar.YEAR) == then.get(java.util.Calendar.YEAR)
+    return when {
+        sameDay -> time
+        sameYear -> java.text.SimpleDateFormat("M月d日 HH:mm", java.util.Locale.CHINA).format(then.time)
+        else -> java.text.SimpleDateFormat("yyyy年M月d日 HH:mm", java.util.Locale.CHINA).format(then.time)
+    }
+}
+
 @Composable
 public fun ChatRoute(
     onBack: () -> Unit,
@@ -274,6 +371,8 @@ public fun ChatRoute(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val attachCatalog by viewModel.attachCatalog.collectAsStateWithLifecycle()
+    val download by viewModel.download.collectAsStateWithLifecycle()
+    val localUploads by viewModel.localUploads.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) {
         viewModel.refreshAttachCatalog()
     }
@@ -293,6 +392,13 @@ public fun ChatRoute(
         onAnswerAsk = viewModel::answerAsk,
         onAnswerToolApproval = viewModel::answerToolApproval,
         onRetryConnection = viewModel::retryConnection,
+        download = download,
+        localUploads = localUploads,
+        onPickLocalFiles = viewModel::uploadPickedUris,
+        onDownloadFile = viewModel::downloadFile,
+        onExportSharedFile = viewModel::exportSharedFile,
+        onFetchSharedFile = viewModel::fetchSharedFile,
+        onDismissDownload = viewModel::dismissDownloadNotice,
     )
 }
 
@@ -313,25 +419,28 @@ public fun ChatScreen(
     onAnswerAsk: (Map<Int, List<String>>, Boolean) -> Unit,
     onAnswerToolApproval: (ai.anya.companion.core.model.approval.ApprovalDecision) -> Unit,
     onRetryConnection: () -> Unit = {},
+    download: FileDownloadUiState = FileDownloadUiState(),
+    localUploads: List<LocalUploadItem> = emptyList(),
+    onPickLocalFiles: (List<android.net.Uri>) -> Unit = {},
+    onDownloadFile: (String) -> Unit = {},
+    onExportSharedFile: (String) -> Unit = {},
+    onFetchSharedFile: (String) -> Unit = {},
+    onDismissDownload: () -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
     val haptics = rememberAnyaHaptics()
-    val imeBottomPadding = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
+    val bottomInset = WindowInsets.ime.union(WindowInsets.navigationBars)
+        .asPaddingValues()
+        .calculateBottomPadding()
     var stickToBottom by remember { mutableStateOf(true) }
-    var scrubRailIndex by remember { mutableStateOf<Int?>(null) }
     var didFocusMessage by remember(state.focusMessageId) { mutableStateOf(false) }
+    var previewSharedFile by remember { mutableStateOf<ai.anya.companion.core.model.session.ChatSharedFile?>(null) }
+    var previewSharedUrl by remember { mutableStateOf<ai.anya.companion.core.model.session.ChatSharedUrl?>(null) }
 
-    val userMessageIndexes = remember(state.messages) {
-        state.messages.mapIndexedNotNull { index, message ->
-            if (message.role == ChatRole.User) index else null
-        }
-    }
-    val userPreviews = remember(state.messages, userMessageIndexes) {
-        userMessageIndexes.map { msgIndex ->
-            userMessagePreview(state.messages[msgIndex].content)
-        }
+    val userTurns = remember(state.messages) {
+        state.messages.filter { it.role == ChatRole.User }.asReversed()
     }
 
     LaunchedEffect(state.messages, state.focusMessageId) {
@@ -351,44 +460,14 @@ public fun ChatScreen(
         }
     }
 
-    LaunchedEffect(imeBottomPadding, stickToBottom, state.messages.size) {
-        if (imeBottomPadding > 0.dp && stickToBottom && state.messages.isNotEmpty()) {
+    LaunchedEffect(bottomInset, stickToBottom, state.messages.size) {
+        if (bottomInset > 0.dp && stickToBottom && state.messages.isNotEmpty()) {
             listState.animateSettleToBottom(state.messages.lastIndex)
         }
     }
 
-    val activeUserRailIndex by remember {
-        derivedStateOf {
-            if (userMessageIndexes.isEmpty()) return@derivedStateOf 0
-            val scrub = scrubRailIndex
-            if (scrub != null) return@derivedStateOf scrub.coerceIn(0, userMessageIndexes.lastIndex)
-
-            val info = listState.layoutInfo
-            val visible = info.visibleItemsInfo
-            if (visible.isEmpty()) {
-                return@derivedStateOf userMessageIndexes.lastIndex.coerceAtLeast(0)
-            }
-
-            // Match desktop: last user message whose top has crossed the viewport top band.
-            val thresholdPx = with(density) { 48.dp.toPx() }
-            val firstVisible = visible.first().index
-            var active = 0
-            userMessageIndexes.forEachIndexed { railIdx, msgIdx ->
-                if (msgIdx < firstVisible) {
-                    active = railIdx
-                    return@forEachIndexed
-                }
-                val item = visible.find { it.index == msgIdx } ?: return@forEachIndexed
-                if (item.offset <= thresholdPx) {
-                    active = railIdx
-                }
-            }
-            active
-        }
-    }
-
     LaunchedEffect(listState.isScrollInProgress) {
-        if (!listState.isScrollInProgress && scrubRailIndex == null) {
+        if (!listState.isScrollInProgress) {
             val info = listState.layoutInfo
             val lastVisible = info.visibleItemsInfo.lastOrNull() ?: return@LaunchedEffect
             stickToBottom = lastVisible.index >= state.messages.lastIndex - 1 &&
@@ -396,30 +475,16 @@ public fun ChatScreen(
         }
     }
 
-    fun jumpToUserRail(railIndex: Int, animate: Boolean) {
-        val messageIndex = userMessageIndexes.getOrNull(railIndex) ?: return
+    fun jumpToMessage(messageId: String) {
+        val messageIndex = state.messages.indexOfFirst { it.id == messageId }
+        if (messageIndex < 0) return
         stickToBottom = false
-        scrubRailIndex = null
         scope.launch {
-            if (animate) {
-                listState.animateScrollToItem(messageIndex)
-            } else {
-                listState.scrollToItem(messageIndex)
-            }
-        }
-    }
-
-    fun scrubToUserRail(railIndex: Int) {
-        val messageIndex = userMessageIndexes.getOrNull(railIndex) ?: return
-        stickToBottom = false
-        scrubRailIndex = railIndex
-        scope.launch {
-            listState.scrollToItem(messageIndex)
+            listState.animateScrollToItem(messageIndex)
         }
     }
 
     fun scrollToBottom() {
-        scrubRailIndex = null
         stickToBottom = true
         if (state.messages.isEmpty()) return
         scope.launch {
@@ -459,6 +524,7 @@ public fun ChatScreen(
     }
 
     var sheet by remember { mutableStateOf(ChatSheet.None) }
+    var diffRequest by remember { mutableStateOf<DiffViewRequest?>(null) }
 
     // The composer floats *over* the message list rather than reserving its
     // own row (its height varies a lot: plain field vs. multi-line ask/tool
@@ -467,239 +533,206 @@ public fun ChatScreen(
     // ends up hidden underneath it.
     var composerFootprintPx by remember { mutableStateOf(0) }
     val composerFootprintDp = with(density) { composerFootprintPx.toDp() }
+    var headerContentPx by remember { mutableStateOf(0) }
+    val statusBarDp = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val headerContentDp = if (headerContentPx > 0) {
+        with(density) { headerContentPx.toDp() }
+    } else {
+        statusBarDp + 40.dp + AnyaSpace.Xs * 2 + 20.dp
+    }
+    val hazeState = rememberHazeState()
+    val canvas = MaterialTheme.colorScheme.surface
 
     val foldController = remember { CompletedFoldController() }
-    val stickyFold by remember {
-        derivedStateOf {
-            foldController.bounds.entries.firstOrNull { (id, b) ->
-                foldController.isExpanded(id) && b.top < foldController.listTop && b.bottom > foldController.listTop
-            }
-        }
-    }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        AnyaScreen(
-            topBar = {
-                ChatTopBar(
-                    chatMode = state.compose.chatMode,
-                    approvalMode = state.compose.toolApprovalMode,
-                    onBack = onBack,
-                    onModeClick = { sheet = ChatSheet.ChatMode },
-                    onApprovalClick = { sheet = ChatSheet.ApprovalMode },
-                )
-            },
-        ) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(canvas),
+    ) {
+        if (state.messages.isEmpty() && state.historyLoading) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    // White chat canvas so the grey floating composer can lift off it.
-                    .background(MaterialTheme.colorScheme.surface),
+                    .hazeSource(hazeState)
+                    .padding(top = headerContentDp, bottom = composerFootprintDp),
+                contentAlignment = Alignment.Center,
             ) {
-                if (state.messages.isEmpty() && state.historyLoading) {
-                    // History is still loading from the desktop — show a spinner
-                    // instead of the empty state, otherwise it reads as "no
-                    // messages yet" even for sessions that do have history.
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(bottom = composerFootprintDp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        AnyaLoadingIndicator(
-                            size = 56.dp,
-                            label = null,
-                        )
-                    }
-                } else if (state.messages.isEmpty()) {
-                    AnyaEmptyState(
-                        icon = AnyaIcons.ChatCircleOutline,
-                        title = "开始对话",
-                        subtitle = "消息会同步到桌面端工作台",
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(bottom = composerFootprintDp),
+                AnyaLoadingIndicator(
+                    size = 56.dp,
+                    label = null,
+                )
+            }
+        } else if (state.messages.isEmpty()) {
+            AnyaEmptyState(
+                icon = AnyaIcons.ChatCircleOutline,
+                title = "开始对话",
+                subtitle = "消息会同步到桌面端工作台",
+                modifier = Modifier
+                    .fillMaxSize()
+                    .hazeSource(hazeState)
+                    .padding(top = headerContentDp, bottom = composerFootprintDp),
+            )
+        } else {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .hazeSource(hazeState),
+                contentPadding = PaddingValues(
+                    start = AnyaSpace.Screen,
+                    end = AnyaSpace.Screen,
+                    top = headerContentDp + AnyaSpace.Lg,
+                    bottom = composerFootprintDp + AnyaSpace.Sm + bottomInset,
+                ),
+                verticalArrangement = Arrangement.spacedBy(AnyaSpace.Lg),
+            ) {
+                items(state.messages, key = ChatMessage::id) { message ->
+                    MessageBubble(
+                        message = message,
+                        skills = attachCatalog.skills,
+                        mcpServers = attachCatalog.mcpServers,
+                        onApprovePlan = onApprovePlan,
+                        approvedPlanIds = state.planApprovedMessageIds,
+                        foldController = foldController,
+                        onOpenDiff = { request -> diffRequest = request },
+                        onExportSharedFile = onExportSharedFile,
+                        onFetchSharedFile = onFetchSharedFile,
+                        onPreviewSharedImage = { previewSharedFile = it },
+                        onOpenSharedUrl = { previewSharedUrl = it },
                     )
-                } else {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .onGloballyPositioned { coordinates ->
-                                foldController.listTop = coordinates.positionInRoot().y
-                            },
-                        contentPadding = PaddingValues(
-                            start = AnyaSpace.Screen,
-                            end = AnyaSpace.Screen + 12.dp,
-                            top = AnyaSpace.Lg,
-                            // Reserve composer height + keyboard inset so content scrolls with IME.
-                            bottom = composerFootprintDp + AnyaSpace.Sm + imeBottomPadding,
-                        ),
-                        verticalArrangement = Arrangement.spacedBy(AnyaSpace.Lg),
-                    ) {
-                        items(state.messages, key = ChatMessage::id) { message ->
-                            MessageBubble(
-                                message = message,
-                                skills = attachCatalog.skills,
-                                mcpServers = attachCatalog.mcpServers,
-                                onApprovePlan = onApprovePlan,
-                                approvedPlanIds = state.planApprovedMessageIds,
-                                foldController = foldController,
-                            )
-                        }
-                    }
-                    // Floating duplicate of whichever "已完成" fold header has
-                    // scrolled off the top while its body is still on screen —
-                    // keeps the collapse control reachable without scrolling back up.
-                    val sticky = stickyFold
-                    if (sticky != null) {
-                        Surface(
-                            modifier = Modifier
-                                .align(Alignment.TopStart)
-                                .fillMaxWidth()
-                                .zIndex(3f),
-                            color = MaterialTheme.colorScheme.surface,
-                            shadowElevation = 2.dp,
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { foldController.setExpanded(sticky.key, false) }
-                                    .padding(horizontal = AnyaSpace.Screen, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.ExpandMore,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(12.dp),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                )
-                                Text(
-                                    text = "已完成",
-                                    style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp),
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                val meta = sticky.value.meta
-                                if (meta != null) {
-                                    Spacer(modifier = Modifier.weight(1f))
-                                    Text(
-                                        text = "（$meta）",
-                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-                                        fontWeight = FontWeight.Medium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    if (userMessageIndexes.isNotEmpty()) {
-                        AnyaMessageNavRail(
-                            pageCount = userMessageIndexes.size,
-                            selectedIndex = activeUserRailIndex,
-                            previews = userPreviews,
-                            onScrub = ::scrubToUserRail,
-                            onJump = { jumpToUserRail(it, animate = true) },
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(top = AnyaSpace.Sm, bottom = AnyaSpace.Sm)
-                                .zIndex(1f),
-                        )
-                    }
-                    androidx.compose.animation.AnimatedVisibility(
-                        visible = showScrollToBottom,
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(
-                                end = 10.dp,
-                                bottom = composerFootprintDp + imeBottomPadding + 10.dp,
-                            )
-                            .zIndex(2f),
-                        enter = fadeIn() + scaleIn(initialScale = 0.86f),
-                        exit = fadeOut() + scaleOut(targetScale = 0.86f),
-                    ) {
-                        Surface(
-                            onClick = {
-                                haptics.buttonPress()
-                                scrollToBottom()
-                            },
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.surface,
-                            tonalElevation = 0.dp,
-                            shadowElevation = 4.dp,
-                            modifier = Modifier.size(36.dp),
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Rounded.KeyboardArrowDown,
-                                    contentDescription = "滚动到底部",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(22.dp),
-                                )
-                            }
-                        }
-                    }
                 }
-
-                // Floating layer: error + composer, pinned to the bottom, on top of
-                // whatever the message area is showing. Measuring its own height
-                // here (rather than trusting a Column weight to exclude it) keeps
-                // the reserved clearance correct even as it grows for ask/approval
-                // panels or multi-line drafts.
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .imePadding(),
+            }
+            androidx.compose.animation.AnimatedVisibility(
+                visible = showScrollToBottom,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(
+                        end = 10.dp,
+                        bottom = composerFootprintDp + bottomInset + 10.dp,
+                    )
+                    .zIndex(2f),
+                enter = fadeIn() + scaleIn(initialScale = 0.86f),
+                exit = fadeOut() + scaleOut(targetScale = 0.86f),
+            ) {
+                Surface(
+                    onClick = {
+                        haptics.buttonPress()
+                        scrollToBottom()
+                    },
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 0.dp,
+                    shadowElevation = 4.dp,
+                    modifier = Modifier.size(36.dp),
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .onGloballyPositioned { coordinates ->
-                                composerFootprintPx = coordinates.size.height
-                            },
-                    ) {
-                        if (state.connectionState != ConnectionState.Connected) {
-                            ConnectionLostBanner(
-                                connectionState = state.connectionState,
-                                onRetry = onRetryConnection,
-                            )
-                        }
-                        if (state.error != null) {
-                            Text(
-                                text = state.error.orEmpty(),
-                                color = MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier
-                                    .padding(horizontal = AnyaSpace.Screen)
-                                    .padding(bottom = AnyaSpace.Xs),
-                            )
-                        }
-
-                        MobileComposer(
-                            draft = state.draft,
-                            busy = state.busy,
-                            modelLabel = state.compose.modelDisplayName,
-                            modelProvider = state.compose.chatModelProvider,
-                            modelId = state.compose.chatModel,
-                            skills = attachCatalog.skills,
-                            mcpServers = attachCatalog.mcpServers,
-                            pendingAsk = state.pendingAsk,
-                            onDraftChange = onDraftChange,
-                            onSend = onSend,
-                            onStop = onStop,
-                            onAttachClick = {
-                                onAttachOpen()
-                                sheet = ChatSheet.Attach
-                            },
-                            onModelClick = { sheet = ChatSheet.Model },
-                            onAnswerAsk = onAnswerAsk,
-                            onAnswerToolApproval = onAnswerToolApproval,
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Rounded.KeyboardArrowDown,
+                            contentDescription = "滚动到底部",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(22.dp),
                         )
                     }
                 }
             }
         }
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .hazeEffect(state = hazeState) {
+                    backgroundColor = canvas
+                    tints = listOf(HazeTint(canvas.copy(alpha = 0.78f)))
+                    blurRadius = 24.dp
+                    noiseFactor = 0.06f
+                    progressive = HazeProgressive.verticalGradient(
+                        startIntensity = 0f,
+                        endIntensity = 1f,
+                    )
+                }
+                .background(
+                    Brush.verticalGradient(
+                        0.00f to Color.Transparent,
+                        0.28f to canvas.copy(alpha = 0.22f),
+                        0.62f to canvas.copy(alpha = 0.82f),
+                        1.00f to canvas,
+                    ),
+                )
+                .windowInsetsPadding(WindowInsets.ime)
+                .zIndex(2f),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onGloballyPositioned { coordinates ->
+                        composerFootprintPx = coordinates.size.height
+                    },
+            ) {
+                if (state.connectionState != ConnectionState.Connected) {
+                    ConnectionLostBanner(
+                        connectionState = state.connectionState,
+                        onRetry = onRetryConnection,
+                    )
+                }
+                if (state.error != null) {
+                    Text(
+                        text = state.error.orEmpty(),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier
+                            .padding(horizontal = AnyaSpace.Screen)
+                            .padding(bottom = AnyaSpace.Xs),
+                    )
+                }
+                if (download.message != null) {
+                    DownloadNoticeBanner(
+                        download = download,
+                        onDismiss = onDismissDownload,
+                    )
+                }
+
+                MobileComposer(
+                    draft = state.draft,
+                    busy = state.busy,
+                    modelLabel = state.compose.modelDisplayName,
+                    modelProvider = state.compose.chatModelProvider,
+                    modelId = state.compose.chatModel,
+                    skills = attachCatalog.skills,
+                    mcpServers = attachCatalog.mcpServers,
+                    pendingAsk = state.pendingAsk,
+                    onDraftChange = onDraftChange,
+                    onSend = onSend,
+                    onStop = onStop,
+                    onAttachClick = {
+                        onAttachOpen()
+                        sheet = ChatSheet.Attach
+                    },
+                    onModelClick = { sheet = ChatSheet.Model },
+                    onAnswerAsk = onAnswerAsk,
+                    onAnswerToolApproval = onAnswerToolApproval,
+                )
+            }
+            Spacer(
+                modifier = Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars),
+            )
+        }
+
+        ChatTopBar(
+            chatMode = state.compose.chatMode,
+            approvalMode = state.compose.toolApprovalMode,
+            hazeState = hazeState,
+            canvas = canvas,
+            onHeaderHeight = { headerContentPx = it },
+            onBack = onBack,
+            onModeClick = { sheet = ChatSheet.ChatMode },
+            onApprovalClick = { sheet = ChatSheet.ApprovalMode },
+            onHistoryClick = { sheet = ChatSheet.UserTurns },
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .zIndex(3f),
+        )
     }
 
     when (sheet) {
@@ -730,18 +763,72 @@ public fun ChatScreen(
         )
         ChatSheet.Attach -> AttachSheet(
             catalog = attachCatalog,
+            localUploads = localUploads,
             onRefresh = onAttachOpen,
             onInsert = {
                 onAttachInsert(it)
                 sheet = ChatSheet.None
             },
+            onPickLocalFiles = { uris ->
+                onPickLocalFiles(uris)
+                sheet = ChatSheet.None
+            },
+            onDismiss = { sheet = ChatSheet.None },
+            onDownloadFile = { path ->
+                onDownloadFile(path)
+                // Close so the progress banner above the composer is visible.
+                sheet = ChatSheet.None
+            },
+        )
+        ChatSheet.UserTurns -> UserTurnsSheet(
+            turns = userTurns,
+            onJump = { messageId ->
+                sheet = ChatSheet.None
+                jumpToMessage(messageId)
+            },
             onDismiss = { sheet = ChatSheet.None },
         )
         ChatSheet.None -> Unit
     }
+
+    diffRequest?.let { request ->
+        DiffViewerSheet(
+            request = request,
+            onDismiss = { diffRequest = null },
+            onDownload = {
+                onDownloadFile(request.path)
+                diffRequest = null
+            },
+        )
+    }
+    previewSharedFile?.let { file ->
+        if (file.mime.startsWith("image/")) {
+            SharedImageFullscreenDialog(
+                file = file,
+                onDismiss = { previewSharedFile = null },
+                onExport = { onExportSharedFile(file.offerId) },
+            )
+        } else {
+            SharedDocumentPreviewDialog(
+                file = file,
+                onDismiss = { previewSharedFile = null },
+                onExport = { onExportSharedFile(file.offerId) },
+            )
+        }
+    }
+    previewSharedUrl?.let { url ->
+        SharedUrlPreviewDialog(
+            url = url,
+            onDismiss = { previewSharedUrl = null },
+        )
+    }
 }
 
-private enum class ChatSheet { None, ChatMode, ApprovalMode, Model, Attach }
+private enum class ChatSheet { None, ChatMode, ApprovalMode, Model, Attach, UserTurns }
+
+@Composable
+private fun chatTopChipColor(): Color =
+    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.82f)
 
 // region Top bar
 
@@ -749,12 +836,41 @@ private enum class ChatSheet { None, ChatMode, ApprovalMode, Model, Attach }
 private fun ChatTopBar(
     chatMode: ChatMode,
     approvalMode: ToolApprovalMode,
+    hazeState: HazeState,
+    canvas: Color,
+    onHeaderHeight: (Int) -> Unit,
     onBack: () -> Unit,
     onModeClick: () -> Unit,
     onApprovalClick: () -> Unit,
+    onHistoryClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val haptic = rememberAnyaHaptics()
-    Surface(color = MaterialTheme.colorScheme.background) {
+    val barHeight = 40.dp
+    val chipColor = chatTopChipColor()
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .hazeEffect(state = hazeState) {
+                backgroundColor = canvas
+                tints = listOf(HazeTint(canvas.copy(alpha = 0.46f)))
+                blurRadius = 22.dp
+                noiseFactor = 0.04f
+                progressive = HazeProgressive.verticalGradient(
+                    startIntensity = 0.72f,
+                    endIntensity = 0f,
+                )
+            }
+            .background(
+                Brush.verticalGradient(
+                    0.00f to canvas.copy(alpha = 0.82f),
+                    0.42f to canvas.copy(alpha = 0.38f),
+                    0.78f to canvas.copy(alpha = 0.10f),
+                    1.00f to Color.Transparent,
+                ),
+            )
+            .onGloballyPositioned { onHeaderHeight(it.size.height) },
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -766,6 +882,8 @@ private fun ChatTopBar(
             AnyaTopBarIconChip(
                 icon = Icons.AutoMirrored.Rounded.ArrowBack,
                 contentDescription = "返回",
+                height = barHeight,
+                containerColor = chipColor,
                 onClick = {
                     haptic.buttonPress()
                     onBack()
@@ -774,7 +892,18 @@ private fun ChatTopBar(
             ChatModeChip(chatMode = chatMode, onClick = onModeClick)
             Spacer(modifier = Modifier.weight(1f))
             ApprovalModeChip(approvalMode = approvalMode, onClick = onApprovalClick)
+            AnyaTopBarIconChip(
+                icon = Icons.Rounded.History,
+                contentDescription = "发出的消息",
+                height = barHeight,
+                containerColor = chipColor,
+                onClick = {
+                    haptic.buttonPress()
+                    onHistoryClick()
+                },
+            )
         }
+        Spacer(modifier = Modifier.height(20.dp))
     }
 }
 
@@ -844,9 +973,9 @@ private fun PillChip(
     val haptic = rememberAnyaHaptics()
     Row(
         modifier = Modifier
-            .height(32.dp)
+            .height(40.dp)
             .clip(RoundedCornerShape(999.dp))
-            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+            .background(chatTopChipColor())
             .clickable {
                 haptic.linearTick()
                 onClick()
@@ -909,6 +1038,81 @@ private fun AnyaBottomSheet(
         },
     ) {
         content()
+    }
+}
+
+@Composable
+private fun UserTurnsSheet(
+    turns: List<ChatMessage>,
+    onJump: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val haptic = rememberAnyaHaptics()
+    AnyaBottomSheet(onDismiss = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AnyaSpace.Lg)
+                .navigationBarsPadding()
+                .padding(bottom = AnyaSpace.Md),
+        ) {
+            Text(
+                text = "发出的消息",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "点击一条可跳转到对话中的位置",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp, bottom = AnyaSpace.Md),
+            )
+            if (turns.isEmpty()) {
+                Text(
+                    text = "还没有发出的消息",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = AnyaSpace.Lg),
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 480.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    items(turns, key = ChatMessage::id) { message ->
+                        val timeLabel = formatUserTurnTime(message.createdAtEpochMs)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    haptic.linearTick()
+                                    onJump(message.id)
+                                }
+                                .padding(horizontal = 10.dp, vertical = 10.dp),
+                        ) {
+                            if (timeLabel.isNotEmpty()) {
+                                Text(
+                                    text = timeLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Text(
+                                text = userMessagePreview(message.content),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onBackground,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(top = if (timeLabel.isNotEmpty()) 2.dp else 0.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1051,19 +1255,28 @@ private fun ModelSheet(
 @Composable
 private fun AttachSheet(
     catalog: AttachCatalogUiState,
+    localUploads: List<LocalUploadItem>,
     onRefresh: () -> Unit,
     onInsert: (String) -> Unit,
+    onPickLocalFiles: (List<android.net.Uri>) -> Unit,
     onDismiss: () -> Unit,
+    onDownloadFile: ((String) -> Unit)? = null,
 ) {
     val haptic = rememberAnyaHaptics()
-    var tab by rememberSaveable { mutableStateOf(AttachTab.Files) }
+    val scope = rememberCoroutineScope()
+    val pagerState = rememberPagerState(pageCount = { AttachTab.entries.size })
     var expandedDirs by rememberSaveable { mutableStateOf(setOf<String>()) }
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        if (uris.isNotEmpty()) onPickLocalFiles(uris)
+    }
 
     AnyaBottomSheet(onDismiss = onDismiss) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 420.dp, max = 640.dp)
+                .height(640.dp)
                 .padding(horizontal = AnyaSpace.Lg)
                 .navigationBarsPadding()
                 .padding(bottom = AnyaSpace.Md),
@@ -1115,187 +1328,236 @@ private fun AttachSheet(
                 }
             }
             Spacer(modifier = Modifier.height(AnyaSpace.Sm))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
-                    .padding(3.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                AttachTab.entries.forEach { item ->
-                    val selected = tab == item
-                    Text(
-                        text = when (item) {
-                            AttachTab.Files -> "文件"
-                            AttachTab.Skills -> "Skills"
-                            AttachTab.Mcp -> "MCP"
-                        },
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(999.dp))
-                            .background(
-                                if (selected) MaterialTheme.colorScheme.surface
-                                else Color.Transparent,
-                            )
-                            .clickable {
-                                if (tab != item) {
-                                    haptic.linearTick()
-                                }
-                                tab = item
-                            }
-                            .padding(vertical = 10.dp),
-                        textAlign = TextAlign.Center,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onBackground,
-                    )
-                }
-            }
+            AnyaSegmentedControl(
+                options = listOf("本机", "文件", "Skills", "MCP"),
+                selectedIndex = pagerState.currentPage,
+                selectedProgress = pagerState.currentPage + pagerState.currentPageOffsetFraction,
+                onSelect = { index ->
+                    scope.launch { pagerState.animateScrollToPage(index) }
+                },
+            )
             Spacer(modifier = Modifier.height(AnyaSpace.Md))
 
-            when {
-                catalog.loading &&
-                    catalog.fileTree.isEmpty() &&
-                    catalog.skills.isEmpty() &&
-                    catalog.mcpServers.isEmpty() -> {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        AnyaLoadingIndicator(
-                            size = 56.dp,
-                            label = null,
-                        )
-                    }
-                }
-                tab == AttachTab.Files -> {
-                    val error = catalog.filesError
-                    val tree = catalog.fileTree
-                    when {
-                        !error.isNullOrBlank() && tree.isEmpty() -> {
-                            Text(
-                                text = error,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        tree.isEmpty() -> {
-                            Text(
-                                text = catalog.files?.name?.let { "工作区「$it」暂无可展示文件" }
-                                    ?: "未选择工作区，或当前工作区没有文件",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        else -> {
-                            LazyColumn(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(2.dp),
-                            ) {
-                                items(tree, key = { it.path }) { node ->
-                                    AttachFileTreeNode(
-                                        node = node,
-                                        depth = 0,
-                                        expanded = expandedDirs,
-                                        onToggle = { path ->
-                                            expandedDirs = if (path in expandedDirs) {
-                                                expandedDirs - path
-                                            } else {
-                                                expandedDirs + path
-                                            }
-                                        },
-                                        onSelect = { path, isDir ->
-                                            onInsert(if (isDir) "@$path/ " else "@$path ")
-                                        },
-                                    )
-                                }
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+            ) { page ->
+                when (AttachTab.entries[page]) {
+                    AttachTab.Upload -> LocalUploadPage(
+                        uploads = localUploads,
+                        onPick = { picker.launch(arrayOf("*/*")) },
+                    )
+                    AttachTab.Files -> AttachFilesPage(
+                        catalog = catalog,
+                        expandedDirs = expandedDirs,
+                        onToggle = { path ->
+                            expandedDirs = if (path in expandedDirs) {
+                                expandedDirs - path
+                            } else {
+                                expandedDirs + path
                             }
-                        }
-                    }
-                }
-                tab == AttachTab.Skills -> {
-                    when {
-                        catalog.skillsError != null && catalog.skills.isEmpty() -> {
-                            Text(
-                                text = catalog.skillsError,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        catalog.skills.isEmpty() -> {
-                            Text(
-                                text = "暂无可用 Skill。可在桌面端设置中启用或安装。",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        else -> {
-                            LazyColumn(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f),
-                            ) {
-                                items(catalog.skills, key = { it.id }) { skill ->
-                                    AttachOptionRow(
-                                        icon = Icons.Rounded.AutoAwesome,
-                                        iconUrl = skill.iconUrl,
-                                        label = skill.title.ifBlank { skill.name },
-                                        subtitle = skill.description.takeIf { it.isNotBlank() },
-                                        onClick = { onInsert("#skill:${skill.name} ") },
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-                else -> {
-                    when {
-                        catalog.mcpError != null && catalog.mcpServers.isEmpty() -> {
-                            Text(
-                                text = catalog.mcpError,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        catalog.mcpServers.isEmpty() -> {
-                            Text(
-                                text = "暂无已启用的 MCP。请到桌面端设置 → MCP 安装后打开开关。",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        else -> {
-                            LazyColumn(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f),
-                            ) {
-                                items(catalog.mcpServers, key = { it.id }) { server ->
-                                    AttachOptionRow(
-                                        icon = Icons.Rounded.Extension,
-                                        iconUrl = server.iconUrl,
-                                        label = server.title.ifBlank { server.id },
-                                        subtitle = server.description.takeIf { it.isNotBlank() }
-                                            ?: server.qualifiedName,
-                                        onClick = { onInsert("#mcp:${server.id} ") },
-                                    )
-                                }
-                            }
-                        }
-                    }
+                        },
+                        onInsert = onInsert,
+                        onDownloadFile = onDownloadFile,
+                    )
+                    AttachTab.Skills -> AttachSkillsPage(
+                        catalog = catalog,
+                        onInsert = onInsert,
+                    )
+                    AttachTab.Mcp -> AttachMcpPage(
+                        catalog = catalog,
+                        onInsert = onInsert,
+                    )
                 }
             }
         }
     }
 }
 
-private enum class AttachTab { Files, Skills, Mcp }
+private enum class AttachTab { Upload, Files, Skills, Mcp }
 
+@Composable
+private fun LocalUploadPage(
+    uploads: List<LocalUploadItem>,
+    onPick: () -> Unit,
+) {
+    val haptic = rememberAnyaHaptics()
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
+    ) {
+        Button(
+            onClick = {
+                haptic.buttonPress()
+                onPick()
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+            ),
+            contentPadding = PaddingValues(horizontal = AnyaSpace.Lg),
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.UploadFile,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = "从本机选择",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+        if (uploads.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm)) {
+                uploads.forEach { item ->
+                    Text(
+                        text = item.name,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttachFilesPage(
+    catalog: AttachCatalogUiState,
+    expandedDirs: Set<String>,
+    onToggle: (String) -> Unit,
+    onInsert: (String) -> Unit,
+    onDownloadFile: ((String) -> Unit)?,
+) {
+    val error = catalog.filesError
+    val tree = catalog.fileTree
+    when {
+        catalog.loading && tree.isEmpty() -> {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                AnyaLoadingIndicator(size = 56.dp, label = null)
+            }
+        }
+        !error.isNullOrBlank() && tree.isEmpty() -> {
+            Text(
+                text = error,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        tree.isEmpty() -> {
+            Text(
+                text = catalog.files?.name?.let { "工作区「$it」暂无可展示文件" }
+                    ?: "未选择工作区，或当前工作区没有文件。随问请用「本机」上传。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        else -> {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                items(tree, key = { it.path }) { node ->
+                    AttachFileTreeNode(
+                        node = node,
+                        depth = 0,
+                        expanded = expandedDirs,
+                        onToggle = onToggle,
+                        onSelect = { path, isDir ->
+                            onInsert(if (isDir) "@$path/ " else "@$path ")
+                        },
+                        onDownload = onDownloadFile,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttachSkillsPage(
+    catalog: AttachCatalogUiState,
+    onInsert: (String) -> Unit,
+) {
+    when {
+        catalog.skillsError != null && catalog.skills.isEmpty() -> {
+            Text(
+                text = catalog.skillsError,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        catalog.skills.isEmpty() -> {
+            Text(
+                text = "暂无可用 Skill。可在桌面端设置中启用或安装。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        else -> {
+            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                items(catalog.skills, key = { it.id }) { skill ->
+                    AttachOptionRow(
+                        icon = Icons.Rounded.AutoAwesome,
+                        iconUrl = skill.iconUrl,
+                        label = skill.title.ifBlank { skill.name },
+                        subtitle = skill.description.takeIf { it.isNotBlank() },
+                        onClick = { onInsert("#skill:${skill.name} ") },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttachMcpPage(
+    catalog: AttachCatalogUiState,
+    onInsert: (String) -> Unit,
+) {
+    when {
+        catalog.mcpError != null && catalog.mcpServers.isEmpty() -> {
+            Text(
+                text = catalog.mcpError,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        catalog.mcpServers.isEmpty() -> {
+            Text(
+                text = "暂无已启用的 MCP。请到桌面端设置 → MCP 安装后打开开关。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        else -> {
+            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                items(catalog.mcpServers, key = { it.id }) { server ->
+                    AttachOptionRow(
+                        icon = Icons.Rounded.Extension,
+                        iconUrl = server.iconUrl,
+                        label = server.title.ifBlank { server.id },
+                        subtitle = server.description.takeIf { it.isNotBlank() }
+                            ?: server.qualifiedName,
+                        onClick = { onInsert("#mcp:${server.id} ") },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun AttachFileTreeNode(
     node: ai.anya.companion.core.model.workspace.FileNode,
@@ -1303,16 +1565,28 @@ private fun AttachFileTreeNode(
     expanded: Set<String>,
     onToggle: (String) -> Unit,
     onSelect: (path: String, isDir: Boolean) -> Unit,
+    onDownload: ((String) -> Unit)? = null,
 ) {
+    val haptic = rememberAnyaHaptics()
     val isDir = node.isDirectory || node.children.isNotEmpty()
     val isExpanded = node.path in expanded
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(AnyaSpace.ControlRadius))
-            .clickable {
-                if (isDir) onToggle(node.path) else onSelect(node.path, false)
-            }
+            .combinedClickable(
+                onClick = {
+                    if (isDir) onToggle(node.path) else onSelect(node.path, false)
+                },
+                onLongClick = if (!isDir && onDownload != null) {
+                    {
+                        haptic.buttonPress()
+                        onDownload(node.path)
+                    }
+                } else {
+                    null
+                },
+            )
             .padding(
                 start = (AnyaSpace.Sm.value + depth * 14f).dp,
                 end = AnyaSpace.Sm,
@@ -1356,6 +1630,7 @@ private fun AttachFileTreeNode(
                 expanded = expanded,
                 onToggle = onToggle,
                 onSelect = onSelect,
+                onDownload = onDownload,
             )
         }
     }
@@ -1489,10 +1764,10 @@ private fun MobileComposer(
     val dark = androidx.compose.foundation.isSystemInDarkTheme()
     val barBg = if (dark) Color(0xFF2A2A2C) else Color(0xFFF2F2F2)
     val toolBg = if (dark) Color(0xFF3A3A3C) else Color.White
-    val shape = RoundedCornerShape(28.dp)
+    val shape = RoundedCornerShape(20.dp)
     val ink = MaterialTheme.colorScheme.onBackground
     val parsed = remember(draft) { parseComposerText(draft) }
-    val controlSize = 36.dp
+    val controlSize = 40.dp
     val edge = 8.dp
     val modelBranding = remember(modelProvider, modelId, modelLabel) {
         resolveModelProviderBranding(
@@ -1505,7 +1780,7 @@ private fun MobileComposer(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = edge, end = edge, bottom = edge, top = 4.dp)
+            .padding(start = edge, end = edge, bottom = 14.dp, top = 4.dp)
             .shadow(
                 elevation = 6.dp,
                 shape = shape,
@@ -1518,7 +1793,13 @@ private fun MobileComposer(
             .padding(start = 14.dp, end = 14.dp, top = 14.dp, bottom = 10.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        if (pendingAsk != null && pendingAsk.kind == ai.anya.companion.core.model.approval.ApprovalKind.Tool) {
+        if (
+            pendingAsk != null &&
+            (
+                pendingAsk.kind == ai.anya.companion.core.model.approval.ApprovalKind.Tool ||
+                    pendingAsk.kind == ai.anya.companion.core.model.approval.ApprovalKind.PathPermission
+                )
+        ) {
             ToolApprovalPanel(
                 ask = pendingAsk,
                 onDecide = onAnswerToolApproval,
@@ -1683,6 +1964,7 @@ private fun ToolApprovalPanel(
     ask: ai.anya.companion.core.model.approval.PendingApproval,
     onDecide: (ai.anya.companion.core.model.approval.ApprovalDecision) -> Unit,
 ) {
+    val isPath = ask.kind == ai.anya.companion.core.model.approval.ApprovalKind.PathPermission
     Column(verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1696,7 +1978,7 @@ private fun ToolApprovalPanel(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                text = "工具审批",
+                text = if (isPath) "路径权限" else "工具审批",
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -1706,18 +1988,33 @@ private fun ToolApprovalPanel(
             style = MaterialTheme.typography.bodyLarge,
             fontWeight = FontWeight.Medium,
         )
-        ask.toolName?.takeIf { it.isNotBlank() && it != ask.title }?.let {
+        ask.previewSummary?.takeIf { it.isNotBlank() }?.let { preview ->
+            Text(
+                text = preview,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        ask.toolName?.takeIf { it.isNotBlank() && it != ask.title && !isPath }?.let {
             Text(
                 text = it,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        val options = listOf(
-            Triple("允许一次", "仅允许本次工具操作", ai.anya.companion.core.model.approval.ApprovalDecision.AllowOnce),
-            Triple("本会话允许", "本会话内记住该工具", ai.anya.companion.core.model.approval.ApprovalDecision.AllowSession),
-            Triple("拒绝", "取消本次工具操作", ai.anya.companion.core.model.approval.ApprovalDecision.Deny),
-        )
+        val options = if (isPath) {
+            listOf(
+                Triple("允许一次", "仅允许本次读取/写入该路径", ai.anya.companion.core.model.approval.ApprovalDecision.AllowOnce),
+                Triple("始终允许", "本会话记住该路径权限", ai.anya.companion.core.model.approval.ApprovalDecision.AllowSession),
+                Triple("拒绝", "取消本次路径访问", ai.anya.companion.core.model.approval.ApprovalDecision.Deny),
+            )
+        } else {
+            listOf(
+                Triple("允许一次", "仅允许本次工具操作", ai.anya.companion.core.model.approval.ApprovalDecision.AllowOnce),
+                Triple("本会话允许", "本会话内记住该工具", ai.anya.companion.core.model.approval.ApprovalDecision.AllowSession),
+                Triple("拒绝", "取消本次工具操作", ai.anya.companion.core.model.approval.ApprovalDecision.Deny),
+            )
+        }
         val haptic = rememberAnyaHaptics()
         options.forEach { (label, desc, decision) ->
             Surface(
@@ -2169,7 +2466,33 @@ private fun MessageBubble(
     onApprovePlan: (String) -> Unit,
     approvedPlanIds: Set<String>,
     foldController: CompletedFoldController,
+    onOpenDiff: (DiffViewRequest) -> Unit = {},
+    onExportSharedFile: (String) -> Unit = {},
+    onFetchSharedFile: (String) -> Unit = {},
+    onPreviewSharedImage: (ai.anya.companion.core.model.session.ChatSharedFile) -> Unit = {},
+    onOpenSharedUrl: (ai.anya.companion.core.model.session.ChatSharedUrl) -> Unit = {},
 ) {
+    if (message.sharedFiles.isNotEmpty() || message.sharedUrls.isNotEmpty()) {
+        Column(verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm)) {
+            if (message.sharedFiles.isNotEmpty()) {
+                SharedFilesBlock(
+                    files = message.sharedFiles,
+                    onExport = onExportSharedFile,
+                    onPreviewImage = onPreviewSharedImage,
+                    onFetch = onFetchSharedFile,
+                )
+            }
+            if (message.sharedUrls.isNotEmpty()) {
+                SharedUrlsBlock(
+                    urls = message.sharedUrls,
+                    onOpen = onOpenSharedUrl,
+                )
+            }
+        }
+        if (message.content.isBlank()) {
+            return
+        }
+    }
     val isUser = message.role == ChatRole.User
     Box(
         modifier = Modifier.fillMaxWidth(),
@@ -2183,6 +2506,7 @@ private fun MessageBubble(
                 onApprovePlan = onApprovePlan,
                 approvedPlanIds = approvedPlanIds,
                 foldController = foldController,
+                onOpenDiff = onOpenDiff,
             )
         }
     }
@@ -2257,6 +2581,7 @@ private fun AssistantContent(
     onApprovePlan: (String) -> Unit,
     approvedPlanIds: Set<String>,
     foldController: CompletedFoldController,
+    onOpenDiff: (DiffViewRequest) -> Unit = {},
 ) {
     // No heavy bubble chrome for assistant turns — plain text on the white canvas.
     Column(
@@ -2274,7 +2599,7 @@ private fun AssistantContent(
                 ReasoningSection(reasoning = reasoning!!, streaming = message.status == MessageStatus.Streaming)
             }
             if (hasActivities) {
-                ToolActivityList(activities = message.toolActivities)
+                ToolActivityList(activities = message.toolActivities, onOpenDiff = onOpenDiff)
             }
         } else if (hasReasoning || hasActivities) {
             CompletedWorkFold(
@@ -2282,6 +2607,7 @@ private fun AssistantContent(
                 reasoning = reasoning,
                 activities = message.toolActivities,
                 controller = foldController,
+                onOpenDiff = onOpenDiff,
             )
         }
         if (message.content.isNotBlank() || message.status == MessageStatus.Streaming) {
@@ -2310,7 +2636,15 @@ private fun AssistantContent(
             )
         }
         if (message.codeChanges.isNotEmpty()) {
-            CodeChangesCard(changes = message.codeChanges)
+            CodeChangesCard(
+                changes = message.codeChanges,
+                onOpenChange = { change ->
+                    val diff = findDiffForPath(message.toolActivities, change.path)
+                    if (diff != null) {
+                        onOpenDiff(DiffViewRequest(path = change.path, unifiedDiff = diff))
+                    }
+                },
+            )
         }
         if (message.status == MessageStatus.Error) {
             Text(
@@ -2333,6 +2667,7 @@ private fun CompletedWorkFold(
     reasoning: String?,
     activities: List<ToolActivity>,
     controller: CompletedFoldController,
+    onOpenDiff: (DiffViewRequest) -> Unit = {},
 ) {
     val expanded = controller.isExpanded(messageId)
     val meta = remember(reasoning, activities.size) {
@@ -2343,27 +2678,7 @@ private fun CompletedWorkFold(
             else -> null
         }
     }
-    // Only expanded folds need their bounds tracked (for the sticky-header
-    // overlay); drop the entry the moment this leaves composition (list item
-    // recycled) or collapses, so stale bounds never get treated as "active".
-    DisposableEffect(messageId) {
-        onDispose { controller.setBounds(messageId, null) }
-    }
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .onGloballyPositioned { coordinates ->
-                if (expanded) {
-                    val top = coordinates.positionInRoot().y
-                    controller.setBounds(
-                        messageId,
-                        FoldBounds(top = top, bottom = top + coordinates.size.height, meta = meta),
-                    )
-                } else {
-                    controller.setBounds(messageId, null)
-                }
-            },
-    ) {
+    Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -2413,7 +2728,7 @@ private fun CompletedWorkFold(
                     )
                 }
                 if (activities.isNotEmpty()) {
-                    ToolActivityList(activities = activities)
+                    ToolActivityList(activities = activities, onOpenDiff = onOpenDiff)
                 }
             }
         }
@@ -2421,7 +2736,10 @@ private fun CompletedWorkFold(
 }
 
 @Composable
-private fun ToolActivityList(activities: List<ToolActivity>) {
+private fun ToolActivityList(
+    activities: List<ToolActivity>,
+    onOpenDiff: (DiffViewRequest) -> Unit = {},
+) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
@@ -2429,11 +2747,24 @@ private fun ToolActivityList(activities: List<ToolActivity>) {
         activities.forEach { activity ->
             when (activity.kind) {
                 "shell" -> ShellTerminalCard(activity = activity)
-                "create", "edit", "delete", "move" -> FileOpCard(activity = activity)
+                "create", "edit", "delete", "move" -> FileOpCard(activity = activity, onOpenDiff = onOpenDiff)
                 else -> GenericToolCard(activity = activity)
             }
         }
     }
+}
+
+/** Latest non-empty diff a message's tool activity produced for [path]. */
+internal fun findDiffForPath(activities: List<ToolActivity>, path: String): String? {
+    val normalized = path.replace('\\', '/')
+    return activities.lastOrNull { activity ->
+        val preview = activity.preview ?: return@lastOrNull false
+        preview.unifiedDiff.isNotBlank() &&
+            (
+                preview.path.replace('\\', '/') == normalized ||
+                    preview.affectedPaths.any { it.replace('\\', '/') == normalized }
+                )
+    }?.preview?.unifiedDiff
 }
 
 @Composable
@@ -2524,7 +2855,10 @@ private fun ShellTerminalCard(activity: ToolActivity) {
 }
 
 @Composable
-private fun FileOpCard(activity: ToolActivity) {
+private fun FileOpCard(
+    activity: ToolActivity,
+    onOpenDiff: (DiffViewRequest) -> Unit = {},
+) {
     val path = activity.preview?.path
         ?: activity.arguments?.get("path")?.jsonPrimitive?.contentOrNull
         ?: activity.title
@@ -2535,6 +2869,8 @@ private fun FileOpCard(activity: ToolActivity) {
         "move" -> "移动"
         else -> "编辑"
     }
+    val diff = activity.preview?.unifiedDiff?.takeIf { it.isNotBlank() }
+    val haptics = rememberAnyaHaptics()
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
@@ -2545,6 +2881,16 @@ private fun FileOpCard(activity: ToolActivity) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .then(
+                    if (diff != null) {
+                        Modifier.clickable {
+                            haptics.tick()
+                            onOpenDiff(DiffViewRequest(path = path, unifiedDiff = diff))
+                        }
+                    } else {
+                        Modifier
+                    },
+                )
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -2568,18 +2914,26 @@ private fun FileOpCard(activity: ToolActivity) {
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            Text(
-                text = when {
-                    running -> "执行中…"
-                    activity.status == "error" || !activity.success -> "失败"
-                    else -> "完成"
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = when {
-                    activity.status == "error" || !activity.success -> MaterialTheme.colorScheme.error
-                    else -> MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
+            if (diff != null && !running) {
+                Text(
+                    text = "查看 diff",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            } else {
+                Text(
+                    text = when {
+                        running -> "执行中…"
+                        activity.status == "error" || !activity.success -> "失败"
+                        else -> "完成"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = when {
+                        activity.status == "error" || !activity.success -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
         }
     }
 }
@@ -2766,89 +3120,133 @@ private fun PlanCard(
     onApprove: () -> Unit,
 ) {
     val haptic = rememberAnyaHaptics()
+    val live = tasks.any { it.status == "in_progress" }
+    var expanded by rememberSaveable(tasks.size, approved) { mutableStateOf(!approved || live) }
+    LaunchedEffect(live) {
+        if (live) expanded = true
+    }
+    val done = tasks.count { it.status == "completed" }
     Surface(
         shape = RoundedCornerShape(AnyaSpace.CardRadius),
         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
         tonalElevation = 0.dp,
         shadowElevation = 0.dp,
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(AnyaSpace.Lg),
-            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
-        ) {
-            Text(
-                text = "计划",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-            )
-            tasks.forEach { task ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = (task.level * 12).dp),
-                    verticalAlignment = Alignment.Top,
-                    horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
-                ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        haptic.tick()
+                        expanded = !expanded
+                    }
+                    .padding(horizontal = AnyaSpace.Lg, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    imageVector = if (expanded) Icons.Rounded.ExpandMore else Icons.Rounded.ChevronRight,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = "计划",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                if (!expanded) {
                     Text(
-                        text = when (task.status) {
-                            "completed" -> "✓"
-                            "in_progress" -> "›"
-                            "cancelled" -> "×"
-                            else -> "·"
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = if (task.status == "completed") {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        } else {
-                            MaterialTheme.colorScheme.onBackground
-                        },
-                    )
-                    Text(
-                        text = task.content,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = if (task.status == "in_progress") FontWeight.SemiBold else FontWeight.Normal,
-                        textDecoration = if (task.status == "completed" || task.status == "cancelled") {
-                            TextDecoration.LineThrough
-                        } else {
-                            TextDecoration.None
-                        },
-                        color = if (task.status == "completed" || task.status == "cancelled") {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        } else {
-                            MaterialTheme.colorScheme.onBackground
-                        },
+                        text = "$done/${tasks.size}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
-            Button(
-                onClick = {
-                    haptic.confirm()
-                    onApprove()
-                },
-                enabled = !approved,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(44.dp)
-                    .padding(top = AnyaSpace.Xs),
-                shape = RoundedCornerShape(AnyaSpace.ControlRadius),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.onBackground,
-                    contentColor = MaterialTheme.colorScheme.surface,
-                ),
-            ) {
-                Text(
-                    text = if (approved) "已批准并执行" else "批准并执行",
-                    style = MaterialTheme.typography.labelLarge,
-                )
+            if (expanded) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = AnyaSpace.Lg, end = AnyaSpace.Lg, bottom = AnyaSpace.Lg),
+                    verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
+                ) {
+                    tasks.forEach { task ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = (task.level * 12).dp),
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
+                        ) {
+                            Text(
+                                text = when (task.status) {
+                                    "completed" -> "✓"
+                                    "in_progress" -> "›"
+                                    "cancelled" -> "×"
+                                    else -> "·"
+                                },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (task.status == "completed") {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                } else {
+                                    MaterialTheme.colorScheme.onBackground
+                                },
+                            )
+                            Text(
+                                text = task.content,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = if (task.status == "in_progress") {
+                                    FontWeight.SemiBold
+                                } else {
+                                    FontWeight.Normal
+                                },
+                                textDecoration = if (task.status == "completed" || task.status == "cancelled") {
+                                    TextDecoration.LineThrough
+                                } else {
+                                    TextDecoration.None
+                                },
+                                color = if (task.status == "completed" || task.status == "cancelled") {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                } else {
+                                    MaterialTheme.colorScheme.onBackground
+                                },
+                            )
+                        }
+                    }
+                    Button(
+                        onClick = {
+                            haptic.confirm()
+                            onApprove()
+                        },
+                        enabled = !approved,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp)
+                            .padding(top = AnyaSpace.Xs),
+                        shape = RoundedCornerShape(AnyaSpace.ControlRadius),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.onBackground,
+                            contentColor = MaterialTheme.colorScheme.surface,
+                        ),
+                    ) {
+                        Text(
+                            text = if (approved) "已批准并执行" else "批准并执行",
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun CodeChangesCard(changes: List<CodeChangeEntry>) {
+private fun CodeChangesCard(
+    changes: List<CodeChangeEntry>,
+    onOpenChange: ((CodeChangeEntry) -> Unit)? = null,
+) {
+    val haptics = rememberAnyaHaptics()
     var expanded by rememberSaveable(changes.hashCode()) { mutableStateOf(false) }
     val totalAdded = changes.sumOf { it.added }
     val totalRemoved = changes.sumOf { it.removed }
@@ -2867,7 +3265,21 @@ private fun CodeChangesCard(changes: List<CodeChangeEntry>) {
                 .padding(AnyaSpace.Lg),
             verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(
+                        if (changes.size > 3) {
+                            Modifier.clickable {
+                                haptics.tick()
+                                expanded = !expanded
+                            }
+                        } else {
+                            Modifier
+                        },
+                    ),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
                     text = "已编辑 ${changes.size} 个文件",
                     style = MaterialTheme.typography.titleSmall,
@@ -2892,7 +3304,18 @@ private fun CodeChangesCard(changes: List<CodeChangeEntry>) {
             }
             visible.forEach { change ->
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(
+                            if (onOpenChange != null) {
+                                Modifier.clickable {
+                                    haptics.tick()
+                                    onOpenChange(change)
+                                }
+                            } else {
+                                Modifier
+                            },
+                        ),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
@@ -2919,12 +3342,15 @@ private fun CodeChangesCard(changes: List<CodeChangeEntry>) {
                     }
                 }
             }
-            if (remaining > 0) {
+            if (changes.size > 3) {
                 Text(
-                    text = "展开另外 $remaining 个",
+                    text = if (expanded) "收起" else "展开另外 $remaining 个",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.clickable { expanded = true },
+                    modifier = Modifier.clickable {
+                        haptics.tick()
+                        expanded = !expanded
+                    },
                 )
             }
         }

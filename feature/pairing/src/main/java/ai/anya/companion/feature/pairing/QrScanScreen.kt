@@ -36,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -139,7 +140,7 @@ internal fun QrScanScreen(
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.Close,
-                        contentDescription = "关闭",
+                        contentDescription = stringResource(R.string.pairing_close),
                         tint = Color.White,
                     )
                 }
@@ -156,7 +157,11 @@ internal fun QrScanScreen(
                         } else {
                             Icons.Rounded.FlashlightOff
                         },
-                        contentDescription = if (torchOn) "关闭手电筒" else "打开手电筒",
+                        contentDescription = if (torchOn) {
+                            stringResource(R.string.pairing_torch_off)
+                        } else {
+                            stringResource(R.string.pairing_torch_on)
+                        },
                         tint = Color.White,
                     )
                 }
@@ -186,14 +191,14 @@ internal fun QrScanScreen(
                 verticalArrangement = Arrangement.Top,
             ) {
                 Text(
-                    text = "扫描配对码",
+                    text = stringResource(R.string.pairing_scan_title),
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "对准桌面「连接手机」里的二维码",
+                    text = stringResource(R.string.pairing_scan_align),
                     color = Color.White.copy(alpha = 0.78f),
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center,

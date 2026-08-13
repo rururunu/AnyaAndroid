@@ -36,18 +36,18 @@ class KeepAliveService : Service() {
         val nm = getSystemService(NotificationManager::class.java) ?: return
         val ch = NotificationChannel(
             CHANNEL_ID,
-            "Anya 常驻连接",
+            getString(R.string.keep_alive_channel),
             NotificationManager.IMPORTANCE_LOW,
         )
-        ch.description = "用于保持远程连接常驻运行"
+        ch.description = getString(R.string.keep_alive_channel_desc)
         nm.createNotificationChannel(ch)
     }
 
     private fun buildOngoingNotification(): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("Anya 远程连接中")
-            .setContentText("请勿关闭后台限制以确保随时提醒")
+            .setContentTitle(getString(R.string.keep_alive_title))
+            .setContentText(getString(R.string.keep_alive_text))
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()

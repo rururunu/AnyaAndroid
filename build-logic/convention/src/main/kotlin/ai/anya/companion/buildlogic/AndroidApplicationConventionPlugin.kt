@@ -15,6 +15,7 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
             configureKotlinAndroid(this)
             configureCompose(this)
             configureAppDefaults()
+            configureReleaseSigning(this@with)
             buildFeatures.buildConfig = true
             buildTypes.getByName("release").apply {
                 isMinifyEnabled = true

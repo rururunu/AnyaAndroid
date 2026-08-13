@@ -33,26 +33,46 @@ import ai.anya.companion.core.model.session.MessageStatus
 import ai.anya.companion.core.model.session.PlanTaskItem
 import ai.anya.companion.core.model.session.SessionCompose
 import ai.anya.companion.core.model.session.ToolApprovalMode
+import ai.anya.companion.core.model.session.ChatSharedFile
+import ai.anya.companion.core.model.session.ChatSharedUrl
+import ai.anya.companion.core.model.session.SharedFileStatus
+import ai.anya.companion.core.model.workspace.CompanionFileOffer
+import ai.anya.companion.core.model.workspace.CompanionUrlOffer
 import ai.anya.companion.core.model.workspace.FileNode
 import ai.anya.companion.core.model.workspace.McpServerSummary
 import ai.anya.companion.core.model.workspace.SkillSummary
 import ai.anya.companion.core.model.workspace.WorkspaceFilesCatalog
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
 import javax.inject.Inject
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.util.UUID
+
+/** Route sentinel: open the chat screen without a session; the first send creates one. */
+public const val NewChatSessionId: String = "new"
 
 public data class ChatUiState(
     public val sessionId: String,
@@ -78,6 +98,15 @@ public data class ChatUiState(
     public val connectionState: ConnectionState = ConnectionState.Disconnected,
 )
 
+/** Progress / outcome of a workspace file download triggered from chat UI. */
+public data class FileDownloadUiState(
+    public val inProgress: Boolean = false,
+    public val fileName: String? = null,
+    public val message: String? = null,
+    public val localUri: String? = null,
+    public val mime: String? = null,
+)
+
 public data class AttachCatalogUiState(
     public val loading: Boolean = false,
     public val files: WorkspaceFilesCatalog? = null,
@@ -87,6 +116,12 @@ public data class AttachCatalogUiState(
     public val filesError: String? = null,
     public val skillsError: String? = null,
     public val mcpError: String? = null,
+)
+
+public data class LocalUploadItem(
+    public val name: String,
+    public val path: String,
+    public val size: Long,
 )
 
 /** Intermediate tuple to work around [combine]'s five-flow arity limit. */
@@ -99,6 +134,8 @@ private data class ChatCoreState(
     val planApprovedMessageIds: Set<String> = emptySet(),
     val historyLoading: Boolean = true,
     val connectionState: ConnectionState = ConnectionState.Disconnected,
+    /** Null until a brand-new session gets its desktop-assigned id. */
+    val sessionId: String? = null,
 )
 
 @HiltViewModel
@@ -120,30 +157,77 @@ public class ChatViewModel @Inject constructor(
     private val approvePlanUseCase: ApprovePlanUseCase,
     private val refreshAttachCatalog: RefreshAttachCatalogUseCase,
     private val loadCachedAttachCatalog: LoadCachedAttachCatalogUseCase,
+    private val downloadWorkspaceFile: ai.anya.companion.core.domain.usecase.DownloadWorkspaceFileUseCase,
+    private val exportCachedFile: ai.anya.companion.core.domain.usecase.ExportCachedFileUseCase,
+    private val uploadLocalFile: ai.anya.companion.core.domain.usecase.UploadLocalFileUseCase,
     private val respondAsk: RespondAskUseCase,
     private val respondApproval: ai.anya.companion.core.domain.usecase.RespondApprovalUseCase,
+    @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
-    private val sessionId: String = checkNotNull(savedStateHandle["sessionId"])
+    private val routeSessionId: String = checkNotNull(savedStateHandle["sessionId"])
     private val focusMessageId: String? = savedStateHandle["messageId"]
+
+    /** Workspace to bind a brand-new session to (from the workspace-folder "+" button). */
+    private val routeWorkspaceId: String? =
+        savedStateHandle.get<String?>("workspaceId")?.takeUnless { it.isBlank() }
+
+    /** Null while this is an unsent new session; set once the desktop assigns an id. */
+    private val activeSessionId =
+        MutableStateFlow(routeSessionId.takeUnless { it == NewChatSessionId })
 
     private val draft = MutableStateFlow("")
     private val sending = MutableStateFlow(false)
     private val error = MutableStateFlow<String?>(null)
     private val planApprovedMessageIds = MutableStateFlow<Set<String>>(emptySet())
-    private val historyLoading = MutableStateFlow(true)
+    private val historyLoading = MutableStateFlow(activeSessionId.value != null)
     private val _attachCatalog = MutableStateFlow(AttachCatalogUiState())
     public val attachCatalog: StateFlow<AttachCatalogUiState> = _attachCatalog.asStateFlow()
 
-    private val pendingAskForSession = observeApprovals().map { list ->
-        list.firstOrNull {
-            it.sessionId == sessionId &&
-                (it.kind == ApprovalKind.AskUser || it.kind == ApprovalKind.Tool)
+    private val _download = MutableStateFlow(FileDownloadUiState())
+    public val download: StateFlow<FileDownloadUiState> = _download.asStateFlow()
+
+    private val _localUploads = MutableStateFlow<List<LocalUploadItem>>(emptyList())
+    public val localUploads: StateFlow<List<LocalUploadItem>> = _localUploads.asStateFlow()
+
+    /** Compose choices made before the first message creates the session. */
+    private val draftCompose = MutableStateFlow(SessionCompose())
+
+    private val pendingAskForSession = combine(
+        observeApprovals(),
+        activeSessionId,
+    ) { list, sid ->
+        if (sid == null) {
+            null
+        } else {
+            list.firstOrNull {
+                it.sessionId == sid &&
+                    (
+                        it.kind == ApprovalKind.AskUser ||
+                            it.kind == ApprovalKind.Tool ||
+                            it.kind == ApprovalKind.PathPermission
+                        )
+            }
         }
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val sessionMessages = activeSessionId.flatMapLatest { sid ->
+        if (sid == null) flowOf(emptyList()) else observeMessages(sid)
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val composeFlow = activeSessionId.flatMapLatest { sid ->
+        if (sid == null) draftCompose else observeCompose(sid)
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val planTasksFlow = activeSessionId.flatMapLatest { sid ->
+        if (sid == null) flowOf(emptyList()) else observePlanTasks(sid)
+    }
+
     private val core: StateFlow<ChatCoreState> = combine(
-        observeMessages(sessionId),
+        sessionMessages,
         sessionRepository.sessions,
         draft,
         sending,
@@ -163,8 +247,14 @@ public class ChatViewModel @Inject constructor(
         planApprovedMessageIds,
         historyLoading,
         connectionRepository.connectionState,
-    ) { c, ids, loading, connection ->
-        c.copy(planApprovedMessageIds = ids, historyLoading = loading, connectionState = connection)
+        activeSessionId,
+    ) { c, ids, loading, connection, sid ->
+        c.copy(
+            planApprovedMessageIds = ids,
+            historyLoading = loading,
+            connectionState = connection,
+            sessionId = sid,
+        )
     }.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
@@ -173,12 +263,12 @@ public class ChatViewModel @Inject constructor(
 
     public val state: StateFlow<ChatUiState> = combine(
         coreWithApprovals,
-        observeCompose(sessionId),
+        composeFlow,
         observeModels(),
-        observePlanTasks(sessionId),
+        planTasksFlow,
         pendingAskForSession,
     ) { c, compose, models, tasks, pendingAsk ->
-        val session = c.sessions.firstOrNull { it.id == sessionId }
+        val session = c.sessions.firstOrNull { it.id == c.sessionId }
         val activeAssistantId = c.messages
             .asReversed()
             .firstOrNull {
@@ -193,7 +283,7 @@ public class ChatViewModel @Inject constructor(
             waitingAsk ||
             session?.runState == AgentRunState.WaitingApproval
         ChatUiState(
-            sessionId = sessionId,
+            sessionId = c.sessionId.orEmpty(),
             title = session?.title.orEmpty(),
             workspaceName = session?.workspaceName,
             messages = c.messages,
@@ -214,7 +304,11 @@ public class ChatViewModel @Inject constructor(
     }.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
-        ChatUiState(sessionId = sessionId, focusMessageId = focusMessageId),
+        ChatUiState(
+            sessionId = activeSessionId.value.orEmpty(),
+            focusMessageId = focusMessageId,
+            historyLoading = activeSessionId.value != null,
+        ),
     )
 
     init {
@@ -234,13 +328,24 @@ public class ChatViewModel @Inject constructor(
                 .map { it == ConnectionState.Connected }
                 .distinctUntilChanged()
                 .collect { connected ->
-                    if (!connected) return@collect
-                    try {
-                        loadHistory(sessionId)
-                    } finally {
+                    val sid = activeSessionId.value
+                    if (!connected) {
+                        // Don't block the transcript behind a spinner when offline —
+                        // cached messages (if any) should remain visible.
+                        historyLoading.value = false
+                        return@collect
+                    }
+                    if (sid != null) {
+                        historyLoading.value = true
+                        try {
+                            loadHistory(sid)
+                        } finally {
+                            historyLoading.value = false
+                        }
+                        refreshCompose(sid)
+                    } else {
                         historyLoading.value = false
                     }
-                    refreshCompose(sessionId)
                     refreshModels()
                     refreshAttachCatalog()
                 }
@@ -249,23 +354,154 @@ public class ChatViewModel @Inject constructor(
         // don't just wait for the background reconnect loop (which backs off up
         // to 8s between attempts, and can stall entirely while the process was
         // suspended in the background) to eventually get around to it.
-        viewModelScope.launch { attemptReconnectIfNeeded() }
+        connectionRepository.nudge()
+
+        // Agent shared a file from desktop — show a card; fetch bytes only on tap.
+        viewModelScope.launch {
+            sessionRepository.fileOffers.collect { offer ->
+                val sid = activeSessionId.value
+                if (sid != null && sid == offer.sessionId) {
+                    ingestSharedOffer(offer, autoFetch = false)
+                }
+            }
+        }
+        viewModelScope.launch {
+            sessionRepository.urlOffers.collect { offer ->
+                val sid = activeSessionId.value
+                if (sid != null && sid == offer.sessionId) {
+                    ingestUrlOffer(offer)
+                }
+            }
+        }
     }
 
-    private suspend fun attemptReconnectIfNeeded() {
-        val current = connectionRepository.connectionState.value
-        if (current == ConnectionState.Connected ||
-            current == ConnectionState.Connecting ||
-            current == ConnectionState.Reconnecting
-        ) {
-            return
+    private val downloadMutex = Mutex()
+
+    private suspend fun ingestSharedOffer(offer: CompanionFileOffer, autoFetch: Boolean) {
+        val offerId = offer.offerId.ifBlank { UUID.randomUUID().toString() }
+        val messageId = "shared-$offerId"
+        val mime = offer.mime?.takeIf { it.isNotBlank() } ?: guessMime(offer.name)
+        val pending = ChatSharedFile(
+            offerId = offerId,
+            path = offer.path,
+            name = offer.name,
+            mime = mime,
+            size = offer.size,
+            status = if (autoFetch) SharedFileStatus.Pending else SharedFileStatus.Offered,
+            workspaceId = offer.workspaceId,
+        )
+        sessionRepository.upsertLocalSharedMessage(
+            ChatMessage(
+                id = messageId,
+                sessionId = offer.sessionId,
+                role = ChatRole.System,
+                content = "",
+                status = MessageStatus.Complete,
+                createdAtEpochMs = System.currentTimeMillis(),
+                sharedFiles = listOf(pending),
+            ),
+        )
+        if (autoFetch) {
+            fetchSharedFileInternal(offer.sessionId, offerId, offer.path, offer.workspaceId)
         }
-        connectionRepository.connect()
+    }
+
+    private suspend fun ingestUrlOffer(offer: CompanionUrlOffer) {
+        val offerId = offer.offerId.ifBlank { UUID.randomUUID().toString() }
+        sessionRepository.upsertLocalSharedMessage(
+            ChatMessage(
+                id = "shared-url-$offerId",
+                sessionId = offer.sessionId,
+                role = ChatRole.System,
+                content = "",
+                status = MessageStatus.Complete,
+                createdAtEpochMs = System.currentTimeMillis(),
+                sharedUrls = listOf(
+                    ChatSharedUrl(
+                        offerId = offerId,
+                        label = offer.label.ifBlank { "Preview" },
+                        publicUrl = offer.publicUrl,
+                        originUrl = offer.originUrl,
+                    ),
+                ),
+            ),
+        )
+    }
+
+    public fun fetchSharedFile(offerId: String) {
+        val sid = activeSessionId.value ?: return
+        if (!requireConnectedOrWarn()) return
+        val file = state.value.messages
+            .asSequence()
+            .flatMap { it.sharedFiles.asSequence() }
+            .firstOrNull { it.offerId == offerId }
+            ?: return
+        if (file.status == SharedFileStatus.Ready || file.status == SharedFileStatus.Pending) return
+        sessionRepository.patchLocalSharedFile(sid, offerId) { current ->
+            current.copy(status = SharedFileStatus.Pending, error = null)
+        }
+        viewModelScope.launch {
+            fetchSharedFileInternal(sid, offerId, file.path, file.workspaceId)
+        }
+    }
+
+    private suspend fun fetchSharedFileInternal(
+        sessionId: String,
+        offerId: String,
+        path: String,
+        workspaceId: String?,
+    ) {
+        downloadMutex.withLock {
+            when (
+                val result = downloadWorkspaceFile(
+                    path,
+                    sessionId = sessionId,
+                    workspaceId = workspaceId,
+                )
+            ) {
+                is AnyaResult.Success -> {
+                    sessionRepository.patchLocalSharedFile(sessionId, offerId) { file ->
+                        file.copy(
+                            localPath = result.data.localPath,
+                            mime = result.data.mime.ifBlank { file.mime },
+                            size = result.data.size.takeIf { it > 0 } ?: file.size,
+                            name = result.data.name.ifBlank { file.name },
+                            status = SharedFileStatus.Ready,
+                            error = null,
+                        )
+                    }
+                }
+                is AnyaResult.Failure -> {
+                    sessionRepository.patchLocalSharedFile(sessionId, offerId) { file ->
+                        file.copy(
+                            status = SharedFileStatus.Failed,
+                            error = result.error.toString(),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun guessMime(name: String): String {
+        val ext = name.substringAfterLast('.', "").lowercase()
+        return when (ext) {
+            "png" -> "image/png"
+            "jpg", "jpeg" -> "image/jpeg"
+            "gif" -> "image/gif"
+            "webp" -> "image/webp"
+            "svg" -> "image/svg+xml"
+            "pdf" -> "application/pdf"
+            "txt", "md", "log" -> "text/plain"
+            "json" -> "application/json"
+            "zip" -> "application/zip"
+            else -> "application/octet-stream"
+        }
     }
 
     /** Called from the disconnect banner's "重连" action. */
     public fun retryConnection() {
-        viewModelScope.launch { attemptReconnectIfNeeded() }
+        connectionRepository.nudge()
     }
 
     /**
@@ -277,7 +513,7 @@ public class ChatViewModel @Inject constructor(
     private fun requireConnectedOrWarn(): Boolean {
         if (connectionRepository.connectionState.value == ConnectionState.Connected) return true
         error.value = "连接已断开，正在尝试重新连接…"
-        viewModelScope.launch { attemptReconnectIfNeeded() }
+        connectionRepository.nudge()
         return false
     }
 
@@ -288,24 +524,46 @@ public class ChatViewModel @Inject constructor(
         if (text.isEmpty()) return
         if (!requireConnectedOrWarn()) return
         val compose = state.value.compose
+        val target = activeSessionId.value
         viewModelScope.launch {
             sending.value = true
             error.value = null
             when (
                 val result = sendChatMessage(
-                    sessionId,
+                    target,
                     text,
                     compose.chatMode,
                     compose.toolApprovalMode,
                     compose.chatModel.ifBlank { null },
                     compose.chatModelProvider.ifBlank { null },
+                    workspaceId = routeWorkspaceId,
                 )
             ) {
-                is AnyaResult.Success -> draft.value = ""
+                is AnyaResult.Success -> {
+                    draft.value = ""
+                    if (target == null) {
+                        adoptNewSession(result.data)
+                    }
+                }
                 is AnyaResult.Failure -> error.value = result.error.toString()
             }
             sending.value = false
         }
+    }
+
+    /** First send of a `chat/new` screen: switch onto the desktop-assigned session. */
+    private suspend fun adoptNewSession(newSessionId: String) {
+        if (newSessionId.isBlank() || activeSessionId.value != null) return
+        activeSessionId.value = newSessionId
+        historyLoading.value = true
+        try {
+            loadHistory(newSessionId)
+        } finally {
+            historyLoading.value = false
+        }
+        refreshCompose(newSessionId)
+        sessionRepository.refreshSessions()
+        refreshAttachCatalog()
     }
 
     public fun stop() {
@@ -321,17 +579,38 @@ public class ChatViewModel @Inject constructor(
     }
 
     public fun setChatMode(mode: ChatMode) {
-        viewModelScope.launch { setComposeUseCase(sessionId, chatMode = mode) }
+        val sid = activeSessionId.value
+        if (sid == null) {
+            draftCompose.update { it.copy(chatMode = mode) }
+            return
+        }
+        viewModelScope.launch { setComposeUseCase(sid, chatMode = mode) }
     }
 
     public fun setApprovalMode(mode: ToolApprovalMode) {
-        viewModelScope.launch { setComposeUseCase(sessionId, toolApprovalMode = mode) }
+        val sid = activeSessionId.value
+        if (sid == null) {
+            draftCompose.update { it.copy(toolApprovalMode = mode) }
+            return
+        }
+        viewModelScope.launch { setComposeUseCase(sid, toolApprovalMode = mode) }
     }
 
     public fun setModel(model: ChatModelInfo) {
+        val sid = activeSessionId.value
+        if (sid == null) {
+            draftCompose.update {
+                it.copy(
+                    chatModel = model.id,
+                    chatModelProvider = model.provider,
+                    chatModelLabel = model.label,
+                )
+            }
+            return
+        }
         viewModelScope.launch {
             setComposeUseCase(
-                sessionId,
+                sid,
                 chatModel = model.id,
                 chatModelProvider = model.provider,
                 chatModelLabel = model.label,
@@ -349,19 +628,164 @@ public class ChatViewModel @Inject constructor(
         }
     }
 
+    public fun uploadPickedUris(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        if (!requireConnectedOrWarn()) return
+        viewModelScope.launch {
+            for (uri in uris) {
+                uploadOneUri(uri)
+            }
+        }
+    }
+
+    private suspend fun uploadOneUri(uri: Uri) {
+        val name = queryDisplayName(uri)
+        val mime = appContext.contentResolver.getType(uri)
+        _download.value = FileDownloadUiState(
+            inProgress = true,
+            fileName = name,
+            message = "Uploading $name…",
+        )
+        val result = runCatching {
+            withContext(Dispatchers.IO) {
+                val knownSize = querySize(uri)
+                if (knownSize != null && knownSize > 500L * 1024L * 1024L) {
+                    return@withContext AnyaResult.Failure(
+                        ai.anya.companion.core.common.result.AnyaError.Protocol(
+                            "file too large: $knownSize bytes (max ${500L * 1024L * 1024L})",
+                        ),
+                    )
+                }
+                if (knownSize != null && knownSize > 0L) {
+                    appContext.contentResolver.openInputStream(uri)?.use { input ->
+                        uploadLocalFile(
+                            sessionId = activeSessionId.value,
+                            workspaceId = routeWorkspaceId,
+                            fileName = name,
+                            size = knownSize,
+                            mime = mime,
+                            input = input,
+                            onProgress = { written, total ->
+                                val pct = if (total > 0) (written * 100 / total).toInt() else 0
+                                _download.value = FileDownloadUiState(
+                                    inProgress = true,
+                                    fileName = name,
+                                    message = "Uploading $name… $pct%",
+                                )
+                            },
+                        )
+                    } ?: AnyaResult.Failure(
+                        ai.anya.companion.core.common.result.AnyaError.Unknown("无法读取所选文件"),
+                    )
+                } else {
+                    val tmp = java.io.File.createTempFile("anya-up-", ".bin", appContext.cacheDir)
+                    try {
+                        appContext.contentResolver.openInputStream(uri)?.use { input ->
+                            tmp.outputStream().use { output -> input.copyTo(output) }
+                        } ?: return@withContext AnyaResult.Failure(
+                            ai.anya.companion.core.common.result.AnyaError.Unknown("无法读取所选文件"),
+                        )
+                        tmp.inputStream().use { input ->
+                            uploadLocalFile(
+                                sessionId = activeSessionId.value,
+                                workspaceId = routeWorkspaceId,
+                                fileName = name,
+                                size = tmp.length(),
+                                mime = mime,
+                                input = input,
+                                onProgress = { written, total ->
+                                    val pct = if (total > 0) (written * 100 / total).toInt() else 0
+                                    _download.value = FileDownloadUiState(
+                                        inProgress = true,
+                                        fileName = name,
+                                        message = "Uploading $name… $pct%",
+                                    )
+                                },
+                            )
+                        }
+                    } finally {
+                        tmp.delete()
+                    }
+                }
+            }
+        }.getOrElse { e ->
+            AnyaResult.Failure(
+                ai.anya.companion.core.common.result.AnyaError.Unknown(e.message ?: "upload failed", e),
+            )
+        }
+        when (result) {
+            is AnyaResult.Success -> {
+                val file = result.data
+                if (activeSessionId.value == null && file.sessionId.isNotBlank()) {
+                    adoptNewSession(file.sessionId)
+                }
+                attachInsert("@${file.path} ")
+                _localUploads.update { current ->
+                    current + LocalUploadItem(name = file.name, path = file.path, size = file.size)
+                }
+                _download.value = FileDownloadUiState(
+                    fileName = file.name,
+                    message = "Uploaded ${file.name}",
+                )
+            }
+            is AnyaResult.Failure -> {
+                _download.value = FileDownloadUiState(
+                    fileName = name,
+                    message = "Upload failed: ${result.error}",
+                )
+            }
+        }
+    }
+
+    private fun queryDisplayName(uri: Uri): String {
+        val fallback = uri.lastPathSegment?.substringAfterLast('/') ?: "file"
+        return runCatching {
+            appContext.contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else fallback
+            } ?: fallback
+        }.getOrDefault(fallback).ifBlank { "file" }
+    }
+
+    private fun querySize(uri: Uri): Long? {
+        return runCatching {
+            appContext.contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.SIZE),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                if (!cursor.moveToFirst()) return@use null
+                val idx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (idx < 0 || cursor.isNull(idx)) null else cursor.getLong(idx).takeIf { it > 0L }
+            }
+        }.getOrNull()
+    }
+
     public fun refreshAttachCatalog() {
         viewModelScope.launch {
             val previous = _attachCatalog.value
             _attachCatalog.update { it.copy(loading = true) }
-            val catalog = refreshAttachCatalog(sessionId)
+            val sessionId = activeSessionId.value
+            val workspaceId = if (sessionId == null) routeWorkspaceId else null
+            val catalog = refreshAttachCatalog(sessionId, workspaceId)
             val mergedSkills = if (catalog.skills.isNotEmpty()) catalog.skills else previous.skills
             val mergedMcp = if (catalog.mcpServers.isNotEmpty()) catalog.mcpServers else previous.mcpServers
-            val mergedFiles = catalog.files ?: previous.files
             val remoteFiles = catalog.files
+            val keepPreviousFiles = workspaceId == null
+            val mergedFiles = remoteFiles ?: previous.files.takeIf { keepPreviousFiles }
             val mergedTree = if (remoteFiles != null) {
                 buildFileTree(remoteFiles.files)
-            } else {
+            } else if (keepPreviousFiles) {
                 previous.fileTree
+            } else {
+                emptyList()
             }
             _attachCatalog.value = AttachCatalogUiState(
                 loading = false,
@@ -386,12 +810,74 @@ public class ChatViewModel @Inject constructor(
         }
     }
 
+    public fun downloadFile(path: String, workspaceId: String? = null) {
+        // Kept for attach-tree manual pulls: cache into chat when possible.
+        val sid = activeSessionId.value ?: return
+        if (!requireConnectedOrWarn()) return
+        viewModelScope.launch {
+            ingestSharedOffer(
+                CompanionFileOffer(
+                    sessionId = sid,
+                    offerId = UUID.randomUUID().toString(),
+                    path = path,
+                    name = path.replace('\\', '/').substringAfterLast('/'),
+                    workspaceId = workspaceId,
+                ),
+                autoFetch = true,
+            )
+        }
+    }
+
+    public fun exportSharedFile(offerId: String) {
+        val sid = activeSessionId.value ?: return
+        val file = state.value.messages
+            .asSequence()
+            .flatMap { it.sharedFiles.asSequence() }
+            .firstOrNull { it.offerId == offerId && it.status == SharedFileStatus.Ready }
+            ?: return
+        val localPath = file.localPath ?: return
+        if (!file.exportedUri.isNullOrBlank()) return
+        _download.value = FileDownloadUiState(
+            inProgress = true,
+            fileName = file.name,
+            message = "Saving ${file.name}…",
+        )
+        viewModelScope.launch {
+            when (val result = exportCachedFile(localPath, file.name, file.mime)) {
+                is AnyaResult.Success -> {
+                    sessionRepository.patchLocalSharedFile(sid, offerId) { current ->
+                        current.copy(exportedUri = result.data)
+                    }
+                    _download.value = FileDownloadUiState(
+                        fileName = file.name,
+                        message = "Saved to Downloads: ${file.name}",
+                        localUri = result.data,
+                        mime = file.mime,
+                    )
+                }
+                is AnyaResult.Failure -> {
+                    _download.value = FileDownloadUiState(
+                        fileName = file.name,
+                        message = "Save failed: ${result.error}",
+                    )
+                }
+            }
+        }
+    }
+
+    public fun dismissDownloadNotice() {
+        if (!_download.value.inProgress) {
+            _download.value = FileDownloadUiState()
+        }
+    }
+
     public fun approvePlan(messageId: String) {
+        val sid = activeSessionId.value ?: return
         if (messageId in planApprovedMessageIds.value) return
         if (!requireConnectedOrWarn()) return
         planApprovedMessageIds.update { it + messageId }
         viewModelScope.launch {
-            when (val result = approvePlanUseCase(sessionId)) {
+            when (val result = approvePlanUseCase(sid)) {
                 is AnyaResult.Failure -> {
                     planApprovedMessageIds.update { it - messageId }
                     error.value = result.error.toString()
@@ -446,7 +932,7 @@ public class ChatViewModel @Inject constructor(
     }
     public fun answerToolApproval(decision: ai.anya.companion.core.model.approval.ApprovalDecision) {
         val ask = state.value.pendingAsk ?: return
-        if (ask.kind != ApprovalKind.Tool) return
+        if (ask.kind != ApprovalKind.Tool && ask.kind != ApprovalKind.PathPermission) return
         if (!requireConnectedOrWarn()) return
         viewModelScope.launch {
             when (val result = respondApproval(ask.requestId, decision)) {

@@ -1,79 +1,125 @@
-# Anya Companion (Android)
+# Anya Companion
 
-远程连接电脑端 [Anya](../AltAltAi) Agent 的安卓 Companion：发消息、审批、查看代码与工作区状态。
+<p align="center"><strong>The Android remote for desktop Anya.</strong></p>
 
-> Agent **只在 PC 上运行**。本应用通过桌面 Remote Gateway（WebSocket）远程操控同一套会话与审批流。
+<p align="center">
+  Scan a QR code on your PC, then chat, approve tools, and share files from your phone.<br />
+  The Agent still runs on the desktop — this app is a remote console, not a second runtime.
+</p>
 
-## 架构
+<p align="center">
+  <a href="./README.md">English</a>
+  &nbsp;·&nbsp;
+  <a href="./README.zh-CN.md">简体中文</a>
+</p>
 
-```text
-app/                     # 组装层：Application、导航、DI 入口
-feature/                 # 按功能垂直切片（UI + ViewModel）
-  pairing/               # 手动配对（后续扫码）
-  sessions/              # 会话列表与连接状态
-  chat/                  # 发消息 / 流式回复
-  approval/              # 工具审批 / ask_user
-  workspace/             # 工作区快照与变更
-  settings/              # 断开 / 解除配对
-core/
-  common/                # Result、Dispatcher 限定符
-  model/                 # 协议与领域模型（纯 Kotlin）
-  domain/                # Repository 接口 + UseCase
-  network/               # OkHttp WebSocket Gateway 客户端
-  data/                  # Repository 实现、DataStore 凭证
-  designsystem/          # Compose 主题与基础组件
-build-logic/             # 约定式 Gradle 插件（工程化）
+<p align="center">
+  <img alt="platform" src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=flat-square" />
+  <img alt="release" src="https://img.shields.io/badge/version-v0.1.0-4D6BFE?style=flat-square" />
+  <img alt="stack" src="https://img.shields.io/badge/Compose%20%2B%20Hilt%20%2B%20OkHttp-black?style=flat-square" />
+</p>
+
+<p align="center">
+  Desktop: <a href="https://github.com/rururunu/Anya">rururunu/Anya</a>
+  &nbsp;·&nbsp;
+  This repo: <a href="https://github.com/rururunu/AnyaAndroid">rururunu/AnyaAndroid</a>
+</p>
+
+---
+
+## At a glance
+
+|                    |                                                                                          |
+| ------------------ | ---------------------------------------------------------------------------------------- |
+| **Pair**           | Scan the desktop “Connect phone” QR, or paste host / token. Deep link: `anya://pair`.    |
+| **Chat**           | Same sessions as the PC: send, stream replies, cancel, switch Ask / Agent / Plan.        |
+| **Approvals**      | Tool allow-once / session / deny, plus `ask_user` and plan cards.                        |
+| **Files**          | Attach from the phone (chunked upload, up to 500MB). Tap a desktop offer to download.    |
+| **Reachability**   | Same Wi-Fi uses LAN `ws://`. Away from home, Cloudflare Tunnel `wss://`.                 |
+
+**Docs:** [Architecture](./docs/ARCHITECTURE.md) · [Releases](./docs/release.md) · [Changelog](./CHANGELOG.md) · [Index](./docs/README.md)
+
+Desktop must be running with Remote Gateway enabled. Companion never talks to model providers itself.
+
+---
+
+## Pair and connect
+
+1. Install and open [Anya](https://github.com/rururunu/Anya) on Windows.
+2. Open **Connect phone** and wait until the QR shows a LAN address and, if you enabled it, a public tunnel host.
+3. On the phone, scan the code (or enter host / port / token).
+4. After `hello.ok`, chats, approvals, and workspace cards stay in sync with the desktop.
+
+If the handshake takes more than five seconds, **Cancel connection** appears on the boot screen and takes you to connection settings — reconnect, or unpair and scan again. Quick Tunnel hostnames change when the desktop restarts; re-scan if the public URL went stale.
+
+```mermaid
+flowchart LR
+  Phone[Companion] -->|same Wi-Fi first| LAN["ws://PC:8787/remote/v1"]
+  Phone -->|fallback| CF["wss://*.trycloudflare.com/remote/v1"]
+  LAN --> GW[Desktop Remote Gateway]
+  CF --> GW
+  GW --> Agent[ChatService / AgentRunner]
 ```
 
-依赖方向（单向）：
+---
 
-```text
-app → feature:* → domain ← data
-                 ↘ model / common / designsystem
-data → network → model
-```
+## What you can do
 
-详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+| Surface        | Role                                                                                      |
+| -------------- | ----------------------------------------------------------------------------------------- |
+| **Ask**        | Quick chats not bound to a workspace.                                                     |
+| **Workspace**  | Project-bound sessions, file catalog, skills / MCP lists.                                 |
+| **Inbox**      | Pending tool approvals and questions.                                                     |
+| **Settings**   | Connection status, reconnect / unpair, language, in-app updates.                          |
 
-## 技术栈
+Files from the phone land under the workspace `.anya/uploads/{sessionId}/` (or the Ask inbox). Desktop `share_to_companion` shows a card; bytes are pulled in 512KB slices so a large Base64 frame cannot blow up the phone. Previews of local web apps go through `/p/{id}/` on the same gateway.
 
-| 项 | 选择 |
-|---|---|
-| UI | Jetpack Compose + Material 3 |
-| DI | Hilt |
-| 异步 | Kotlin Coroutines + Flow |
-| 网络 | OkHttp WebSocket |
-| 序列化 | kotlinx.serialization |
-| 本地 | DataStore Preferences |
-| 构建 | AGP 9.0 · Gradle 9.1 · Kotlin 2.2 · Version Catalog · Convention Plugins |
+---
 
-## 本地运行
+## Install
 
-1. 用 **Android Studio** 打开本目录（推荐），或命令行构建
-2. 确认 `local.properties` 中 `sdk.dir` 指向本机 Android SDK（可参考 `local.properties.example`）
-3. 构建：
+1. Build a debug APK (below) or install a release from this repo’s Releases when published.
+2. Pair with a running desktop Anya as above.
+3. Keep the phone on the same Wi-Fi as the PC when you can — it is more stable than a Quick Tunnel, especially in China.
+
+Minimum: **Android 8.0 (API 26)**. Camera is optional (manual pairing still works).
+
+---
+
+## Run from source
+
+Android Studio (recommended) or:
 
 ```bat
 gradlew.bat :app:assembleDebug
 ```
 
-当前环境已验证：`BUILD SUCCESSFUL`（`app-debug.apk`）。
+Point `local.properties` `sdk.dir` at your Android SDK (`local.properties.example` is a template). Debug package id is `ai.anya.companion.debug`.
 
-> 本机若使用 **Java 25** 跑 Gradle，需要 **Gradle ≥ 9.1**（已配置）。Android 编译目标仍为 **JVM 17**。
+| Toolchain                         | Version        |
+| --------------------------------- | -------------- |
+| AGP / Gradle / Kotlin             | 9.0 / 9.1 / 2.2 |
+| compileSdk / minSdk / targetSdk   | 36 / 26 / 36   |
+| JDK for Android compile           | 17             |
 
-4. 桌面 Anya 侧 Remote Gateway 尚未合入前：配对会落盘设备凭证，真实握手/事件投影待联调。
+Gradle 9.1+ is required if the host JDK is 25.
 
-## 协议草图
+---
 
-见 `core/model/.../protocol/Protocol.kt`：
+## Architecture (summary)
 
-- 客户端：`hello` / `chat.send` / `approval.respond` / `workspace.*`
-- 服务端：`hello.ok` / `event`（投影 BusEvent） / `rpc.result`
+```text
+app → feature:* → domain ← data
+                 ↘ model / common / designsystem
+data → network → OkHttp WebSocket → Desktop /remote/v1
+```
 
-## 下一步
+The Agent, tools, SQLite, and model keys stay on the PC. Companion projects `event` frames (chat deltas, approvals, file offers) and sends RPCs (`chat.send`, `approval.respond`, `file.upload.*`, …).
 
-1. 在 Anya 桌面端实现 `Remote Gateway`
-2. 联调配对握手与事件投影
-3. 审批推送通知 + Diff 阅读器
-4. QR 扫码配对
-5. UI 补全 Compose `Modifier` 布局修饰（骨架阶段为降低工具链摩擦做了精简）
+Full diagrams: [Architecture](./docs/ARCHITECTURE.md).
+
+---
+
+## Privacy
+
+Pairing credentials stay in DataStore on the device. Chat content and files travel only to the paired desktop over the gateway (LAN or your Cloudflare tunnel). Companion does not hold provider API keys.

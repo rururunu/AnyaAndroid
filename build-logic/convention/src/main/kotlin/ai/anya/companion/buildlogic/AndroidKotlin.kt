@@ -75,3 +75,36 @@ internal fun ApplicationExtension.configureAppDefaults() {
     defaultConfig.versionCode = 1
     defaultConfig.versionName = "0.1.0"
 }
+
+internal fun ApplicationExtension.configureReleaseSigning(project: Project) {
+    val propsFile = project.rootProject.file("keystore.properties")
+    if (!propsFile.isFile) {
+        project.logger.warn("keystore.properties missing; release APK will be unsigned")
+        return
+    }
+    val props = java.util.Properties().apply {
+        propsFile.inputStream().use { load(it) }
+    }
+    val store = project.rootProject.file(props.getProperty("storeFile") ?: return)
+    if (!store.isFile) {
+        project.logger.warn("${store.path} missing; release APK will be unsigned")
+        return
+    }
+    val storePw = props.getProperty("storePassword").orEmpty()
+    val alias = props.getProperty("keyAlias").orEmpty()
+    val keyPw = props.getProperty("keyPassword").orEmpty()
+    if (storePw.isEmpty() || alias.isEmpty() || keyPw.isEmpty()) {
+        project.logger.warn("incomplete keystore.properties; release APK will be unsigned")
+        return
+    }
+    val releaseSigning = signingConfigs.create("release") {
+        storeFile = store
+        storePassword = storePw
+        keyAlias = alias
+        keyPassword = keyPw
+        enableV1Signing = true
+        enableV2Signing = true
+        enableV3Signing = true
+    }
+    buildTypes.getByName("release").signingConfig = releaseSigning
+}

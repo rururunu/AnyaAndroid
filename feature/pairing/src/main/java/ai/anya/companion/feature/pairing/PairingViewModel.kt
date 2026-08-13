@@ -1,5 +1,6 @@
 package ai.anya.companion.feature.pairing
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import ai.anya.companion.core.common.result.AnyaError
@@ -8,6 +9,7 @@ import ai.anya.companion.core.domain.usecase.ConnectGatewayUseCase
 import ai.anya.companion.core.domain.usecase.PairDeviceUseCase
 import ai.anya.companion.core.model.protocol.PairingPayload
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -20,6 +22,8 @@ public data class PairingUiState(
     public val port: String = "8787",
     public val token: String = "",
     public val scheme: String = "ws",
+    public val lanHost: String? = null,
+    public val lanPort: Int? = null,
     public val isSubmitting: Boolean = false,
     public val error: String? = null,
     public val info: String? = null,
@@ -30,6 +34,7 @@ public data class PairingUiState(
 public class PairingViewModel @Inject constructor(
     private val pairDevice: PairDeviceUseCase,
     private val connectGateway: ConnectGatewayUseCase,
+    @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(PairingUiState())
@@ -44,10 +49,25 @@ public class PairingViewModel @Inject constructor(
     public fun onTokenChange(value: String) =
         _state.update { it.copy(token = value, error = null, info = null) }
 
+    public fun onSchemeChange(value: String) {
+        val scheme = when (value.lowercase()) {
+            "wss" -> "wss"
+            else -> "ws"
+        }
+        _state.update { current ->
+            val port = when {
+                scheme == "wss" && current.port in listOf("", "80", "8787") -> "443"
+                scheme == "ws" && current.port in listOf("", "443") -> "8787"
+                else -> current.port
+            }
+            current.copy(scheme = scheme, port = port, error = null, info = null)
+        }
+    }
+
     public fun onCameraPermissionDenied() {
         _state.update {
             it.copy(
-                error = "未授予相机权限，可在下方手动填写配对信息",
+                error = context.getString(R.string.pairing_camera_denied),
                 info = null,
             )
         }
@@ -62,13 +82,13 @@ public class PairingViewModel @Inject constructor(
                     it.copy(
                         token = token,
                         error = null,
-                        info = "已识别配对码，请填写主机后连接",
+                        info = context.getString(R.string.pairing_token_need_host),
                     )
                 }
             } else {
                 _state.update {
                     it.copy(
-                        error = "无法识别该二维码，请扫描桌面「连接手机」中的配对码",
+                        error = context.getString(R.string.pairing_qr_unrecognized),
                         info = null,
                     )
                 }
@@ -81,8 +101,10 @@ public class PairingViewModel @Inject constructor(
                 port = link.port.toString(),
                 token = link.token,
                 scheme = link.scheme,
+                lanHost = link.lanHost,
+                lanPort = link.lanPort,
                 error = null,
-                info = "已识别 ${link.host}，正在连接…",
+                info = context.getString(R.string.pairing_recognized_connecting, link.host),
             )
         }
         if (autoSubmit) submit()
@@ -90,32 +112,53 @@ public class PairingViewModel @Inject constructor(
 
     public fun submit() {
         val current = _state.value
-        val port = current.port.toIntOrNull()
         val token = normalizePairingToken(current.token)
-        if (current.host.isBlank() || port == null || token.isBlank()) {
+        // Users often paste the whole ws://host:port/remote/v1 link into the host
+        // field; extract host/port/scheme instead of shipping the URL as a hostname.
+        val hostInput = parseManualHostInput(current.host)
+        val port = when {
+            hostInput?.port != null -> hostInput.port
+            // A pasted URL without explicit port implies the scheme default,
+            // not whatever is left in the port field.
+            hostInput?.scheme == "wss" -> 443
+            hostInput?.scheme == "ws" -> 80
+            else -> current.port.toIntOrNull()
+        }
+        if (hostInput == null || port == null || token.isBlank()) {
             _state.update {
                 it.copy(
                     isSubmitting = false,
-                    error = "请填写主机、端口与配对令牌",
+                    error = context.getString(R.string.pairing_fill_required),
                     info = null,
                 )
             }
             return
         }
+        val scheme = hostInput.scheme ?: current.scheme.ifBlank { "ws" }
         viewModelScope.launch {
-            _state.update { it.copy(isSubmitting = true, error = null) }
+            _state.update {
+                it.copy(
+                    host = hostInput.host,
+                    port = port.toString(),
+                    scheme = scheme,
+                    isSubmitting = true,
+                    error = null,
+                )
+            }
             val payload = PairingPayload(
-                host = current.host.trim(),
+                host = hostInput.host,
                 port = port,
                 pairingToken = token,
-                scheme = current.scheme.ifBlank { "ws" },
+                scheme = scheme,
+                lanHost = current.lanHost,
+                lanPort = current.lanPort,
             )
             when (val paired = pairDevice(payload)) {
                 is AnyaResult.Failure -> {
                     _state.update {
                         it.copy(
                             isSubmitting = false,
-                            error = paired.error.toUserMessage(),
+                            error = paired.error.toUserMessage(context),
                             info = null,
                         )
                     }
@@ -126,7 +169,7 @@ public class PairingViewModel @Inject constructor(
                             it.copy(
                                 isSubmitting = false,
                                 paired = true,
-                                error = connected.error.toUserMessage(),
+                                error = connected.error.toUserMessage(context),
                                 info = null,
                             )
                         }
@@ -140,21 +183,21 @@ public class PairingViewModel @Inject constructor(
     }
 }
 
-private fun AnyaError.toUserMessage(): String = when (this) {
+private fun AnyaError.toUserMessage(context: Context): String = when (this) {
     is AnyaError.Network -> when {
         message.contains("timeout", ignoreCase = true) ||
             message.contains("timed out", ignoreCase = true) ->
-            "连接超时，请确认桌面端在线，且公网隧道已开启"
+            context.getString(R.string.pairing_error_timeout)
         message.contains("hello", ignoreCase = true) ||
             message.contains("Unauthorized", ignoreCase = true) ->
-            "配对被拒绝，请在桌面刷新二维码后重试"
+            context.getString(R.string.pairing_error_rejected)
         message.contains("Failed to open", ignoreCase = true) ||
             message.contains("Unable to resolve", ignoreCase = true) ->
-            "无法连上主机，请检查网络或 Hostname"
-        else -> message.ifBlank { "无法连接桌面端" }
+            context.getString(R.string.pairing_error_unreachable)
+        else -> message.ifBlank { context.getString(R.string.pairing_error_generic) }
     }
-    is AnyaError.Unauthorized -> "配对令牌无效或已过期，请重新扫码"
-    is AnyaError.NotPaired -> "尚未配对"
-    is AnyaError.Protocol -> message.ifBlank { "协议错误，请更新应用后重试" }
-    is AnyaError.Unknown -> message.ifBlank { "配对失败，请重试" }
+    is AnyaError.Unauthorized -> context.getString(R.string.pairing_error_unauthorized)
+    is AnyaError.NotPaired -> context.getString(R.string.pairing_error_not_paired)
+    is AnyaError.Protocol -> message.ifBlank { context.getString(R.string.pairing_error_protocol) }
+    is AnyaError.Unknown -> message.ifBlank { context.getString(R.string.pairing_error_unknown) }
 }

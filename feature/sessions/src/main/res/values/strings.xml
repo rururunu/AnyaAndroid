@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="sessions_ask">Ask</string>
+    <string name="sessions_workspace">Workspace</string>
+    <string name="sessions_search">Search chats</string>
+    <string name="sessions_search_hint">Title or message text</string>
+    <string name="sessions_search_clear">Clear</string>
+    <string name="sessions_search_help">Search by title or by text inside a conversation.</string>
+    <string name="sessions_searching_messages">Searching messages…</string>
+    <string name="sessions_delete_title">Delete chat</string>
+    <string name="sessions_delete_body">“%1$s” will be permanently deleted on this phone and on desktop.</string>
+    <string name="sessions_delete_untitled">New chat</string>
+    <string name="sessions_delete_confirm">Delete</string>
+    <string name="sessions_delete_cancel">Cancel</string>
+    <string name="sessions_workspace_empty">No chats in this workspace yet</string>
+    <string name="sessions_ask_empty_title">No Ask chats yet</string>
+    <string name="sessions_ask_empty_subtitle">New Ask chats from the desktop app will show up here</string>
+    <string name="sessions_workspace_none_title">No workspaces</string>
+    <string name="sessions_workspace_none_subtitle">Workspaces added on desktop will show up here</string>
+    <string name="sessions_new_in_workspace">New chat in this workspace</string>
+    <string name="sessions_run_idle">Idle</string>
+    <string name="sessions_run_streaming">Running</string>
+    <string name="sessions_run_waiting_approval">Needs approval</string>
+    <string name="sessions_run_waiting_ask">Waiting for answer</string>
+    <string name="sessions_run_error">Error</string>
+    <string name="sessions_search_empty_title">No matching chats</string>
+    <string name="sessions_search_empty_subtitle">Try a different keyword</string>
+    <string name="sessions_match_title">Title</string>
+    <string name="sessions_match_message">Message</string>
+</resources>

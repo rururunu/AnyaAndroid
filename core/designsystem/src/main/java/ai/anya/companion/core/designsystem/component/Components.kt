@@ -35,23 +35,21 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
-import androidx.compose.foundation.gestures.drag
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -65,11 +63,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -77,8 +71,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -128,7 +122,7 @@ public fun AnyaBrandMark(
 public fun AnyaLoadingIndicator(
     modifier: Modifier = Modifier,
     size: androidx.compose.ui.unit.Dp = 88.dp,
-    label: String? = "请稍等，正在为您准备……",
+    label: String? = stringResource(R.string.loading_please_wait),
 ) {
     val transition = rememberInfiniteTransition(label = "anyaLoad")
     val scale by transition.animateFloat(
@@ -245,28 +239,16 @@ public fun AnyaLoadingIndicator(
     }
 }
 
-/** Compact pulsing mark for inline loading slots (search field, list headers). */
+/** Compact spinner for inline loading slots (file download, search, list headers). */
 @Composable
 public fun AnyaInlineLoadingMark(
     modifier: Modifier = Modifier,
     size: androidx.compose.ui.unit.Dp = 18.dp,
 ) {
-    val transition = rememberInfiniteTransition(label = "anyaInlineLoad")
-    val scale by transition.animateFloat(
-        initialValue = 0.86f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 900, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "anyaInlineScale",
-    )
-    AnyaBrandMark(
-        size = size,
-        modifier = modifier.graphicsLayer {
-            scaleX = scale
-            scaleY = scale
-        },
+    CircularProgressIndicator(
+        modifier = modifier.size(size),
+        strokeWidth = (size.value * 0.12f).dp.coerceAtLeast(1.5.dp),
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 }
 
@@ -305,6 +287,18 @@ private fun AnyaPullRefreshIndicator(
     if (!isRefreshing && state.distanceFraction <= 0.02f) return
     val targetScale = if (isRefreshing) 1f else (0.72f + state.distanceFraction * 0.28f).coerceIn(0.72f, 1f)
     val scale by animateFloatAsState(targetScale, label = "pullRefreshScale")
+    // Pulling: arrow rotates with drag distance. Refreshing: continuous spin.
+    val spinTransition = rememberInfiniteTransition(label = "pullRefreshSpin")
+    val spinAngle by spinTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "pullRefreshSpinAngle",
+    )
+    val rotation = if (isRefreshing) spinAngle else (state.distanceFraction * 180f).coerceIn(0f, 180f)
     Surface(
         modifier = modifier
             .padding(top = 10.dp)
@@ -322,9 +316,20 @@ private fun AnyaPullRefreshIndicator(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            AnyaBrandMark(size = 20.dp)
+            androidx.compose.material3.Icon(
+                imageVector = Icons.Rounded.Refresh,
+                contentDescription = null,
+                modifier = Modifier
+                    .size(18.dp)
+                    .graphicsLayer { rotationZ = rotation },
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Text(
-                text = if (isRefreshing) "正在刷新…" else "下拉刷新",
+                text = if (isRefreshing) {
+                    stringResource(R.string.pull_refreshing)
+                } else {
+                    stringResource(R.string.pull_refresh_hint)
+                },
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Medium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -340,13 +345,15 @@ public fun AnyaTopBarIconChip(
     contentDescription: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    height: androidx.compose.ui.unit.Dp = 32.dp,
+    containerColor: Color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f),
 ) {
     Box(
         modifier = modifier
-            .height(32.dp)
-            .defaultMinSize(minWidth = 32.dp)
+            .height(height)
+            .defaultMinSize(minWidth = height)
             .clip(RoundedCornerShape(999.dp))
-            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+            .background(containerColor)
             .clickable(onClick = onClick)
             .padding(horizontal = 8.dp),
         contentAlignment = Alignment.Center,
@@ -354,7 +361,7 @@ public fun AnyaTopBarIconChip(
         androidx.compose.material3.Icon(
             imageVector = icon,
             contentDescription = contentDescription,
-            modifier = Modifier.size(18.dp),
+            modifier = Modifier.size((height.value * 0.56f).dp),
             tint = MaterialTheme.colorScheme.onBackground,
         )
     }
@@ -509,164 +516,6 @@ public fun AnyaSegmentedControl(
             }
         }
     }
-}
-
-/** Vertical rail for jumping between user messages (chat). Supports tap and long-press scrub. */
-@Composable
-public fun AnyaMessageNavRail(
-    pageCount: Int,
-    selectedIndex: Int,
-    onScrub: (Int) -> Unit,
-    onJump: (Int) -> Unit,
-    modifier: Modifier = Modifier,
-    previews: List<String> = emptyList(),
-) {
-    if (pageCount <= 0) return
-    var scrubbing by remember { mutableStateOf(false) }
-    var fingerIndex by remember(selectedIndex, pageCount) {
-        mutableIntStateOf(selectedIndex.coerceIn(0, pageCount - 1))
-    }
-    val displayIndex = if (scrubbing) fingerIndex else selectedIndex.coerceIn(0, pageCount - 1)
-    val onScrubState by rememberUpdatedState(onScrub)
-    val onJumpState by rememberUpdatedState(onJump)
-    val previewText = previews.getOrNull(displayIndex)
-    val markPitch = 12.dp
-
-    Box(
-        modifier = modifier.fillMaxHeight(),
-        contentAlignment = Alignment.TopEnd,
-    ) {
-        if (scrubbing && !previewText.isNullOrBlank()) {
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(
-                        top = (markPitch * displayIndex - 8.dp).coerceAtLeast(0.dp),
-                        end = 34.dp,
-                    )
-                    .widthIn(max = 220.dp),
-                shape = RoundedCornerShape(8.dp),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 2.dp,
-                shadowElevation = 6.dp,
-            ) {
-                Text(
-                    text = previewText,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                )
-            }
-        }
-
-        val density = LocalDensity.current
-        Box(
-            modifier = Modifier
-                .width(32.dp)
-                .fillMaxHeight()
-                .padding(top = 8.dp, end = 4.dp)
-                .pointerInput(pageCount, markPitch, density) {
-                    val pitchPx = with(density) { markPitch.toPx() }.coerceAtLeast(1f)
-                    fun indexAt(y: Float): Int {
-                        if (pageCount <= 1) return 0
-                        return (y / pitchPx).toInt().coerceIn(0, pageCount - 1)
-                    }
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        down.consume()
-                        val pressIndex = indexAt(down.position.y)
-                        fingerIndex = pressIndex
-
-                        val longPress = awaitLongPressOrCancellation(down.id)
-                        if (longPress == null) {
-                            scrubbing = false
-                            onJumpState(pressIndex)
-                            return@awaitEachGesture
-                        }
-
-                        scrubbing = true
-                        var index = indexAt(longPress.position.y)
-                        fingerIndex = index
-                        onScrubState(index)
-                        longPress.consume()
-
-                        try {
-                            drag(down.id) { change ->
-                                val next = indexAt(change.position.y)
-                                if (next != index) {
-                                    index = next
-                                    fingerIndex = next
-                                    onScrubState(next)
-                                }
-                                change.consume()
-                            }
-                            onJumpState(index)
-                        } finally {
-                            scrubbing = false
-                        }
-                    }
-                },
-            contentAlignment = Alignment.TopEnd,
-        ) {
-            Column(horizontalAlignment = Alignment.End) {
-                repeat(pageCount) { index ->
-                    val selected = index == displayIndex
-                    val width by animateDpAsState(
-                        targetValue = if (selected) 12.dp else 7.dp,
-                        animationSpec = spring(dampingRatio = 0.9f, stiffness = 500f),
-                        label = "railW",
-                    )
-                    val color by animateColorAsState(
-                        targetValue = if (selected) {
-                            MaterialTheme.colorScheme.onBackground
-                        } else {
-                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.28f)
-                        },
-                        animationSpec = tween(90),
-                        label = "railC",
-                    )
-                    Box(
-                        modifier = Modifier
-                            .width(20.dp)
-                            .height(markPitch),
-                        contentAlignment = Alignment.CenterEnd,
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .width(width)
-                                .height(2.dp)
-                                .clip(RoundedCornerShape(999.dp))
-                                .background(color),
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Deprecated(
-    message = "Use AnyaMessageNavRail",
-    replaceWith = ReplaceWith(
-        "AnyaMessageNavRail(pageCount, selectedIndex, onScrub = {}, onJump = { onSelect?.invoke(it) })",
-    ),
-)
-@Composable
-public fun AnyaPageRail(
-    pageCount: Int,
-    selectedIndex: Int,
-    modifier: Modifier = Modifier,
-    onSelect: ((Int) -> Unit)? = null,
-) {
-    AnyaMessageNavRail(
-        pageCount = pageCount,
-        selectedIndex = selectedIndex,
-        onScrub = { onSelect?.invoke(it) },
-        onJump = { onSelect?.invoke(it) },
-        modifier = modifier,
-    )
 }
 
 @Composable

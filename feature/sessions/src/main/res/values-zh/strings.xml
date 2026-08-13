@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="sessions_ask">随问</string>
+    <string name="sessions_workspace">工作区</string>
+    <string name="sessions_search">搜索对话</string>
+    <string name="sessions_search_hint">标题或消息内容</string>
+    <string name="sessions_search_clear">清除</string>
+    <string name="sessions_search_help">可按对话标题搜索，也可按对话内消息内容找到对应会话。</string>
+    <string name="sessions_searching_messages">正在搜索消息…</string>
+    <string name="sessions_delete_title">删除对话</string>
+    <string name="sessions_delete_body">「%1$s」将从手机和桌面端永久删除，无法恢复。</string>
+    <string name="sessions_delete_untitled">新对话</string>
+    <string name="sessions_delete_confirm">删除</string>
+    <string name="sessions_delete_cancel">取消</string>
+    <string name="sessions_workspace_empty">此工作区还没有对话</string>
+    <string name="sessions_ask_empty_title">暂无随问对话</string>
+    <string name="sessions_ask_empty_subtitle">桌面端新建随问后会同步到这里</string>
+    <string name="sessions_workspace_none_title">暂无工作区</string>
+    <string name="sessions_workspace_none_subtitle">桌面端添加工作区后会显示在这里</string>
+    <string name="sessions_new_in_workspace">在此工作区新建对话</string>
+    <string name="sessions_run_idle">空闲</string>
+    <string name="sessions_run_streaming">正在运行</string>
+    <string name="sessions_run_waiting_approval">待审批</string>
+    <string name="sessions_run_waiting_ask">等待回答</string>
+    <string name="sessions_run_error">出错</string>
+    <string name="sessions_search_empty_title">没有匹配的对话</string>
+    <string name="sessions_search_empty_subtitle">试试别的关键词</string>
+    <string name="sessions_match_title">标题</string>
+    <string name="sessions_match_message">消息</string>
+</resources>

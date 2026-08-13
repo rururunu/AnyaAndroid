@@ -8,8 +8,14 @@ import ai.anya.companion.core.data.repository.DefaultApprovalRepository
 import ai.anya.companion.core.data.repository.DefaultConnectionRepository
 import ai.anya.companion.core.data.repository.DefaultSessionRepository
 import ai.anya.companion.core.data.repository.DefaultWorkspaceRepository
+import ai.anya.companion.core.data.repository.DefaultLocaleRepository
 import ai.anya.companion.core.domain.repository.ApprovalRepository
 import ai.anya.companion.core.domain.repository.ConnectionRepository
+import ai.anya.companion.core.domain.repository.LocaleRepository
+import ai.anya.companion.core.domain.repository.AppUpdateMonitor
+import ai.anya.companion.core.domain.repository.UpdateRepository
+import ai.anya.companion.core.data.repository.DefaultAppUpdateMonitor
+import ai.anya.companion.core.data.repository.DefaultUpdateRepository
 import ai.anya.companion.core.domain.repository.SessionRepository
 import ai.anya.companion.core.domain.repository.WorkspaceRepository
 import dagger.Binds
@@ -41,6 +47,18 @@ public abstract class DataBindModule {
     @Binds
     @Singleton
     public abstract fun bindWorkspaceRepository(impl: DefaultWorkspaceRepository): WorkspaceRepository
+
+    @Binds
+    @Singleton
+    public abstract fun bindLocaleRepository(impl: DefaultLocaleRepository): LocaleRepository
+
+    @Binds
+    @Singleton
+    public abstract fun bindUpdateRepository(impl: DefaultUpdateRepository): UpdateRepository
+
+    @Binds
+    @Singleton
+    public abstract fun bindAppUpdateMonitor(impl: DefaultAppUpdateMonitor): AppUpdateMonitor
 }
 
 @Module

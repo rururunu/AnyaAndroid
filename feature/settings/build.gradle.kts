@@ -5,3 +5,7 @@ plugins {
 android {
     namespace = "ai.anya.companion.feature.settings"
 }
+
+dependencies {
+    implementation(libs.androidx.activity.compose)
+}

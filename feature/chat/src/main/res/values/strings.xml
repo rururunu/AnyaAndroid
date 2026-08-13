@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shared_file_receiving">Receiving…</string>
+    <string name="shared_file_fetch">Get</string>
+    <string name="shared_file_tap_to_fetch">Tap to download</string>
+    <string name="shared_file_failed">Failed to receive</string>
+    <string name="shared_file_not_ready">Not ready</string>
+    <string name="shared_file_unknown_size">Unknown size</string>
+    <string name="shared_file_open">Open</string>
+    <string name="shared_file_download">Download</string>
+    <string name="shared_file_download_to_device">Save to device</string>
+    <string name="shared_file_close">Close</string>
+    <string name="shared_file_open_failed">No app can open this file</string>
+    <string name="shared_file_open_chooser">Open with another app</string>
+    <string name="shared_file_saving">Saving %1$s…</string>
+    <string name="shared_file_saved">Saved to Downloads: %1$s</string>
+    <string name="shared_file_save_failed">Save failed: %1$s</string>
+    <string name="shared_file_preview">Preview</string>
+    <string name="shared_file_preview_unsupported">This file type can’t be previewed in the app. Download it and open it elsewhere.</string>
+    <string name="chat_connecting">Connecting…</string>
+    <string name="chat_reconnecting">Disconnected. Reconnecting…</string>
+    <string name="chat_connection_error">Connection failed. Sending is paused until you’re back online.</string>
+    <string name="chat_disconnected">Disconnected. Sending is paused until you’re back online.</string>
+    <string name="chat_reconnect">Reconnect</string>
+</resources>

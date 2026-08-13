@@ -19,6 +19,8 @@ androidxJunit = "1.2.1"
 espresso = "3.6.1"
 truth = "1.4.4"
 markdownRenderer = "0.34.0"
+coil = "2.7.0"
+haze = "1.6.10"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -63,6 +65,11 @@ truth = { group = "com.google.truth", name = "truth", version.ref = "truth" }
 mikepenz-markdown = { group = "com.mikepenz", name = "multiplatform-markdown-renderer", version.ref = "markdownRenderer" }
 mikepenz-markdown-m3 = { group = "com.mikepenz", name = "multiplatform-markdown-renderer-m3", version.ref = "markdownRenderer" }
 mikepenz-markdown-code = { group = "com.mikepenz", name = "multiplatform-markdown-renderer-code", version.ref = "markdownRenderer" }
+
+coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
+coil-svg = { group = "io.coil-kt", name = "coil-svg", version.ref = "coil" }
+
+haze = { group = "dev.chrisbanes.haze", name = "haze", version.ref = "haze" }
 
 # Build-logic
 android-gradlePlugin = { group = "com.android.tools.build", name = "gradle", version.ref = "agp" }

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shared_file_receiving">正在接收…</string>
+    <string name="shared_file_fetch">获取</string>
+    <string name="shared_file_tap_to_fetch">点按获取文件</string>
+    <string name="shared_file_failed">接收失败</string>
+    <string name="shared_file_not_ready">未就绪</string>
+    <string name="shared_file_unknown_size">未知大小</string>
+    <string name="shared_file_open">打开</string>
+    <string name="shared_file_download">下载</string>
+    <string name="shared_file_download_to_device">下载到本地</string>
+    <string name="shared_file_close">关闭</string>
+    <string name="shared_file_open_failed">没有可用的应用打开此文件</string>
+    <string name="shared_file_open_chooser">用其他应用打开</string>
+    <string name="shared_file_saving">正在保存 %1$s…</string>
+    <string name="shared_file_saved">已保存到系统下载：%1$s</string>
+    <string name="shared_file_save_failed">保存失败：%1$s</string>
+    <string name="shared_file_preview">预览</string>
+    <string name="shared_file_preview_unsupported">该文件类型暂不支持应用内预览，请下载后用其他应用打开</string>
+    <string name="chat_connecting">正在连接…</string>
+    <string name="chat_reconnecting">连接已断开，正在自动重连…</string>
+    <string name="chat_connection_error">连接失败，发送和操作暂时无法送达</string>
+    <string name="chat_disconnected">连接已断开，发送和操作暂时无法送达</string>
+    <string name="chat_reconnect">重连</string>
+</resources>

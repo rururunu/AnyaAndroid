@@ -82,6 +82,38 @@ public data class PlanTaskItem(
 )
 
 @Serializable
+public data class ChatSharedFile(
+    public val offerId: String,
+    public val path: String,
+    public val name: String,
+    public val mime: String = "application/octet-stream",
+    public val size: Long = 0L,
+    /** Absolute path under the app files directory (null while caching / on failure). */
+    public val localPath: String? = null,
+    /** content:// URI after the user saved a copy to system Downloads. */
+    public val exportedUri: String? = null,
+    public val status: SharedFileStatus = SharedFileStatus.Pending,
+    public val error: String? = null,
+    public val workspaceId: String? = null,
+)
+
+@Serializable
+public data class ChatSharedUrl(
+    public val offerId: String,
+    public val label: String,
+    public val publicUrl: String,
+    public val originUrl: String = "",
+)
+
+@Serializable
+public enum class SharedFileStatus {
+    Offered,
+    Pending,
+    Ready,
+    Failed,
+}
+
+@Serializable
 public data class ChatMessage(
     public val id: String,
     public val sessionId: String,
@@ -93,6 +125,10 @@ public data class ChatMessage(
     public val codeChanges: List<CodeChangeEntry> = emptyList(),
     public val planTasks: List<PlanTaskItem> = emptyList(),
     public val toolActivities: List<ToolActivity> = emptyList(),
+    /** Companion-local shared files (desktop → phone). Not part of desktop history. */
+    public val sharedFiles: List<ChatSharedFile> = emptyList(),
+    /** Companion-local preview URLs (desktop gateway reverse-proxy). */
+    public val sharedUrls: List<ChatSharedUrl> = emptyList(),
 )
 
 @Serializable

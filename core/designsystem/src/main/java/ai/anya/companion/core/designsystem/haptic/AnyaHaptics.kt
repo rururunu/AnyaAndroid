@@ -46,15 +46,19 @@ public class AnyaHaptics(private val context: Context) {
 
     private fun vibrate(timings: LongArray, amplitudes: IntArray) {
         val vibrator = vibratorOrNull() ?: return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && vibrator.hasAmplitudeControl()) {
-                vibrator.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1))
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (vibrator.hasAmplitudeControl()) {
+                    vibrator.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1))
+                } else {
+                    vibrator.vibrate(VibrationEffect.createWaveform(timings, -1))
+                }
             } else {
-                vibrator.vibrate(VibrationEffect.createWaveform(timings, -1))
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(timings, -1)
             }
-        } else {
-            @Suppress("DEPRECATION")
-            vibrator.vibrate(timings, -1)
+        } catch (_: SecurityException) {
+            // Missing VIBRATE (or OEM-denied) must never crash UI navigation.
         }
     }
 
