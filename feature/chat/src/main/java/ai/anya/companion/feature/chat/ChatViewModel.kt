@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import ai.anya.companion.core.common.result.AnyaResult
 import ai.anya.companion.core.domain.repository.ConnectionRepository
 import ai.anya.companion.core.domain.repository.ConnectionState
+import ai.anya.companion.core.domain.download.FileDownloadManager
 import ai.anya.companion.core.domain.repository.SessionRepository
 import ai.anya.companion.core.domain.usecase.ApprovePlanUseCase
 import ai.anya.companion.core.domain.usecase.CancelChatMessageUseCase
@@ -63,8 +64,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -157,7 +156,7 @@ public class ChatViewModel @Inject constructor(
     private val approvePlanUseCase: ApprovePlanUseCase,
     private val refreshAttachCatalog: RefreshAttachCatalogUseCase,
     private val loadCachedAttachCatalog: LoadCachedAttachCatalogUseCase,
-    private val downloadWorkspaceFile: ai.anya.companion.core.domain.usecase.DownloadWorkspaceFileUseCase,
+    private val fileDownloadManager: ai.anya.companion.core.domain.download.FileDownloadManager,
     private val exportCachedFile: ai.anya.companion.core.domain.usecase.ExportCachedFileUseCase,
     private val uploadLocalFile: ai.anya.companion.core.domain.usecase.UploadLocalFileUseCase,
     private val respondAsk: RespondAskUseCase,
@@ -359,23 +358,15 @@ public class ChatViewModel @Inject constructor(
         // Agent shared a file from desktop — show a card; fetch bytes only on tap.
         viewModelScope.launch {
             sessionRepository.fileOffers.collect { offer ->
-                val sid = activeSessionId.value
-                if (sid != null && sid == offer.sessionId) {
-                    ingestSharedOffer(offer, autoFetch = false)
-                }
+                ingestSharedOffer(offer, autoFetch = false)
             }
         }
         viewModelScope.launch {
             sessionRepository.urlOffers.collect { offer ->
-                val sid = activeSessionId.value
-                if (sid != null && sid == offer.sessionId) {
-                    ingestUrlOffer(offer)
-                }
+                ingestUrlOffer(offer)
             }
         }
     }
-
-    private val downloadMutex = Mutex()
 
     private suspend fun ingestSharedOffer(offer: CompanionFileOffer, autoFetch: Boolean) {
         val offerId = offer.offerId.ifBlank { UUID.randomUUID().toString() }
@@ -402,7 +393,7 @@ public class ChatViewModel @Inject constructor(
             ),
         )
         if (autoFetch) {
-            fetchSharedFileInternal(offer.sessionId, offerId, offer.path, offer.workspaceId)
+            fetchSharedFileInternal(offer.sessionId, offerId, offer.path, offer.workspaceId, offer.name)
         }
     }
 
@@ -428,6 +419,10 @@ public class ChatViewModel @Inject constructor(
         )
     }
 
+    public fun markInboxUrlViewed(offerId: String) {
+        sessionRepository.markInboxUrlViewed(offerId)
+    }
+
     public fun fetchSharedFile(offerId: String) {
         val sid = activeSessionId.value ?: return
         if (!requireConnectedOrWarn()) return
@@ -440,47 +435,17 @@ public class ChatViewModel @Inject constructor(
         sessionRepository.patchLocalSharedFile(sid, offerId) { current ->
             current.copy(status = SharedFileStatus.Pending, error = null)
         }
-        viewModelScope.launch {
-            fetchSharedFileInternal(sid, offerId, file.path, file.workspaceId)
-        }
+        fetchSharedFileInternal(sid, offerId, file.path, file.workspaceId, file.name)
     }
 
-    private suspend fun fetchSharedFileInternal(
+    private fun fetchSharedFileInternal(
         sessionId: String,
         offerId: String,
         path: String,
         workspaceId: String?,
+        name: String,
     ) {
-        downloadMutex.withLock {
-            when (
-                val result = downloadWorkspaceFile(
-                    path,
-                    sessionId = sessionId,
-                    workspaceId = workspaceId,
-                )
-            ) {
-                is AnyaResult.Success -> {
-                    sessionRepository.patchLocalSharedFile(sessionId, offerId) { file ->
-                        file.copy(
-                            localPath = result.data.localPath,
-                            mime = result.data.mime.ifBlank { file.mime },
-                            size = result.data.size.takeIf { it > 0 } ?: file.size,
-                            name = result.data.name.ifBlank { file.name },
-                            status = SharedFileStatus.Ready,
-                            error = null,
-                        )
-                    }
-                }
-                is AnyaResult.Failure -> {
-                    sessionRepository.patchLocalSharedFile(sessionId, offerId) { file ->
-                        file.copy(
-                            status = SharedFileStatus.Failed,
-                            error = result.error.toString(),
-                        )
-                    }
-                }
-            }
-        }
+        fileDownloadManager.download(sessionId, offerId, path, workspaceId, name)
     }
 
     private fun guessMime(name: String): String {

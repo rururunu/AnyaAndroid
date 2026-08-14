@@ -22,4 +22,6 @@
     <string name="chat_connection_error">Connection failed. Sending is paused until you’re back online.</string>
     <string name="chat_disconnected">Disconnected. Sending is paused until you’re back online.</string>
     <string name="chat_reconnect">Reconnect</string>
+    <string name="chat_copy">Copy</string>
+    <string name="chat_copied">Copied</string>
 </resources>

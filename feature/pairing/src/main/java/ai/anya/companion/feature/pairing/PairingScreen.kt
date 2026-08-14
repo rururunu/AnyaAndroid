@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.QrCode2
@@ -29,6 +30,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -57,17 +59,19 @@ import ai.anya.companion.core.designsystem.component.AnyaTopBar
 import ai.anya.companion.core.designsystem.haptic.rememberAnyaHaptics
 import ai.anya.companion.core.designsystem.theme.AnyaColors
 import ai.anya.companion.core.designsystem.theme.AnyaSpace
+import ai.anya.companion.core.model.protocol.HostDisplayName
 
 @Composable
 public fun PairingRoute(
     onPaired: () -> Unit,
+    onBack: (() -> Unit)? = null,
     initialPairUri: String? = null,
     viewModel: PairingViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     LaunchedEffect(initialPairUri) {
         if (!initialPairUri.isNullOrBlank()) {
-            viewModel.applyPairLink(initialPairUri)
+            viewModel.applyPairLink(initialPairUri, autoSubmit = true)
         }
     }
     LaunchedEffect(state.paired, state.error) {
@@ -75,11 +79,13 @@ public fun PairingRoute(
     }
     PairingScreen(
         state = state,
+        onBack = onBack,
         onHostChange = viewModel::onHostChange,
         onPortChange = viewModel::onPortChange,
         onTokenChange = viewModel::onTokenChange,
+        onDisplayNameChange = viewModel::onDisplayNameChange,
         onSchemeChange = viewModel::onSchemeChange,
-        onScanResult = { viewModel.applyPairLink(it, autoSubmit = true) },
+        onScanResult = { viewModel.applyPairLink(it, autoSubmit = false) },
         onSubmit = viewModel::submit,
         onCameraDenied = viewModel::onCameraPermissionDenied,
     )
@@ -91,10 +97,12 @@ public fun PairingScreen(
     onHostChange: (String) -> Unit,
     onPortChange: (String) -> Unit,
     onTokenChange: (String) -> Unit,
+    onDisplayNameChange: (String) -> Unit,
     onSchemeChange: (String) -> Unit,
     onScanResult: (String) -> Unit,
     onSubmit: () -> Unit,
     onCameraDenied: () -> Unit = {},
+    onBack: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val haptic = rememberAnyaHaptics()
@@ -138,12 +146,30 @@ public fun PairingScreen(
         return
     }
 
+    val headline = when {
+        state.replaceDeviceId != null -> stringResource(R.string.pairing_title_repair)
+        onBack != null -> stringResource(R.string.pairing_title_add)
+        else -> stringResource(R.string.pairing_title)
+    }
+
     AnyaScreen(
         topBar = {
             AnyaTopBar(
-                title = stringResource(R.string.pairing_title),
+                title = headline,
                 subtitle = stringResource(R.string.pairing_top_subtitle),
                 showBrand = true,
+                navigationIcon = if (onBack != null) {
+                    {
+                        IconButton(onClick = onBack) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                contentDescription = stringResource(R.string.pairing_close),
+                            )
+                        }
+                    }
+                } else {
+                    null
+                },
             )
         },
     ) {
@@ -157,7 +183,7 @@ public fun PairingScreen(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm)) {
                     Text(
-                        text = stringResource(R.string.pairing_title),
+                        text = headline,
                         style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.SemiBold,
                     )
@@ -167,6 +193,17 @@ public fun PairingScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+
+                AnyaField(
+                    value = state.displayName,
+                    onValueChange = onDisplayNameChange,
+                    label = stringResource(R.string.pairing_display_name),
+                    supportingText = stringResource(
+                        R.string.pairing_display_name_hint,
+                        state.displayName.length,
+                        HostDisplayName.MAX_LENGTH,
+                    ),
+                )
 
                 Surface(
                     onClick = {
@@ -294,20 +331,23 @@ public fun PairingScreen(
                             onValueChange = onTokenChange,
                             label = stringResource(R.string.pairing_token),
                         )
-                        AnyaPrimaryButton(
-                            text = if (state.isSubmitting) {
-                                stringResource(R.string.pairing_submitting)
-                            } else {
-                                stringResource(R.string.pairing_submit)
-                            },
-                            onClick = {
-                                haptic.tick()
-                                onSubmit()
-                            },
-                            enabled = !state.isSubmitting,
-                        )
                     }
                 }
+
+                AnyaPrimaryButton(
+                    text = if (state.isSubmitting) {
+                        stringResource(R.string.pairing_submitting)
+                    } else if (state.replaceDeviceId != null) {
+                        stringResource(R.string.pairing_submit_repair)
+                    } else {
+                        stringResource(R.string.pairing_submit)
+                    },
+                    onClick = {
+                        haptic.tick()
+                        onSubmit()
+                    },
+                    enabled = !state.isSubmitting,
+                )
 
                 Spacer(modifier = Modifier.height(AnyaSpace.Xxxl))
             }
@@ -415,12 +455,14 @@ private fun AnyaField(
     value: String,
     onValueChange: (String) -> Unit,
     label: String,
+    supportingText: String? = null,
 ) {
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
         modifier = Modifier.fillMaxWidth(),
         label = { Text(label) },
+        supportingText = supportingText?.let { { Text(it) } },
         singleLine = true,
         shape = RoundedCornerShape(AnyaSpace.ControlRadius),
         colors = OutlinedTextFieldDefaults.colors(

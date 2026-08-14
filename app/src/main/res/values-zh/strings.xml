@@ -18,7 +18,8 @@
     <string name="connection_panel_subtitle">查看桌面端连接与配对信息</string>
     <string name="connection_panel_status">状态</string>
     <string name="connection_panel_not_paired">尚未配对桌面端，请先扫码或输入配对码。</string>
-    <string name="connection_panel_host">主机</string>
+    <string name="connection_panel_host">名称</string>
+    <string name="connection_panel_address">地址</string>
     <string name="connection_panel_port">端口</string>
     <string name="connection_panel_device">设备</string>
     <string name="connection_panel_view_inbox">查看收件（%1$d）</string>

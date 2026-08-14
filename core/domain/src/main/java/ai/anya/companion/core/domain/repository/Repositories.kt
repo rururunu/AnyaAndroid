@@ -3,6 +3,7 @@ package ai.anya.companion.core.domain.repository
 import ai.anya.companion.core.common.result.AnyaResult
 import ai.anya.companion.core.model.approval.ApprovalDecision
 import ai.anya.companion.core.model.approval.PendingApproval
+import ai.anya.companion.core.model.inbox.InboxResultRecord
 import ai.anya.companion.core.model.protocol.DeviceCredential
 import ai.anya.companion.core.model.protocol.PairingPayload
 import ai.anya.companion.core.model.session.ChatMessage
@@ -41,8 +42,17 @@ public enum class ConnectionState {
 public interface ConnectionRepository {
     public val connectionState: StateFlow<ConnectionState>
     public val credential: StateFlow<DeviceCredential?>
+    public val pairedDevices: StateFlow<List<DeviceCredential>>
 
-    public suspend fun pair(payload: PairingPayload): AnyaResult<DeviceCredential>
+    public suspend fun pair(
+        payload: PairingPayload,
+        replaceDeviceId: String? = null,
+    ): AnyaResult<DeviceCredential>
+
+    public suspend fun switchDevice(deviceId: String): AnyaResult<Unit>
+    public suspend fun renameDevice(deviceId: String, displayName: String)
+    public suspend fun removeDevice(deviceId: String)
+
     public suspend fun connect(): AnyaResult<Unit>
     public suspend fun disconnect()
     public suspend fun clearPairing()
@@ -67,6 +77,9 @@ public interface SessionRepository {
     public val fileOffers: SharedFlow<CompanionFileOffer>
     /** Agent-shared preview URLs (already proxied through the desktop gateway). */
     public val urlOffers: SharedFlow<CompanionUrlOffer>
+    /** Companion-local inbox 结果 (shared files / preview URLs). Persisted on device. */
+    public val inboxResults: StateFlow<List<InboxResultRecord>>
+
     public fun messages(sessionId: String): Flow<List<ChatMessage>>
     public fun compose(sessionId: String): Flow<SessionCompose>
     public fun models(): StateFlow<List<ChatModelInfo>>
@@ -118,6 +131,10 @@ public interface SessionRepository {
         transform: (ai.anya.companion.core.model.session.ChatSharedFile) ->
             ai.anya.companion.core.model.session.ChatSharedFile,
     )
+
+    public fun markInboxUrlViewed(offerId: String)
+
+    public fun deleteInboxResult(offerId: String)
 }
 
 public interface ApprovalRepository {
@@ -144,6 +161,7 @@ public interface WorkspaceRepository {
         path: String,
         sessionId: String? = null,
         workspaceId: String? = null,
+        onProgress: ((written: Long, total: Long) -> Unit)? = null,
     ): AnyaResult<DownloadedWorkspaceFile>
 
     /**

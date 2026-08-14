@@ -13,7 +13,7 @@ reconnects.
 | ------------- | ---------------------------------------------------------------------------- |
 | **Product**   | Anya Companion — remote console for [desktop Anya](https://github.com/rururunu/Anya) |
 | **Repo**      | [rururunu/AnyaAndroid](https://github.com/rururunu/AnyaAndroid)              |
-| **Version**   | v0.1.0                                                                       |
+| **Version**   | v0.1.1                                                                       |
 | **Runtime**   | Android 8.0+ (minSdk 26, compile/target 36)                                  |
 | **UI**        | Jetpack Compose · Hilt · Navigation                                          |
 | **Transport** | OkHttp WebSocket → desktop `/remote/v1`                                      |
@@ -58,6 +58,23 @@ flowchart LR
 If the desktop is not running, Companion can only show pairing / connection
 settings. It cannot complete a chat on its own.
 
+### Surfaces
+
+Each phone screen is a projection of desktop state, plus RPCs that unstick the
+PC. There is one Agent, one approval latch, two screens.
+
+| Surface | Desktop owns | Phone sends / receives |
+| ------- | ------------ | ---------------------- |
+| **Ask** | Unbound sessions in ChatService / SQLite | `session.list` + snapshot events. **+** creates a session on the PC. A **Pending approval** badge means AgentRunner is already blocked. |
+| **Workspace** | Project folders on disk | Same sessions, grouped by workspace. Catalog via `workspace.snapshot` / `workspace.files` / `skills.list` / `mcp.list`. |
+| **Chat** | AgentRunner, tools, model keys | `chat.send` / `chat.cancel` / `session.compose.*`. Tokens arrive as `event` deltas — the typing is the computer generating. |
+| **ask_user** | Pauses the in-flight run | Same card on both screens. `ask.respond` resumes AgentRunner. |
+| **Tool approval** | Gate in AgentRunner | Allow once / session / deny via `approval.respond`. Tapping the card on Windows hits the same latch. |
+| **Inbox → Pending** | The same blocked tools / questions | Open the card → jump to that session → same `approval.respond` / `ask.respond`. |
+| **Inbox → Results** | Files still on disk (`share_to_companion`) | Offer `event`; bytes pulled with `workspace.readFile` slices. Phone attach: `file.upload.*` → `.anya/uploads/{sessionId}/` (or the Ask inbox). |
+
+Product walkthrough with screenshots: [../README.md](../README.md).
+
 ---
 
 ## 3. Module map
@@ -76,7 +93,7 @@ settings. It cannot complete a chat on its own.
 | `:feature:pairing`      | android + compose | QR / manual / `anya://pair`                         |
 | `:feature:sessions`     | android + compose | Ask + workspace session lists                       |
 | `:feature:chat`         | android + compose | Composer, stream, attachments, share cards          |
-| `:feature:approval`     | android + compose | Tool / ask_user / plan cards                        |
+| `:feature:approval`     | android + compose | Tool / ask_user / plan cards, Inbox pending / results |
 | `:feature:workspace`    | android + compose | File catalog, skills / MCP lists                    |
 | `:feature:settings`     | android + compose | Connection, language, in-app updates                |
 | `:core:domain`          | jvm               | Repository contracts + use cases                    |
@@ -113,7 +130,7 @@ Default gateway port is **8787**. Path is always `/remote/v1`.
 ```mermaid
 flowchart TB
   subgraph Phone["Anya Companion"]
-    Prefs[DataStore: host · token · deviceId]
+    Prefs[DataStore: host roster · token · deviceId]
     Client[RemoteGatewayClient]
     Prefs --> Client
   end
@@ -174,11 +191,18 @@ sequenceDiagram
 ```
 
 Deep link: `anya://pair?…` (host, port, token, optional public host). After the
-first successful hello, the phone stores a device credential in DataStore and
-reuses it on later launches until the user unpairs.
+first successful hello, the phone stores a device credential in a DataStore
+**roster** (multiple desktops). Later launches reuse the active host until the
+user unpairs it.
 
-Keep-alive: the server sends application `ping`; the client replies `pong`.
-Native WebSocket pings are not relied on (proxies drop them).
+Each host can have a display name of at most 16 characters (the top-bar “Anya”
+label becomes that name). Switch from the host list in Settings, or by
+long-pressing the top-left logo. If the desktop rotates its tunnel hostname or
+pairing token, **re-pair** that host: the local name and `deviceId` stay, only
+the connection fields update.
+
+Keep-alive: the server sends an application `ping`; the client replies `pong`.
+Native WebSocket pings are not relied on (proxies often drop them).
 
 ---
 
@@ -277,6 +301,8 @@ proxy), not the WebSocket.
 | Connection + abandon boot       | `core/data` connection repository                       |
 | WebSocket client                | `core/network` `RemoteGatewayClient`                    |
 | Pairing QR / deep link          | `feature/pairing`                                       |
+| Ask / Workspace session lists   | `feature/sessions`                                      |
 | Chat stream + attachments       | `feature/chat`                                          |
-| Approvals                       | `feature/approval`                                      |
+| Approvals + Inbox               | `feature/approval`                                      |
+| Workspace catalog / skills      | `feature/workspace`                                     |
 | Desktop gateway (other repo)    | `src-tauri/src/core/remote/` in Anya                    |

@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -23,6 +24,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
@@ -32,6 +34,7 @@ import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -144,9 +147,6 @@ private fun SharedFileCard(
                     }
                 }
                 file.status == SharedFileStatus.Pending && isImage -> {
-                    // A pulsing brand mark filling the whole thumbnail reads as
-                    // "the image is the app logo" — keep it small and centered
-                    // inside a neutral placeholder sized like the final image.
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -158,34 +158,20 @@ private fun SharedFileCard(
                         AnyaInlineLoadingMark(size = 22.dp)
                     }
                     Text(
-                        text = "${file.name}  ${stringResource(R.string.shared_file_receiving)}",
+                        text = "${file.name}  ${receiveSubtitle(file)}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    ReceiveProgressBar(file)
                 }
                 file.status == SharedFileStatus.Pending -> {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        AnyaInlineLoadingMark(size = 18.dp)
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = file.name,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                text = stringResource(R.string.shared_file_receiving),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
+                    FileMetaRow(
+                        file = file,
+                        subtitle = receiveSubtitle(file),
+                    )
+                    ReceiveProgressBar(file)
                 }
                 file.status == SharedFileStatus.Failed -> {
                     FileMetaRow(
@@ -327,6 +313,40 @@ private fun SharedFileCard(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ReceiveProgressBar(file: ChatSharedFile) {
+    val total = file.size
+    val received = file.bytesReceived.coerceAtLeast(0L)
+    val determinate = total > 0L
+    val fraction = if (determinate) {
+        (received.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    val modifier = Modifier
+        .fillMaxWidth()
+        .height(4.dp)
+        .clip(RoundedCornerShape(999.dp))
+    if (determinate) {
+        LinearProgressIndicator(progress = { fraction }, modifier = modifier)
+    } else {
+        LinearProgressIndicator(modifier = modifier)
+    }
+}
+
+@Composable
+private fun receiveSubtitle(file: ChatSharedFile): String {
+    val total = file.size
+    val received = file.bytesReceived.coerceAtLeast(0L)
+    return if (total > 0L) {
+        "${formatBytes(received)} / ${formatBytes(total)}"
+    } else if (received > 0L) {
+        "${formatBytes(received)} · ${stringResource(R.string.shared_file_receiving)}"
+    } else {
+        stringResource(R.string.shared_file_receiving)
     }
 }
 
@@ -718,13 +738,15 @@ private fun MarkdownFilePreview(path: String) {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         when (val content = text) {
             null -> CircularProgressIndicator()
-            else -> AnyaMarkdown(
-                content = content,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(16.dp),
-            )
+            else -> SelectionContainer {
+                AnyaMarkdown(
+                    content = content,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(16.dp),
+                )
+            }
         }
     }
 }

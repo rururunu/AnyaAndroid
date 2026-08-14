@@ -19,6 +19,8 @@ public data class PairingPayload(
     /** Optional same-LAN endpoint advertised alongside a public tunnel host. */
     public val lanHost: String? = null,
     public val lanPort: Int? = null,
+    /** User-chosen label shown in the top bar and device list. */
+    public val displayName: String? = null,
 )
 
 @Serializable
@@ -36,7 +38,12 @@ public data class DeviceCredential(
     public val lastGoodHost: String? = null,
     public val lastGoodPort: Int? = null,
     public val lastGoodScheme: String? = null,
+    /** User-chosen host label. Empty falls back to [HostDisplayName.DEFAULT]. */
+    public val displayName: String = "",
 ) {
+    public fun resolvedDisplayName(): String =
+        HostDisplayName.orFallback(displayName)
+
     public fun endpointKey(): String = "$scheme://$host:$port"
 
     public fun lastGoodEndpointKey(): String? {
@@ -44,6 +51,15 @@ public data class DeviceCredential(
         val scheme = lastGoodScheme?.trim()?.takeIf { it.isNotEmpty() } ?: return null
         val port = lastGoodPort?.takeIf { it in 1..65535 } ?: return null
         return "$scheme://$host:$port"
+    }
+
+    /** WebSocket origin matching [scheme]/[host]/[port]. */
+    public fun wsOrigin(): String {
+        val ws = when (scheme.lowercase()) {
+            "https", "wss" -> "wss"
+            else -> "ws"
+        }
+        return origin(ws, host, port)
     }
 
     /** Ordered connect candidates: LAN first (ws), then the primary public/LAN host. */
@@ -64,7 +80,16 @@ public data class DeviceCredential(
     }
 }
 
-internal fun isLoopbackLanHost(host: String): Boolean {
+private fun origin(scheme: String, host: String, port: Int): String {
+    val hostPart = if (host.contains(':') && !host.startsWith('[')) "[$host]" else host
+    val omitPort = (scheme == "https" && port == 443) ||
+        (scheme == "wss" && port == 443) ||
+        (scheme == "http" && port == 80) ||
+        (scheme == "ws" && port == 80)
+    return if (omitPort) "$scheme://$hostPart" else "$scheme://$hostPart:$port"
+}
+
+public fun isLoopbackLanHost(host: String): Boolean {
     val h = host.trim().trimStart('[').trimEnd(']').trimEnd('.').lowercase()
     return h == "localhost" ||
         h == "::1" ||
@@ -255,6 +280,15 @@ public sealed class ClientMessage {
     public data class FileUploadAbort(
         public val requestId: String,
         public val uploadId: String,
+    ) : ClientMessage()
+
+    @Serializable
+    @SerialName("file.download.begin")
+    public data class FileDownloadBegin(
+        public val requestId: String,
+        public val path: String,
+        public val sessionId: String? = null,
+        public val workspaceId: String? = null,
     ) : ClientMessage()
 
     public companion object {

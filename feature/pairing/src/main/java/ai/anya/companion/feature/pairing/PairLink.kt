@@ -50,6 +50,9 @@ public fun parsePairLink(raw: String): PairLink? {
     )
 }
 
+/** Default port of the Anya desktop remote gateway. */
+public const val DefaultGatewayPort: Int = 8787
+
 public fun normalizePairingToken(raw: String): String =
     raw.trim().replace("-", "").replace(" ", "")
 

@@ -47,13 +47,18 @@ import android.net.Uri
 import kotlinx.coroutines.delay
 
 object Routes {
-    const val Pairing = "pairing"
+    const val Pairing = "pairing?repairDeviceId={repairDeviceId}"
     const val Main = "main"
     const val Chat = "chat/{sessionId}?messageId={messageId}&workspaceId={workspaceId}"
     const val Workspace = "workspace"
     const val SettingsConnection = "settings/connection"
     const val SettingsGeneral = "settings/general"
     const val SettingsAbout = "settings/about"
+
+    fun pairing(repairDeviceId: String? = null): String {
+        val id = repairDeviceId?.trim().orEmpty()
+        return if (id.isEmpty()) "pairing" else "pairing?repairDeviceId=${Uri.encode(id)}"
+    }
 
     fun chat(sessionId: String, messageId: String? = null, workspaceId: String? = null): String {
         val base = "chat/${Uri.encode(sessionId)}"
@@ -74,7 +79,7 @@ fun AnyaNavHost(
 ) {
     val navController = rememberNavController()
     val rootState by rootViewModel.state.collectAsStateWithLifecycle()
-    val startDestination = if (rootState.hasCredential) Routes.Main else Routes.Pairing
+    val startDestination = if (rootState.hasCredential) Routes.Main else "pairing"
     var coldStart by remember { mutableStateOf(rootState.hasCredential) }
     var showBootSplash by remember {
         mutableStateOf(
@@ -142,12 +147,28 @@ fun AnyaNavHost(
             navController = navController,
             startDestination = startDestination,
         ) {
-            composable(Routes.Pairing) {
+            composable(
+                route = Routes.Pairing,
+                arguments = listOf(
+                    navArgument("repairDeviceId") {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    },
+                ),
+            ) {
+                val canGoBack = navController.previousBackStackEntry != null
                 PairingRoute(
-                    initialPairUri = initialPairUri,
+                    initialPairUri = if (canGoBack) null else initialPairUri,
+                    onBack = if (canGoBack) {
+                        { navController.popBackStack() }
+                    } else {
+                        null
+                    },
                     onPaired = {
-                        navController.navigate(Routes.Main) {
-                            popUpTo(Routes.Pairing) { inclusive = true }
+                        if (!navController.popBackStack(Routes.Main, inclusive = false)) {
+                            navController.navigate(Routes.Main) {
+                                popUpTo(Routes.Pairing) { inclusive = true }
+                            }
                         }
                     },
                 )
@@ -171,8 +192,11 @@ fun AnyaNavHost(
                     onOpenAboutSettings = {
                         navController.navigate(Routes.SettingsAbout)
                     },
-                    onRePair = {
-                        navController.navigate(Routes.Pairing) {
+                    onAddDevice = {
+                        navController.navigate(Routes.pairing())
+                    },
+                    onUnpairLast = {
+                        navController.navigate(Routes.pairing()) {
                             popUpTo(Routes.Main) { inclusive = true }
                         }
                     },
@@ -202,8 +226,14 @@ fun AnyaNavHost(
             composable(Routes.SettingsConnection) {
                 ConnectionSettingsRoute(
                     onBack = { navController.popBackStack() },
-                    onRePair = {
-                        navController.navigate(Routes.Pairing) {
+                    onAddDevice = {
+                        navController.navigate(Routes.pairing())
+                    },
+                    onRepairDevice = { deviceId ->
+                        navController.navigate(Routes.pairing(deviceId))
+                    },
+                    onUnpairLast = {
+                        navController.navigate(Routes.pairing()) {
                             popUpTo(Routes.Main) { inclusive = true }
                         }
                     },

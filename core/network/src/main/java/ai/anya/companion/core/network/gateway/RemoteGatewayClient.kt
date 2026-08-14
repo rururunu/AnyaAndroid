@@ -108,7 +108,7 @@ public class RemoteGatewayClient @Inject constructor(
             ClientMessage.Hello(
                 deviceId = credential.deviceId,
                 credential = credential.credential,
-                appVersion = "0.1.0",
+                appVersion = "0.1.1",
             ),
         )
         return try {
@@ -154,6 +154,58 @@ public class RemoteGatewayClient @Inject constructor(
         val deferred = CompletableDeferred<ServerMessage.RpcResult>()
         rpcWaiters[requestId] = deferred
         when (val sent = send(message)) {
+            is AnyaResult.Failure -> {
+                rpcWaiters.remove(requestId, deferred)
+                return sent
+            }
+            is AnyaResult.Success -> Unit
+        }
+        val result = withTimeoutOrNull(timeoutMs) { deferred.await() }
+        rpcWaiters.remove(requestId, deferred)
+        return if (result != null) {
+            AnyaResult.Success(result)
+        } else {
+            AnyaResult.Failure(AnyaError.Network("RPC timed out: $requestId"))
+        }
+    }
+
+    public fun sendBinary(payload: ByteArray): AnyaResult<Unit> {
+        val socket = socketRef.get()
+            ?: return AnyaResult.Failure(AnyaError.Network("Gateway is not connected"))
+        return try {
+            val ok = socket.send(okio.ByteString.of(*payload))
+            if (ok) AnyaResult.Success(Unit)
+            else AnyaResult.Failure(AnyaError.Network("WebSocket send failed"))
+        } catch (t: Throwable) {
+            AnyaResult.Failure(AnyaError.Protocol(t.message ?: "Encode failed"))
+        }
+    }
+
+    /**
+     * Send one raw upload chunk as a binary frame and wait for its RPC ack.
+     * Frame layout: `[requestId:36][uploadId:36][offset:8 big-endian][data]`.
+     */
+    public suspend fun sendBinaryChunk(
+        uploadId: String,
+        offset: Long,
+        data: ByteArray,
+        requestId: String,
+        timeoutMs: Long = 60_000,
+    ): AnyaResult<ServerMessage.RpcResult> {
+        val deferred = CompletableDeferred<ServerMessage.RpcResult>()
+        rpcWaiters[requestId] = deferred
+
+        val frame = ByteArray(80 + data.size)
+        requestId.toByteArray(Charsets.US_ASCII).copyInto(frame, 0)
+        uploadId.toByteArray(Charsets.US_ASCII).copyInto(frame, 36)
+        var o = offset
+        for (i in 7 downTo 0) {
+            frame[72 + i] = (o and 0xFF).toByte()
+            o = o shr 8
+        }
+        data.copyInto(frame, 80)
+
+        when (val sent = sendBinary(frame)) {
             is AnyaResult.Failure -> {
                 rpcWaiters.remove(requestId, deferred)
                 return sent

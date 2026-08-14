@@ -20,12 +20,17 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Computer
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.LinkOff
+import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.PhonelinkErase
+import androidx.compose.material.icons.rounded.QrCode2
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.runtime.LaunchedEffect
@@ -34,8 +39,11 @@ import androidx.compose.ui.text.AnnotatedString
 import ai.anya.companion.core.designsystem.component.AnyaBrandMark
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -63,6 +71,8 @@ import ai.anya.companion.core.designsystem.haptic.rememberAnyaHaptics
 import ai.anya.companion.core.designsystem.theme.AnyaColors
 import ai.anya.companion.core.designsystem.theme.AnyaSpace
 import ai.anya.companion.core.domain.repository.ConnectionState
+import ai.anya.companion.core.model.protocol.DeviceCredential
+import ai.anya.companion.core.model.protocol.HostDisplayName
 import ai.anya.companion.core.model.settings.AppLanguage
 
 @Composable
@@ -84,7 +94,9 @@ public fun SettingsTabContent(
 @Composable
 public fun ConnectionSettingsRoute(
     onBack: () -> Unit,
-    onRePair: () -> Unit,
+    onAddDevice: () -> Unit,
+    onRepairDevice: (deviceId: String) -> Unit,
+    onUnpairLast: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -96,10 +108,16 @@ public fun ConnectionSettingsRoute(
             state = state,
             onDisconnect = viewModel::disconnect,
             onConnect = viewModel::connect,
-            onUnpair = {
-                viewModel.unpair()
-                onRePair()
+            onSwitchDevice = viewModel::switchDevice,
+            onRenameDevice = viewModel::renameDevice,
+            onRepairDevice = onRepairDevice,
+            onRemoveDevice = { deviceId ->
+                val last = state.pairedDevices.size <= 1
+                viewModel.removeDevice(deviceId)
+                if (last) onUnpairLast()
             },
+            onAddDevice = onAddDevice,
+            onGoPair = onAddDevice,
             modifier = Modifier.padding(padding),
         )
     }
@@ -219,11 +237,18 @@ private fun ConnectionSettingsPage(
     state: SettingsUiState,
     onDisconnect: () -> Unit,
     onConnect: () -> Unit,
-    onUnpair: () -> Unit,
+    onSwitchDevice: (String) -> Unit,
+    onRenameDevice: (String, String) -> Unit,
+    onRepairDevice: (String) -> Unit,
+    onRemoveDevice: (String) -> Unit,
+    onAddDevice: () -> Unit,
+    onGoPair: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val haptic = rememberAnyaHaptics()
-    var confirmUnpair by remember { mutableStateOf(false) }
+    var actionsFor by remember { mutableStateOf<DeviceCredential?>(null) }
+    var renameFor by remember { mutableStateOf<DeviceCredential?>(null) }
+    var unpairFor by remember { mutableStateOf<DeviceCredential?>(null) }
     val statusTitle = when (state.connectionState) {
         ConnectionState.Connected -> stringResource(R.string.settings_status_connected)
         ConnectionState.Connecting, ConnectionState.Reconnecting ->
@@ -252,6 +277,7 @@ private fun ConnectionSettingsPage(
         state.connectionState == ConnectionState.Connecting ||
         state.connectionState == ConnectionState.Reconnecting
     val credential = state.credential
+    val devices = state.pairedDevices
 
     Column(
         modifier = modifier
@@ -265,7 +291,11 @@ private fun ConnectionSettingsPage(
                 Icons.Rounded.LinkOff
             },
             title = statusTitle,
-            subtitle = statusHint,
+            subtitle = if (credential != null) {
+                "${credential.resolvedDisplayName()} · $statusHint"
+            } else {
+                statusHint
+            },
             trailing = {
                 Box(
                     modifier = Modifier
@@ -276,13 +306,42 @@ private fun ConnectionSettingsPage(
             },
         )
 
-        if (credential == null) {
+        SettingsSectionLabel(stringResource(R.string.settings_devices))
+        if (devices.isEmpty()) {
             SettingsMenuRow(
                 icon = Icons.Rounded.PhonelinkErase,
                 title = stringResource(R.string.settings_not_paired),
                 subtitle = stringResource(R.string.settings_not_paired_hint),
             )
         } else {
+            devices.forEach { device ->
+                val active = device.deviceId == credential?.deviceId
+                SettingsDeviceRow(
+                    device = device,
+                    active = active,
+                    connected = active && state.connectionState == ConnectionState.Connected,
+                    onClick = {
+                        haptic.linearTick()
+                        if (!active) onSwitchDevice(device.deviceId)
+                    },
+                    onMore = {
+                        haptic.tick()
+                        actionsFor = device
+                    },
+                )
+            }
+        }
+
+        SettingsActionRow(
+            icon = Icons.Rounded.Add,
+            title = stringResource(R.string.settings_add_device),
+            onClick = {
+                haptic.buttonPress()
+                onAddDevice()
+            },
+        )
+
+        if (credential != null) {
             SettingsInfoRow(
                 label = stringResource(R.string.settings_host),
                 value = credential.host,
@@ -290,10 +349,6 @@ private fun ConnectionSettingsPage(
             SettingsInfoRow(
                 label = stringResource(R.string.settings_port),
                 value = credential.port.toString(),
-            )
-            SettingsInfoRow(
-                label = stringResource(R.string.settings_device_id),
-                value = credential.deviceId,
             )
         }
 
@@ -319,36 +374,327 @@ private fun ConnectionSettingsPage(
                 },
             )
         }
-        if (credential != null) {
+        if (devices.isEmpty()) {
+            SettingsActionRow(
+                icon = Icons.Rounded.Link,
+                title = stringResource(R.string.settings_go_pair),
+                onClick = {
+                    haptic.buttonPress()
+                    onGoPair()
+                },
+            )
+        }
+    }
+
+    actionsFor?.let { device ->
+        DeviceActionsSheet(
+            device = device,
+            onRename = {
+                actionsFor = null
+                renameFor = device
+            },
+            onRepair = {
+                actionsFor = null
+                onRepairDevice(device.deviceId)
+            },
+            onUnpair = {
+                actionsFor = null
+                unpairFor = device
+            },
+            onDismiss = { actionsFor = null },
+        )
+    }
+    renameFor?.let { device ->
+        RenameDeviceSheet(
+            device = device,
+            onConfirm = { name ->
+                onRenameDevice(device.deviceId, name)
+                renameFor = null
+            },
+            onDismiss = { renameFor = null },
+        )
+    }
+    unpairFor?.let { device ->
+        UnpairConfirmSheet(
+            hostName = device.resolvedDisplayName(),
+            onConfirm = {
+                unpairFor = null
+                onRemoveDevice(device.deviceId)
+            },
+            onDismiss = { unpairFor = null },
+        )
+    }
+}
+
+@Composable
+private fun SettingsDeviceRow(
+    device: DeviceCredential,
+    active: Boolean,
+    connected: Boolean,
+    onClick: () -> Unit,
+    onMore: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Lg),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(42.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(
+                    if (active) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Computer,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.size(22.dp),
+            )
+        }
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = device.resolvedDisplayName(),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = when {
+                    connected -> stringResource(R.string.settings_device_connected)
+                    active -> stringResource(R.string.settings_device_current)
+                    else -> device.host
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (connected) AnyaColors.Success else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (active) {
+            Icon(
+                imageVector = Icons.Rounded.Check,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+        IconButton(onClick = onMore) {
+            Icon(
+                imageVector = Icons.Rounded.MoreHoriz,
+                contentDescription = stringResource(R.string.settings_device_actions),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DeviceActionsSheet(
+    device: DeviceCredential,
+    onRename: () -> Unit,
+    onRepair: () -> Unit,
+    onUnpair: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val haptic = rememberAnyaHaptics()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.background,
+        tonalElevation = 0.dp,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AnyaSpace.Screen)
+                .padding(bottom = AnyaSpace.Xxl),
+            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Xs),
+        ) {
+            Text(
+                text = device.resolvedDisplayName(),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = device.host,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(modifier = Modifier.height(AnyaSpace.Sm))
+            SettingsActionRow(
+                icon = Icons.Rounded.Edit,
+                title = stringResource(R.string.settings_rename_device),
+                onClick = {
+                    haptic.tick()
+                    onRename()
+                },
+            )
+            SettingsActionRow(
+                icon = Icons.Rounded.QrCode2,
+                title = stringResource(R.string.settings_repair_device),
+                onClick = {
+                    haptic.buttonPress()
+                    onRepair()
+                },
+            )
             SettingsActionRow(
                 icon = Icons.Rounded.PhonelinkErase,
                 title = stringResource(R.string.settings_unpair),
                 destructive = true,
                 onClick = {
                     haptic.tick()
-                    confirmUnpair = true
-                },
-            )
-        } else {
-            SettingsActionRow(
-                icon = Icons.Rounded.Link,
-                title = stringResource(R.string.settings_go_pair),
-                onClick = {
-                    haptic.buttonPress()
                     onUnpair()
                 },
             )
         }
     }
+}
 
-    if (confirmUnpair) {
-        UnpairConfirmSheet(
-            onConfirm = {
-                confirmUnpair = false
-                onUnpair()
-            },
-            onDismiss = { confirmUnpair = false },
-        )
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RenameDeviceSheet(
+    device: DeviceCredential,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val haptic = rememberAnyaHaptics()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var name by remember { mutableStateOf(device.resolvedDisplayName()) }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.background,
+        tonalElevation = 0.dp,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AnyaSpace.Screen)
+                .padding(bottom = AnyaSpace.Xxl),
+            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
+        ) {
+            Text(
+                text = stringResource(R.string.settings_rename_device),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = HostDisplayName.sanitize(it) },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text(stringResource(R.string.settings_device_name)) },
+                supportingText = {
+                    Text(
+                        stringResource(
+                            R.string.settings_device_name_hint,
+                            name.length,
+                            HostDisplayName.MAX_LENGTH,
+                        ),
+                    )
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(AnyaSpace.ControlRadius),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                    focusedContainerColor = MaterialTheme.colorScheme.background,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.background,
+                ),
+            )
+            AnyaPrimaryButton(
+                text = stringResource(R.string.settings_save_name),
+                onClick = {
+                    haptic.confirm()
+                    onConfirm(name)
+                },
+            )
+            AnyaSecondaryButton(
+                text = stringResource(R.string.settings_cancel),
+                onClick = {
+                    haptic.tick()
+                    onDismiss()
+                },
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+public fun HostSwitcherSheet(
+    devices: List<DeviceCredential>,
+    activeDeviceId: String?,
+    connectionState: ConnectionState,
+    onSelect: (String) -> Unit,
+    onAdd: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val haptic = rememberAnyaHaptics()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.background,
+        tonalElevation = 0.dp,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AnyaSpace.Screen)
+                .padding(bottom = AnyaSpace.Xxl),
+            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Xs),
+        ) {
+            Text(
+                text = stringResource(R.string.settings_switch_host),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = stringResource(R.string.settings_switch_host_hint),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(modifier = Modifier.height(AnyaSpace.Sm))
+            devices.forEach { device ->
+                val active = device.deviceId == activeDeviceId
+                SettingsSelectRow(
+                    title = device.resolvedDisplayName(),
+                    subtitle = if (active && connectionState == ConnectionState.Connected) {
+                        stringResource(R.string.settings_device_connected)
+                    } else {
+                        device.host
+                    },
+                    selected = active,
+                    onSelect = {
+                        haptic.linearTick()
+                        if (!active) onSelect(device.deviceId)
+                        onDismiss()
+                    },
+                )
+            }
+            Spacer(modifier = Modifier.height(AnyaSpace.Sm))
+            SettingsActionRow(
+                icon = Icons.Rounded.Add,
+                title = stringResource(R.string.settings_add_device),
+                onClick = {
+                    haptic.buttonPress()
+                    onAdd()
+                },
+            )
+        }
     }
 }
 
@@ -798,6 +1144,7 @@ private fun SettingsActionRow(
 private fun UnpairConfirmSheet(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
+    hostName: String? = null,
 ) {
     val haptics = rememberAnyaHaptics()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -831,7 +1178,11 @@ private fun UnpairConfirmSheet(
                 )
             }
             Text(
-                text = stringResource(R.string.settings_unpair_body),
+                text = if (hostName.isNullOrBlank()) {
+                    stringResource(R.string.settings_unpair_body)
+                } else {
+                    stringResource(R.string.settings_unpair_body_named, hostName)
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

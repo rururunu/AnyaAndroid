@@ -1,10 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="pairing_title">Connect Anya</string>
-    <string name="pairing_subtitle">Open “Connect phone” on the desktop workbench and scan the QR code.</string>
+    <string name="pairing_title_add">Add a host</string>
+    <string name="pairing_title_repair">Re-pair this host</string>
+    <string name="pairing_subtitle">Open “Connect phone” on the desktop workbench and scan the QR code. You can name the host before connecting.</string>
     <string name="pairing_top_subtitle">Scan or enter pairing details</string>
     <string name="pairing_scan">Scan QR code</string>
-    <string name="pairing_scan_hint">Recommended · connects automatically after scan</string>
+    <string name="pairing_scan_hint">Recommended · confirm the host name after scan</string>
+    <string name="pairing_display_name">Host name</string>
+    <string name="pairing_display_name_hint">Shown in the top bar · %1$d / %2$d</string>
     <string name="pairing_manual">Enter manually</string>
     <string name="pairing_collapse">Collapse</string>
     <string name="pairing_expand">Expand</string>
@@ -17,6 +21,7 @@
     <string name="pairing_scan_title">Scan pairing code</string>
     <string name="pairing_scan_align">Point at the QR code in desktop “Connect phone”</string>
     <string name="pairing_submit">Pair and connect</string>
+    <string name="pairing_submit_repair">Update pairing and connect</string>
     <string name="pairing_submitting">Connecting…</string>
     <string name="pairing_connecting_host">Connecting to %1$s…</string>
     <string name="pairing_connecting">Pairing and connecting…</string>
@@ -27,6 +32,7 @@
     <string name="pairing_token_need_host">Pairing code recognized. Enter the host to connect.</string>
     <string name="pairing_qr_unrecognized">Couldn’t read this QR code. Scan the pairing code in desktop “Connect phone”.</string>
     <string name="pairing_recognized_connecting">Recognized %1$s, connecting…</string>
+    <string name="pairing_recognized_confirm">Recognized %1$s. Confirm the host name, then connect.</string>
     <string name="pairing_fill_required">Enter host, port, and pairing token</string>
     <string name="pairing_error_timeout">Connection timed out. Make sure the desktop app is online and the public tunnel is on.</string>
     <string name="pairing_error_rejected">Pairing was rejected. Refresh the QR code on desktop and try again.</string>

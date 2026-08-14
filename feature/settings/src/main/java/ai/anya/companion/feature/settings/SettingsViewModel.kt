@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 public data class SettingsUiState(
     public val connectionState: ConnectionState = ConnectionState.Disconnected,
     public val credential: DeviceCredential? = null,
+    public val pairedDevices: List<DeviceCredential> = emptyList(),
     public val language: AppLanguage = AppLanguage.System,
     public val availableUpdateVersion: String? = null,
 )
@@ -34,12 +35,14 @@ public class SettingsViewModel @Inject constructor(
     public val state: StateFlow<SettingsUiState> = combine(
         connectionRepository.connectionState,
         connectionRepository.credential,
+        connectionRepository.pairedDevices,
         localeRepository.language,
         updateMonitor.badgeVersion,
-    ) { connection, credential, language, badgeVersion ->
+    ) { connection, credential, devices, language, badgeVersion ->
         SettingsUiState(
             connectionState = connection,
             credential = credential,
+            pairedDevices = devices,
             language = language,
             availableUpdateVersion = badgeVersion?.let(::formatDisplayVersion),
         )
@@ -51,6 +54,18 @@ public class SettingsViewModel @Inject constructor(
 
     public fun disconnect() {
         viewModelScope.launch { connectionRepository.disconnect() }
+    }
+
+    public fun switchDevice(deviceId: String) {
+        viewModelScope.launch { connectionRepository.switchDevice(deviceId) }
+    }
+
+    public fun renameDevice(deviceId: String, displayName: String) {
+        viewModelScope.launch { connectionRepository.renameDevice(deviceId, displayName) }
+    }
+
+    public fun removeDevice(deviceId: String) {
+        viewModelScope.launch { connectionRepository.removeDevice(deviceId) }
     }
 
     public fun unpair() {

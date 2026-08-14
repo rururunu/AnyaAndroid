@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="inbox_tab_pending">待确认</string>
+    <string name="inbox_tab_results">结果</string>
+    <string name="inbox_pending_empty_title">没有待确认的内容</string>
+    <string name="inbox_pending_empty_subtitle">桌面端的审批与提问会出现在这里</string>
+    <string name="inbox_results_empty_title">还没有结果</string>
+    <string name="inbox_results_empty_subtitle">分享的文件和链接会留在这里，接收或查看后也不会消失</string>
+    <string name="inbox_kind_tool">权限请求</string>
+    <string name="inbox_kind_ask">待回答问题</string>
+    <string name="inbox_kind_path">路径权限</string>
+    <string name="inbox_kind_file">文件</string>
+    <string name="inbox_kind_url">链接</string>
+    <string name="inbox_hint_tool">点击进入对话完成审批</string>
+    <string name="inbox_hint_ask">点击进入对话回答问题</string>
+    <string name="inbox_hint_file_pending">尚未接收，点进对话获取</string>
+    <string name="inbox_hint_file_ready">已保存，点进对话查看</string>
+    <string name="inbox_hint_file_failed">接收失败，点进对话重试</string>
+    <string name="inbox_hint_url_pending">尚未查看，点进对话打开</string>
+    <string name="inbox_hint_url_viewed">已查看，点进对话再次打开</string>
+    <string name="inbox_status_file_pending">未接收</string>
+    <string name="inbox_status_file_ready">已保存</string>
+    <string name="inbox_status_file_failed">失败</string>
+    <string name="inbox_status_url_pending">未查看</string>
+    <string name="inbox_status_url_viewed">已查看</string>
+    <string name="inbox_session_label">对话：%1$s</string>
+    <string name="inbox_quick_ask">随问</string>
+    <string name="inbox_delete_title">删除这条结果</string>
+    <string name="inbox_delete_body">「%1$s」将从收件箱移除，对话本身不会被删除。</string>
+    <string name="inbox_delete_confirm">删除</string>
+    <string name="inbox_delete_cancel">取消</string>
+</resources>

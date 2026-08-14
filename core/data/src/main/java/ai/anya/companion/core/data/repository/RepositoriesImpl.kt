@@ -9,6 +9,9 @@ import ai.anya.companion.core.domain.repository.ConnectionState
 import ai.anya.companion.core.domain.repository.SessionRepository
 import ai.anya.companion.core.domain.repository.WorkspaceRepository
 import ai.anya.companion.core.data.local.AttachCatalogStore
+import ai.anya.companion.core.data.local.InboxResultStore
+import ai.anya.companion.core.model.inbox.InboxResultKind
+import ai.anya.companion.core.model.inbox.InboxResultRecord
 import ai.anya.companion.core.data.local.CredentialStore
 import ai.anya.companion.core.model.approval.ApprovalDecision
 import ai.anya.companion.core.model.approval.ApprovalKind
@@ -17,6 +20,7 @@ import ai.anya.companion.core.model.approval.PendingApproval
 import ai.anya.companion.core.model.protocol.ApprovalDecisionWire
 import ai.anya.companion.core.model.protocol.ClientMessage
 import ai.anya.companion.core.model.protocol.DeviceCredential
+import ai.anya.companion.core.model.protocol.HostDisplayName
 import ai.anya.companion.core.model.protocol.PairingPayload
 import ai.anya.companion.core.model.protocol.ServerMessage
 import ai.anya.companion.core.model.session.AgentRunState
@@ -35,6 +39,7 @@ import ai.anya.companion.core.model.session.ToolActivity
 import ai.anya.companion.core.model.session.ToolApprovalMode
 import ai.anya.companion.core.model.session.ToolPreviewPayload
 import ai.anya.companion.core.model.session.ChatSharedFile
+import ai.anya.companion.core.model.session.ChatSharedUrl
 import ai.anya.companion.core.model.session.SharedFileStatus
 import ai.anya.companion.core.model.session.wireValue
 import ai.anya.companion.core.model.workspace.CompanionFileOffer
@@ -61,10 +66,15 @@ import androidx.core.content.FileProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.io.FileOutputStream
+import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import timber.log.Timber
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -74,11 +84,14 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -96,6 +109,8 @@ import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import java.util.UUID
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -112,6 +127,9 @@ public class DefaultConnectionRepository @Inject constructor(
 
     private val _credential = MutableStateFlow<DeviceCredential?>(null)
     override val credential: StateFlow<DeviceCredential?> = _credential.asStateFlow()
+
+    private val _pairedDevices = MutableStateFlow<List<DeviceCredential>>(emptyList())
+    override val pairedDevices: StateFlow<List<DeviceCredential>> = _pairedDevices.asStateFlow()
 
     /** When true, keep trying to stay online whenever a credential exists. */
     private val wantConnected = MutableStateFlow(true)
@@ -138,15 +156,31 @@ public class DefaultConnectionRepository @Inject constructor(
 
     init {
         appScope.launch {
-            credentialStore.credentialFlow.collect { saved ->
+            credentialStore.rosterFlow.collect { roster ->
+                val previousId = _credential.value?.deviceId
+                val saved = roster.active()
+                _pairedDevices.value = roster.devices
                 _credential.value = saved
                 saved?.lastGoodEndpointKey()?.let { lastGoodEndpoint.compareAndSet(null, it) }
                 if (saved == null) {
                     wantConnected.value = true
                     sessionReachedConnected.set(false)
+                    lastGoodEndpoint.set(null)
+                    lastAttempt.set(null)
                     reconnectJob?.cancel()
                     gateway.disconnect()
                     _connectionState.value = ConnectionState.Disconnected
+                } else if (saved.deviceId != previousId) {
+                    lastGoodEndpoint.set(saved.lastGoodEndpointKey())
+                    lastAttempt.set(null)
+                    if (previousId != null) {
+                        sessionReachedConnected.set(false)
+                        reconnectJob?.cancel()
+                        gateway.disconnect()
+                    }
+                    if (wantConnected.value) {
+                        ensureConnected(saved)
+                    }
                 } else if (wantConnected.value) {
                     ensureConnected(saved)
                 }
@@ -289,24 +323,100 @@ public class DefaultConnectionRepository @Inject constructor(
         }
     }
 
-    override suspend fun pair(payload: PairingPayload): AnyaResult<DeviceCredential> {
-        // Desktop pairing handshake will replace this stub once Gateway lands on Anya PC.
+    override suspend fun pair(
+        payload: PairingPayload,
+        replaceDeviceId: String?,
+    ): AnyaResult<DeviceCredential> {
+        val existing = matchExistingDevice(_pairedDevices.value, payload, replaceDeviceId)
+        val displayName = HostDisplayName.orFallback(
+            payload.displayName ?: existing?.displayName ?: HostDisplayName.suggest(
+                host = payload.host,
+                lanHost = payload.lanHost,
+                deviceName = payload.deviceName,
+                existing = existing?.displayName,
+            ),
+        )
         val credential = DeviceCredential(
-            deviceId = UUID.randomUUID().toString(),
+            deviceId = existing?.deviceId ?: UUID.randomUUID().toString(),
             credential = payload.pairingToken,
             host = payload.host,
             port = payload.port,
             scheme = payload.scheme,
-            pairedAtEpochMs = System.currentTimeMillis(),
-            lanHost = payload.lanHost,
-            lanPort = payload.lanPort,
+            pairedAtEpochMs = existing?.pairedAtEpochMs ?: System.currentTimeMillis(),
+            lanHost = payload.lanHost ?: existing?.lanHost,
+            lanPort = payload.lanPort ?: existing?.lanPort,
+            displayName = displayName,
         )
-        credentialStore.save(credential)
-        _credential.value = credential
-        wantConnected.value = true
+        sessionReachedConnected.set(false)
+        lastGoodEndpoint.set(null)
+        lastAttempt.set(null)
         reconnectJob?.cancel()
+        gateway.disconnect()
+        wantConnected.value = true
+        credentialStore.upsert(credential, makeActive = true)
+        _credential.value = credential
+        _pairedDevices.update { list ->
+            list.filterNot { it.deviceId == credential.deviceId } + credential
+        }
         ensureConnected(credential)
         return AnyaResult.Success(credential)
+    }
+
+    override suspend fun switchDevice(deviceId: String): AnyaResult<Unit> {
+        val target = _pairedDevices.value.find { it.deviceId == deviceId }
+            ?: return AnyaResult.Failure(AnyaError.NotPaired())
+        if (target.deviceId == _credential.value?.deviceId) {
+            return connect()
+        }
+        wantConnected.value = true
+        sessionReachedConnected.set(false)
+        lastGoodEndpoint.set(target.lastGoodEndpointKey())
+        lastAttempt.set(null)
+        reconnectJob?.cancel()
+        gateway.disconnect()
+        _connectionState.value = ConnectionState.Connecting
+        _credential.value = target
+        credentialStore.setActive(deviceId)
+        return ensureConnected(target)
+    }
+
+    override suspend fun renameDevice(deviceId: String, displayName: String) {
+        val current = _pairedDevices.value.find { it.deviceId == deviceId } ?: return
+        val name = HostDisplayName.orFallback(displayName)
+        if (current.displayName == name) return
+        val updated = current.copy(displayName = name)
+        credentialStore.upsert(
+            updated,
+            makeActive = current.deviceId == _credential.value?.deviceId,
+        )
+        _pairedDevices.update { list ->
+            list.map { if (it.deviceId == deviceId) updated else it }
+        }
+        if (_credential.value?.deviceId == deviceId) {
+            _credential.value = updated
+        }
+    }
+
+    override suspend fun removeDevice(deviceId: String) {
+        val wasActive = _credential.value?.deviceId == deviceId
+        credentialStore.remove(deviceId)
+        _pairedDevices.update { list -> list.filterNot { it.deviceId == deviceId } }
+        if (!wasActive) return
+        sessionReachedConnected.set(false)
+        lastGoodEndpoint.set(null)
+        lastAttempt.set(null)
+        reconnectJob?.cancel()
+        gateway.disconnect()
+        val next = _pairedDevices.value.maxByOrNull { it.pairedAtEpochMs }
+        _credential.value = next
+        if (next == null) {
+            wantConnected.value = true
+            _connectionState.value = ConnectionState.Disconnected
+        } else {
+            wantConnected.value = true
+            _connectionState.value = ConnectionState.Connecting
+            ensureConnected(next)
+        }
     }
 
     override suspend fun connect(): AnyaResult<Unit> {
@@ -325,9 +435,15 @@ public class DefaultConnectionRepository @Inject constructor(
     }
 
     override suspend fun clearPairing() {
-        disconnect()
-        credentialStore.clear()
-        _credential.value = null
+        val activeId = _credential.value?.deviceId
+        if (activeId != null) {
+            removeDevice(activeId)
+        } else {
+            disconnect()
+            credentialStore.clear()
+            _credential.value = null
+            _pairedDevices.value = emptyList()
+        }
     }
 
     override fun nudge() {
@@ -566,6 +682,22 @@ public class DefaultConnectionRepository @Inject constructor(
         return lastFailure ?: AnyaResult.Failure(AnyaError.Network("Gateway connect failed"))
     }
 
+    private fun matchExistingDevice(
+        devices: List<DeviceCredential>,
+        payload: PairingPayload,
+        replaceDeviceId: String?,
+    ): DeviceCredential? {
+        if (!replaceDeviceId.isNullOrBlank()) {
+            devices.find { it.deviceId == replaceDeviceId }?.let { return it }
+        }
+        val lan = payload.lanHost?.trim()?.takeIf { it.isNotEmpty() }
+        if (lan != null) {
+            devices.find { it.lanHost?.trim().equals(lan, ignoreCase = true) }?.let { return it }
+        }
+        val host = payload.host.trim()
+        return devices.find { it.host.equals(host, ignoreCase = true) }
+    }
+
     private fun orderedCandidates(credential: DeviceCredential): List<DeviceCredential> {
         var list = credential.connectCandidates()
         if (!shouldProbeLan()) {
@@ -624,7 +756,10 @@ public class DefaultConnectionRepository @Inject constructor(
             lastGoodScheme = candidate.scheme,
         )
         _credential.value = updated
-        appScope.launch { credentialStore.save(updated) }
+        _pairedDevices.update { list ->
+            list.map { if (it.deviceId == updated.deviceId) updated else it }
+        }
+        appScope.launch { credentialStore.upsert(updated, makeActive = true) }
     }
 
     private suspend fun sendHello(credential: DeviceCredential): AnyaResult<Unit> {
@@ -636,7 +771,7 @@ public class DefaultConnectionRepository @Inject constructor(
             ClientMessage.Hello(
                 deviceId = credential.deviceId,
                 credential = credential.credential,
-                appVersion = "0.1.0",
+                appVersion = "0.1.1",
             ),
         )
         if (sent is AnyaResult.Failure) {
@@ -687,7 +822,9 @@ public class DefaultConnectionRepository @Inject constructor(
 public class DefaultSessionRepository @Inject constructor(
     private val gateway: RemoteGatewayClient,
     private val json: Json,
+    private val connectionRepository: ConnectionRepository,
     @ApplicationScope private val appScope: CoroutineScope,
+    private val inboxResultStore: InboxResultStore,
 ) : SessionRepository {
 
     private val _sessions = MutableStateFlow<List<ChatSessionSummary>>(emptyList())
@@ -700,6 +837,13 @@ public class DefaultSessionRepository @Inject constructor(
     override val fileOffers: SharedFlow<CompanionFileOffer> = _fileOffers.asSharedFlow()
     private val _urlOffers = MutableSharedFlow<CompanionUrlOffer>(extraBufferCapacity = 8)
     override val urlOffers: SharedFlow<CompanionUrlOffer> = _urlOffers.asSharedFlow()
+    override val inboxResults: StateFlow<List<InboxResultRecord>> = combine(
+        inboxResultStore.records,
+        connectionRepository.credential,
+    ) { records, cred ->
+        val id = cred?.deviceId.orEmpty()
+        if (id.isBlank()) records else records.filter { it.deviceId.isBlank() || it.deviceId == id }
+    }.stateIn(appScope, SharingStarted.Eagerly, emptyList())
 
     private val messagesBySession = MutableStateFlow<Map<String, List<ChatMessage>>>(emptyMap())
     /** Companion-only shared-file cards; survive desktop history reloads. */
@@ -709,6 +853,20 @@ public class DefaultSessionRepository @Inject constructor(
     private val _models = MutableStateFlow<List<ChatModelInfo>>(emptyList())
 
     init {
+        appScope.launch {
+            var seen = false
+            var lastId: String? = null
+            connectionRepository.credential
+                .map { it?.deviceId }
+                .distinctUntilChanged()
+                .collect { id ->
+                    if (seen && lastId != id) {
+                        resetLocalProjection()
+                    }
+                    seen = true
+                    lastId = id
+                }
+        }
         appScope.launch {
             gateway.incoming.collect { message ->
                 when (message) {
@@ -785,6 +943,7 @@ public class DefaultSessionRepository @Inject constructor(
                             val local = map[sessionId].orEmpty()
                             map + (sessionId to mergeHistory(local, messages, runState))
                         }
+                        hydrateSharedCardsFromHistory(sessionId, messages)
                         AnyaResult.Success(messagesBySession.value[sessionId].orEmpty())
                     } else {
                         AnyaResult.Success(messagesBySession.value[sessionId].orEmpty())
@@ -812,6 +971,7 @@ public class DefaultSessionRepository @Inject constructor(
                     localSharedBySession.update { it - sessionId }
                     composeBySession.update { it - sessionId }
                     tasksBySession.update { it - sessionId }
+                    inboxResultStore.removeSessions(setOf(sessionId))
                     AnyaResult.Success(Unit)
                 }
             }
@@ -1086,9 +1246,14 @@ public class DefaultSessionRepository @Inject constructor(
         localSharedBySession.update { map ->
             val current = map[sessionId].orEmpty().toMutableList()
             val idx = current.indexOfFirst { it.id == message.id }
-            if (idx >= 0) current[idx] = message else current.add(message)
+            if (idx >= 0) {
+                current[idx] = mergeSharedMessagePreserveDownloads(current[idx], message)
+            } else {
+                current.add(message)
+            }
             map + (sessionId to current)
         }
+        captureInboxResults(message)
     }
 
     override fun patchLocalSharedFile(
@@ -1112,6 +1277,21 @@ public class DefaultSessionRepository @Inject constructor(
             }
             map + (sessionId to next)
         }
+        val updated = localSharedBySession.value[sessionId].orEmpty()
+            .asSequence()
+            .flatMap { it.sharedFiles.asSequence() }
+            .firstOrNull { it.offerId == offerId }
+        if (updated != null) {
+            inboxResultStore.patchFile(offerId, updated)
+        }
+    }
+
+    override fun markInboxUrlViewed(offerId: String) {
+        inboxResultStore.markUrlViewed(offerId)
+    }
+
+    override fun deleteInboxResult(offerId: String) {
+        inboxResultStore.delete(offerId)
     }
 
     private fun mergeRemoteAndLocal(
@@ -1123,6 +1303,79 @@ public class DefaultSessionRepository @Inject constructor(
         val extras = local.filter { it.id !in remoteIds }
         if (extras.isEmpty()) return remote
         return (remote + extras).sortedBy { it.createdAtEpochMs }
+    }
+
+    private fun mergeSharedMessagePreserveDownloads(
+        previous: ChatMessage,
+        incoming: ChatMessage,
+    ): ChatMessage {
+        val previousFiles = previous.sharedFiles.associateBy { it.offerId }
+        val files = incoming.sharedFiles.map { file ->
+            val old = previousFiles[file.offerId] ?: return@map file
+            val keepLocal = old.localPath != null ||
+                old.status == SharedFileStatus.Ready ||
+                old.status == SharedFileStatus.Pending
+            if (!keepLocal) {
+                file
+            } else {
+                old.copy(
+                    path = file.path.ifBlank { old.path },
+                    name = file.name.ifBlank { old.name },
+                    mime = file.mime.takeIf {
+                        it.isNotBlank() && it != "application/octet-stream"
+                    } ?: old.mime,
+                    size = if (file.size > 0L) file.size else old.size,
+                    workspaceId = file.workspaceId ?: old.workspaceId,
+                )
+            }
+        }.ifEmpty { previous.sharedFiles }
+        val urls = incoming.sharedUrls.ifEmpty { previous.sharedUrls }
+        return incoming.copy(sharedFiles = files, sharedUrls = urls)
+    }
+
+    private fun captureInboxResults(message: ChatMessage) {
+        if (message.sharedFiles.isEmpty() && message.sharedUrls.isEmpty()) return
+        val session = _sessions.value.find { it.id == message.sessionId }
+        val createdAt = message.createdAtEpochMs.takeIf { it > 0L } ?: System.currentTimeMillis()
+        val title = session?.title?.takeIf { it.isNotBlank() }
+        val workspace = session?.workspaceName?.takeIf { it.isNotBlank() }
+        for (file in message.sharedFiles) {
+            if (file.offerId.isBlank()) continue
+            inboxResultStore.upsert(
+                InboxResultRecord(
+                    id = file.offerId,
+                    kind = InboxResultKind.File,
+                    sessionId = message.sessionId,
+                    sessionTitle = title,
+                    workspaceName = workspace,
+                    createdAtEpochMs = createdAt,
+                    name = file.name,
+                    path = file.path,
+                    mime = file.mime,
+                    size = file.size,
+                    fileStatus = file.status,
+                    localPath = file.localPath,
+                    deviceId = currentDeviceId(),
+                ),
+            )
+        }
+        for (url in message.sharedUrls) {
+            if (url.offerId.isBlank()) continue
+            inboxResultStore.upsert(
+                InboxResultRecord(
+                    id = url.offerId,
+                    kind = InboxResultKind.Url,
+                    sessionId = message.sessionId,
+                    sessionTitle = title,
+                    workspaceName = workspace,
+                    createdAtEpochMs = createdAt,
+                    name = url.label.ifBlank { "Preview" },
+                    publicUrl = url.publicUrl,
+                    originUrl = url.originUrl,
+                    deviceId = currentDeviceId(),
+                ),
+            )
+        }
     }
 
     private fun handleEvent(name: String, data: JsonObject) {
@@ -1286,6 +1539,23 @@ public class DefaultSessionRepository @Inject constructor(
                     workspaceId = data.string("workspaceId"),
                 )
                 _fileOffers.tryEmit(offer)
+                val session = _sessions.value.find { it.id == sessionId }
+                inboxResultStore.upsert(
+                    InboxResultRecord(
+                        id = offer.offerId.ifBlank { return },
+                        kind = InboxResultKind.File,
+                        sessionId = sessionId,
+                        sessionTitle = session?.title?.takeIf { it.isNotBlank() },
+                        workspaceName = session?.workspaceName?.takeIf { it.isNotBlank() },
+                        createdAtEpochMs = System.currentTimeMillis(),
+                        name = offer.name,
+                        path = offer.path,
+                        mime = offer.mime.orEmpty(),
+                        size = offer.size,
+                        fileStatus = SharedFileStatus.Offered,
+                        deviceId = currentDeviceId(),
+                    ),
+                )
             }
             "url.offer", "url-offer", "UrlOffer" -> {
                 val sessionId = data.string("sessionId") ?: return
@@ -1298,6 +1568,21 @@ public class DefaultSessionRepository @Inject constructor(
                     originUrl = data.string("originUrl").orEmpty(),
                 )
                 _urlOffers.tryEmit(offer)
+                val session = _sessions.value.find { it.id == sessionId }
+                inboxResultStore.upsert(
+                    InboxResultRecord(
+                        id = offer.offerId.ifBlank { return },
+                        kind = InboxResultKind.Url,
+                        sessionId = sessionId,
+                        sessionTitle = session?.title?.takeIf { it.isNotBlank() },
+                        workspaceName = session?.workspaceName?.takeIf { it.isNotBlank() },
+                        createdAtEpochMs = System.currentTimeMillis(),
+                        name = offer.label,
+                        publicUrl = offer.publicUrl,
+                        originUrl = offer.originUrl,
+                        deviceId = currentDeviceId(),
+                    ),
+                )
             }
             else -> Unit
         }
@@ -1324,6 +1609,7 @@ public class DefaultSessionRepository @Inject constructor(
                     val local = map[sessionId].orEmpty()
                     map + (sessionId to mergeHistory(local, incoming, runState))
                 }
+                hydrateSharedCardsFromHistory(sessionId, incoming)
                 return
             }
             if (payload.containsKey("compose")) {
@@ -1344,11 +1630,16 @@ public class DefaultSessionRepository @Inject constructor(
         }
         runCatching {
             val list = json.decodeFromJsonElement<List<ChatSessionSummary>>(payload)
+            val previousIds = _sessions.value.map { it.id }.toSet()
             _sessions.value = list
+            if (previousIds.isNotEmpty()) {
+                inboxResultStore.removeSessions(previousIds - list.map { it.id }.toSet())
+            }
         }
     }
 
     private fun applySnapshot(data: JsonObject) {
+        val previousIds = _sessions.value.map { it.id }.toSet()
         runCatching {
             data["sessions"]?.let { element ->
                 _sessions.value = json.decodeFromJsonElement(element)
@@ -1358,6 +1649,10 @@ public class DefaultSessionRepository @Inject constructor(
             }
         }.onFailure { error ->
             Timber.w(error, "Failed to apply session snapshot")
+        }
+        if (previousIds.isNotEmpty()) {
+            val nextIds = _sessions.value.map { it.id }.toSet()
+            inboxResultStore.removeSessions(previousIds - nextIds)
         }
         settleIdleStreaming()
     }
@@ -1632,6 +1927,13 @@ public class DefaultSessionRepository @Inject constructor(
             }
             map + (sessionId to current)
         }
+        if (finished && success) {
+            ingestSharedCardFromActivity(
+                sessionId = sessionId,
+                activity = activity,
+                createdAtEpochMs = System.currentTimeMillis(),
+            )
+        }
         patchRunState(sessionId, AgentRunState.Streaming)
     }
 
@@ -1719,14 +2021,162 @@ public class DefaultSessionRepository @Inject constructor(
         }
     }
 
+    private fun hydrateSharedCardsFromHistory(sessionId: String, messages: List<ChatMessage>) {
+        val workspaceId = _sessions.value.find { it.id == sessionId }?.workspaceId
+        val seen = localSharedOfferIds(sessionId).toMutableSet()
+        for (message in messages) {
+            for (activity in message.toolActivities) {
+                ingestSharedCardFromActivity(
+                    sessionId = sessionId,
+                    activity = activity,
+                    createdAtEpochMs = message.createdAtEpochMs,
+                    workspaceId = workspaceId,
+                    seenOfferIds = seen,
+                )
+            }
+        }
+    }
+
+    private fun ingestSharedCardFromActivity(
+        sessionId: String,
+        activity: ToolActivity,
+        createdAtEpochMs: Long,
+        workspaceId: String? = _sessions.value.find { it.id == sessionId }?.workspaceId,
+        seenOfferIds: MutableSet<String>? = null,
+    ) {
+        if (!activity.success) return
+        val status = activity.status.lowercase()
+        if (status.isNotEmpty() && status != "done" && status != "complete" && status != "completed") {
+            return
+        }
+        when (activity.toolName) {
+            "share_to_companion" -> {
+                val path = activity.arguments?.string("path")?.trim().orEmpty().ifEmpty {
+                    SHARE_PATH_RE.find(activity.result.orEmpty())?.groupValues?.getOrNull(1)
+                        ?.trim()
+                        .orEmpty()
+                }
+                if (path.isEmpty()) return
+                val offerId = extractOfferId(activity.result, activity.id)
+                if (!markNewOffer(sessionId, offerId, seenOfferIds)) return
+                val name = activity.arguments?.string("label")?.trim()?.ifBlank { null }
+                    ?: path.replace('\\', '/').substringAfterLast('/').ifBlank { path }
+                val result = activity.result.orEmpty()
+                val mime = SHARE_MIME_RE.find(result)?.groupValues?.getOrNull(1)
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "application/octet-stream"
+                val size = SHARE_SIZE_RE.find(result)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: 0L
+                upsertLocalSharedMessage(
+                    ChatMessage(
+                        id = "shared-$offerId",
+                        sessionId = sessionId,
+                        role = ChatRole.System,
+                        content = "",
+                        status = MessageStatus.Complete,
+                        createdAtEpochMs = createdAtEpochMs.takeIf { it > 0L }
+                            ?: System.currentTimeMillis(),
+                        sharedFiles = listOf(
+                            ChatSharedFile(
+                                offerId = offerId,
+                                path = path,
+                                name = name,
+                                mime = mime,
+                                size = size,
+                                status = SharedFileStatus.Offered,
+                                workspaceId = workspaceId,
+                            ),
+                        ),
+                    ),
+                )
+            }
+            "share_preview_url" -> {
+                val result = activity.result.orEmpty()
+                val publicUrl = SHARE_URL_RE.find(result)?.value
+                    ?.trimEnd(',', '.', ')', ']', '"')
+                    ?.takeIf { it.isNotBlank() }
+                    ?: return
+                val offerId = extractOfferId(activity.result, activity.id)
+                if (!markNewOffer(sessionId, offerId, seenOfferIds)) return
+                val label = activity.arguments?.string("label")?.trim()?.ifBlank { null } ?: "Preview"
+                val originUrl = activity.arguments?.string("url").orEmpty()
+                upsertLocalSharedMessage(
+                    ChatMessage(
+                        id = "shared-url-$offerId",
+                        sessionId = sessionId,
+                        role = ChatRole.System,
+                        content = "",
+                        status = MessageStatus.Complete,
+                        createdAtEpochMs = createdAtEpochMs.takeIf { it > 0L }
+                            ?: System.currentTimeMillis(),
+                        sharedUrls = listOf(
+                            ChatSharedUrl(
+                                offerId = offerId,
+                                label = label,
+                                publicUrl = publicUrl,
+                                originUrl = originUrl,
+                            ),
+                        ),
+                    ),
+                )
+            }
+            else -> Unit
+        }
+    }
+
+    private fun markNewOffer(
+        sessionId: String,
+        offerId: String,
+        seenOfferIds: MutableSet<String>?,
+    ): Boolean {
+        if (offerId.isBlank()) return false
+        if (seenOfferIds != null) {
+            if (offerId in seenOfferIds) return false
+            seenOfferIds += offerId
+            return true
+        }
+        return offerId !in localSharedOfferIds(sessionId)
+    }
+
+    private fun localSharedOfferIds(sessionId: String): Set<String> =
+        localSharedBySession.value[sessionId].orEmpty().flatMap { message ->
+            message.sharedFiles.map { it.offerId } + message.sharedUrls.map { it.offerId }
+        }.toSet()
+
+    private fun extractOfferId(result: String?, fallback: String): String {
+        val fromResult = result?.let { SHARE_OFFER_ID_RE.find(it)?.groupValues?.getOrNull(1) }
+        return fromResult?.ifBlank { null } ?: fallback
+    }
+
+    private fun currentDeviceId(): String =
+        connectionRepository.credential.value?.deviceId.orEmpty()
+
+    private fun resetLocalProjection() {
+        _sessions.value = emptyList()
+        _workspaces.value = emptyList()
+        messagesBySession.value = emptyMap()
+        localSharedBySession.value = emptyMap()
+        composeBySession.value = emptyMap()
+        tasksBySession.value = emptyMap()
+        _models.value = emptyList()
+    }
+
     private fun JsonObject.string(key: String): String? =
         this[key]?.jsonPrimitive?.contentOrNull
+
+    private companion object {
+        val SHARE_OFFER_ID_RE = Regex("""offerId=([A-Za-z0-9-]+)""")
+        val SHARE_MIME_RE = Regex("""mime=([^,\s)]+)""")
+        val SHARE_SIZE_RE = Regex("""size=(\d+)""")
+        val SHARE_PATH_RE = Regex("""path=([^,\s)]+)""")
+        val SHARE_URL_RE = Regex("""https?://\S+""")
+    }
 }
 
 @Singleton
 public class DefaultApprovalRepository @Inject constructor(
     private val gateway: RemoteGatewayClient,
     private val json: Json,
+    private val connectionRepository: ConnectionRepository,
     @ApplicationScope private val appScope: CoroutineScope,
 ) : ApprovalRepository {
 
@@ -1734,6 +2184,20 @@ public class DefaultApprovalRepository @Inject constructor(
     override val pending: StateFlow<List<PendingApproval>> = _pending.asStateFlow()
 
     init {
+        appScope.launch {
+            var seen = false
+            var lastId: String? = null
+            connectionRepository.credential
+                .map { it?.deviceId }
+                .distinctUntilChanged()
+                .collect { id ->
+                    if (seen && lastId != id) {
+                        _pending.value = emptyList()
+                    }
+                    seen = true
+                    lastId = id
+                }
+        }
         appScope.launch {
             gateway.incoming.collect { message ->
                 when (message) {
@@ -1862,7 +2326,10 @@ public class DefaultApprovalRepository @Inject constructor(
 public class DefaultWorkspaceRepository @Inject constructor(
     private val gateway: RemoteGatewayClient,
     private val json: Json,
+    private val okHttpClient: OkHttpClient,
     private val attachCatalogStore: AttachCatalogStore,
+    private val connectionRepository: ConnectionRepository,
+    @ApplicationScope private val appScope: CoroutineScope,
     @ApplicationContext private val context: Context,
 ) : WorkspaceRepository {
 
@@ -1878,11 +2345,36 @@ public class DefaultWorkspaceRepository @Inject constructor(
     private val _mcpServers = MutableStateFlow<List<McpServerSummary>>(emptyList())
     override val mcpServers: StateFlow<List<McpServerSummary>> = _mcpServers.asStateFlow()
 
+    init {
+        appScope.launch {
+            var seen = false
+            var lastId: String? = null
+            connectionRepository.credential
+                .map { it?.deviceId }
+                .distinctUntilChanged()
+                .collect { id ->
+                    if (seen && lastId != id) {
+                        _snapshot.value = null
+                        _filesCatalog.value = null
+                        _skills.value = emptyList()
+                        _mcpServers.value = emptyList()
+                    }
+                    seen = true
+                    lastId = id
+                }
+        }
+    }
+
     private companion object {
         const val MAX_UPLOAD_BYTES: Long = 500L * 1024L * 1024L
         const val UPLOAD_CHUNK_BYTES: Int = 512 * 1024
         const val DOWNLOAD_CHUNK_BYTES: Int = 512 * 1024
         const val DOWNLOAD_CHUNK_TIMEOUT_MS: Long = 60_000
+        /** Concurrent in-flight upload chunks (pipelined over the socket). */
+        const val UPLOAD_CONCURRENCY: Int = 4
+        /** Parallel HTTP Range segments for downloads. */
+        const val DOWNLOAD_SEGMENTS: Int = 4
+        const val DOWNLOAD_PARALLEL_MIN_BYTES: Long = 4L * 1024L * 1024L
     }
 
     override suspend fun refresh(sessionId: String?): AnyaResult<WorkspaceSnapshot> {
@@ -1951,79 +2443,109 @@ public class DefaultWorkspaceRepository @Inject constructor(
         path: String,
         sessionId: String?,
         workspaceId: String?,
+        onProgress: ((Long, Long) -> Unit)?,
     ): AnyaResult<DownloadedWorkspaceFile> = withContext(Dispatchers.IO) {
         var dest: File? = null
         runCatching {
-            var offset = 0L
-            var total = -1L
-            var name = path.replace('\\', '/').substringAfterLast('/').ifBlank { "file.bin" }
-            var mime = "application/octet-stream"
-            var relPath = path
-            var out: FileOutputStream? = null
-            try {
-                while (true) {
-                    val requestId = UUID.randomUUID().toString()
-                    val result = gateway.request(
-                        ClientMessage.WorkspaceReadFile(
-                            requestId = requestId,
-                            path = path,
-                            sessionId = sessionId,
-                            workspaceId = workspaceId,
-                            mode = "download",
-                            offset = offset,
-                            length = DOWNLOAD_CHUNK_BYTES.toLong(),
-                        ),
-                        requestId,
-                        timeoutMs = DOWNLOAD_CHUNK_TIMEOUT_MS,
-                    )
-                    val rpc = when (result) {
-                        is AnyaResult.Failure -> error(result.error.toString())
-                        is AnyaResult.Success -> result.data
-                    }
-                    if (!rpc.ok) {
-                        error(rpc.error ?: "workspace.readFile failed")
-                    }
-                    val payload = rpc.data as? JsonObject
-                        ?: error("workspace.readFile returned no payload")
-                    val size = payload["size"]?.jsonPrimitive?.longOrNull ?: 0L
-                    if (size > MAX_UPLOAD_BYTES) {
-                        error("file too large: $size bytes (max $MAX_UPLOAD_BYTES)")
-                    }
-                    if (total < 0L) {
-                        total = size
-                        name = payload.string("name") ?: name
-                        mime = payload.string("mime") ?: mime
-                        relPath = payload.string("path") ?: path
-                        val created = uniqueSharedCacheFile(name)
-                        dest = created
-                        out = FileOutputStream(created)
-                    } else if (size != total) {
-                        error("file size changed during download")
-                    }
-                    val encoded = payload.string("contentBase64").orEmpty()
-                    val bytes = if (encoded.isEmpty()) {
-                        ByteArray(0)
-                    } else {
-                        java.util.Base64.getDecoder().decode(encoded)
-                    }
-                    if (bytes.isNotEmpty()) {
-                        out?.write(bytes)
-                        offset += bytes.size.toLong()
-                    }
-                    val eof = payload["eof"]?.jsonPrimitive?.booleanOrNull
-                        ?: (bytes.isEmpty() || offset >= total)
-                    if (eof || bytes.isEmpty() || offset >= total) {
-                        break
-                    }
-                }
-                out?.flush()
-            } finally {
-                out?.close()
+            // 1. Mint a short-lived download URL over the WebSocket.
+            val beginId = UUID.randomUUID().toString()
+            val begun = gateway.request(
+                ClientMessage.FileDownloadBegin(
+                    requestId = beginId,
+                    path = path,
+                    sessionId = sessionId,
+                    workspaceId = workspaceId,
+                ),
+                beginId,
+                timeoutMs = 30_000,
+            )
+            val beginRpc = when (begun) {
+                is AnyaResult.Failure -> error(begun.error.toString())
+                is AnyaResult.Success -> begun.data
             }
+            if (!beginRpc.ok) {
+                error(beginRpc.error ?: "file.download.begin failed")
+            }
+            val payload = beginRpc.data as? JsonObject
+                ?: error("file.download.begin returned no payload")
+            val url = payload.string("url")
+                ?: error("file.download.begin returned no url")
+            val size = payload["size"]?.jsonPrimitive?.longOrNull ?: 0L
+            if (size > MAX_UPLOAD_BYTES) {
+                error("file too large: $size bytes (max $MAX_UPLOAD_BYTES)")
+            }
+            val name = payload.string("name")
+                ?: path.replace('\\', '/').substringAfterLast('/').ifBlank { "file.bin" }
+            val mime = payload.string("mime") ?: "application/octet-stream"
+
+            val created = uniqueSharedCacheFile(name)
+            dest = created
+
+            // Shared OkHttp client has infinite readTimeout (tuned for the WS);
+            // a download needs a finite read timeout so a silent drop fails
+            // instead of hanging. Build a one-off client from its settings.
+            val downloadClient = okHttpClient.newBuilder()
+                .readTimeout(60, TimeUnit.SECONDS)
+                .build()
+
+            // 2. Parallel segmented download: split into ranges, each streamed
+            //    to a preallocated RandomAccessFile at its own offset (resumable).
+            val segments = if (size >= DOWNLOAD_PARALLEL_MIN_BYTES) DOWNLOAD_SEGMENTS else 1
+            val downloadedBytes = AtomicLong(0L)
+            RandomAccessFile(created, "rw").use { raf ->
+                raf.setLength(size)
+                val channel = raf.channel
+                coroutineScope {
+                    (0 until segments).map { idx ->
+                        val start = idx * size / segments
+                        val end = (idx + 1) * size / segments - 1
+                        async {
+                            var pos = start
+                            var attempts = 0
+                            while (pos <= end) {
+                                try {
+                                    val request = Request.Builder()
+                                        .url(url)
+                                        .header("Range", "bytes=$pos-$end")
+                                        .build()
+                                    downloadClient.newCall(request).execute().use { resp ->
+                                        if (resp.code != 206) {
+                                            error("download failed: HTTP ${resp.code}")
+                                        }
+                                        val body = resp.body ?: error("download returned no body")
+                                        body.byteStream().use { input ->
+                                            val buf = ByteArray(128 * 1024)
+                                            while (true) {
+                                                val n = input.read(buf)
+                                                if (n <= 0) break
+                                                channel.write(ByteBuffer.wrap(buf, 0, n), pos)
+                                                pos += n
+                                                val d = downloadedBytes.addAndGet(n.toLong())
+                                                onProgress?.invoke(d, size)
+                                            }
+                                        }
+                                    }
+                                    break
+                                } catch (t: Throwable) {
+                                    attempts++
+                                    if (attempts >= 3) throw t
+                                    // Resume this segment from `pos`.
+                                }
+                            }
+                            if (pos <= end) error("incomplete download segment")
+                        }
+                    }.awaitAll()
+                }
+            }
+
+            if (created.length() != size) {
+                error("incomplete download: ${created.length()} of $size bytes")
+            }
+
             val cached = dest ?: error("download produced no file")
             val uri = fileProviderUri(cached)
             DownloadedWorkspaceFile(
-                path = relPath,
+                path = path,
                 name = name,
                 mime = mime,
                 size = cached.length(),
@@ -2275,44 +2797,46 @@ public class DefaultWorkspaceRepository @Inject constructor(
             )
         }
         try {
-            var offset = 0L
+            val semaphore = Semaphore(UPLOAD_CONCURRENCY)
+            val writtenBytes = AtomicLong(0L)
             val buf = ByteArray(UPLOAD_CHUNK_BYTES)
             input.use { stream ->
-                while (offset < size) {
-                    val n = stream.read(buf)
-                    if (n <= 0) break
-                    val encoded = android.util.Base64.encodeToString(
-                        buf,
-                        0,
-                        n,
-                        android.util.Base64.NO_WRAP,
-                    )
-                    val chunkId = UUID.randomUUID().toString()
-                    val chunked = gateway.request(
-                        ClientMessage.FileUploadChunk(
-                            requestId = chunkId,
-                            uploadId = uploadId,
-                            offset = offset,
-                            dataBase64 = encoded,
-                        ),
-                        chunkId,
-                        timeoutMs = 60_000,
-                    )
-                    val chunkRpc = when (chunked) {
-                        is AnyaResult.Failure -> {
-                            abortQuietly()
-                            return@withContext chunked
+                coroutineScope {
+                    val jobs = mutableListOf<Deferred<Unit>>()
+                    var offset = 0L
+                    while (offset < size) {
+                        val n = stream.read(buf)
+                        if (n <= 0) break
+                        val data = buf.copyOf(n)
+                        val chunkOffset = offset
+                        offset += n
+                        semaphore.acquire()
+                        jobs += async {
+                            try {
+                                // Raw binary frame — no base64 (saves ~25% bytes).
+                                val chunkId = UUID.randomUUID().toString()
+                                val chunked = gateway.sendBinaryChunk(
+                                    uploadId = uploadId,
+                                    offset = chunkOffset,
+                                    data = data,
+                                    requestId = chunkId,
+                                    timeoutMs = 60_000,
+                                )
+                                val chunkRpc = when (chunked) {
+                                    is AnyaResult.Failure -> error(chunked.error.toString())
+                                    is AnyaResult.Success -> chunked.data
+                                }
+                                if (!chunkRpc.ok) {
+                                    error(chunkRpc.error ?: "file.upload.chunk failed")
+                                }
+                                val written = writtenBytes.addAndGet(n.toLong())
+                                onProgress(written, size)
+                            } finally {
+                                semaphore.release()
+                            }
                         }
-                        is AnyaResult.Success -> chunked.data
                     }
-                    if (!chunkRpc.ok) {
-                        abortQuietly()
-                        return@withContext AnyaResult.Failure(
-                            AnyaError.Network(chunkRpc.error ?: "file.upload.chunk failed"),
-                        )
-                    }
-                    offset += n
-                    onProgress(offset, size)
+                    jobs.awaitAll()
                 }
             }
             val finishId = UUID.randomUUID().toString()

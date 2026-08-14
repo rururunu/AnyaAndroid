@@ -12,8 +12,8 @@ Desktop Anya (Agent runtime): [github.com/rururunu/Anya](https://github.com/ruru
 
 | Document                                  | Audience     | When to open it                                              |
 | ----------------------------------------- | ------------ | ------------------------------------------------------------ |
-| [Architecture](./ARCHITECTURE.md)         | Contributors | Modules, pairing, LAN / tunnel, protocol, file chunks        |
-| [Releases & in-app updates](./release.md) | Release      | `latest.json`, APK name, v0.1.0 checklist                    |
+| [Architecture](./ARCHITECTURE.md)         | Contributors | Modules, phone ↔ desktop surfaces, LAN / tunnel, protocol    |
+| [Releases & in-app updates](./release.md) | Release      | `latest.json`, APK name, cut-a-release checklist             |
 | [Changelog](../CHANGELOG.md)              | Users        | What shipped in each tag                                     |
 | Desktop [architecture overview](https://github.com/rururunu/Anya/blob/main/docs/architecture-overview.md) | Both repos | Where the gateway lives inside Anya.exe                      |
 

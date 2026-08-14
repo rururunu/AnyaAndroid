@@ -68,6 +68,7 @@ import ai.anya.companion.feature.sessions.SessionsAskContent
 import ai.anya.companion.feature.sessions.SessionsSegmentHeader
 import ai.anya.companion.feature.sessions.SessionsViewModel
 import ai.anya.companion.feature.sessions.SessionsWorkspaceContent
+import ai.anya.companion.feature.settings.HostSwitcherSheet
 import ai.anya.companion.feature.settings.SettingsTabContent
 import ai.anya.companion.feature.settings.SettingsViewModel
 import kotlinx.coroutines.launch
@@ -105,7 +106,8 @@ fun MainRoute(
     onOpenConnectionSettings: () -> Unit,
     onOpenGeneralSettings: () -> Unit,
     onOpenAboutSettings: () -> Unit,
-    onRePair: () -> Unit,
+    onAddDevice: () -> Unit,
+    onUnpairLast: () -> Unit,
     sessionsViewModel: SessionsViewModel = hiltViewModel(),
     approvalViewModel: ApprovalViewModel = hiltViewModel(),
     settingsViewModel: SettingsViewModel = hiltViewModel(),
@@ -117,6 +119,7 @@ fun MainRoute(
     )
     var showConnectionPanel by rememberSaveable { mutableStateOf(false) }
     var showSearchPanel by rememberSaveable { mutableStateOf(false) }
+    var showHostSwitcher by rememberSaveable { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val searchSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
@@ -145,6 +148,7 @@ fun MainRoute(
         else -> (2f - absolutePage).coerceIn(0f, 1f)
     }
 
+    val inboxBadge = sessionsState.pendingApprovals.size + approvalState.unreadResultCount
     val tone = when (sessionsState.connectionState) {
         ConnectionState.Connected -> AnyaStatusTone.Success
         ConnectionState.Connecting, ConnectionState.Reconnecting -> AnyaStatusTone.Info
@@ -153,7 +157,7 @@ fun MainRoute(
     }
     val statusLabel = when (sessionsState.connectionState) {
         ConnectionState.Connected -> {
-            val pending = sessionsState.pendingApprovals.size
+            val pending = inboxBadge
             if (pending > 0) {
                 stringResource(R.string.status_connected_pending, pending)
             } else {
@@ -204,6 +208,11 @@ fun MainRoute(
             AnyaTopBar(
                 title = "Anya",
                 showBrand = true,
+                brandTitle = settingsState.credential?.resolvedDisplayName() ?: "Anya",
+                onBrandLongClick = {
+                    haptics.confirm()
+                    showHostSwitcher = true
+                },
                 subtitle = topSubtitle,
                 actions = {
                     Row(
@@ -245,7 +254,7 @@ fun MainRoute(
                         label = stringResource(R.string.nav_inbox),
                         icon = Icons.Outlined.Inbox,
                         selectedIcon = Icons.Rounded.Inbox,
-                        badge = sessionsState.pendingApprovals.size,
+                        badge = inboxBadge,
                     ),
                     AnyaBottomNavItem(
                         id = "settings",
@@ -328,6 +337,7 @@ fun MainRoute(
                                 haptics.linearTick()
                                 onOpenSession(id, null)
                             },
+                            onDeleteResult = approvalViewModel::deleteResult,
                         )
                     }
                     else -> {
@@ -404,17 +414,18 @@ fun MainRoute(
                 credential = settingsState.credential,
                 tone = tone,
                 statusLabel = statusLabel,
-                pendingCount = sessionsState.pendingApprovals.size,
+                pendingCount = inboxBadge,
                 onConnect = settingsViewModel::connect,
                 onDisconnect = settingsViewModel::disconnect,
                 onUnpair = {
                     dismissConnectionPanel {
+                        val last = settingsState.pairedDevices.size <= 1
                         settingsViewModel.unpair()
-                        onRePair()
+                        if (last) onUnpairLast()
                     }
                 },
                 onGoPair = {
-                    dismissConnectionPanel(onRePair)
+                    dismissConnectionPanel(onAddDevice)
                 },
                 onOpenInbox = {
                     dismissConnectionPanel {
@@ -424,6 +435,22 @@ fun MainRoute(
                 onDismiss = { dismissConnectionPanel() },
             )
         }
+    }
+
+    if (showHostSwitcher) {
+        HostSwitcherSheet(
+            devices = settingsState.pairedDevices,
+            activeDeviceId = settingsState.credential?.deviceId,
+            connectionState = sessionsState.connectionState,
+            onSelect = { deviceId ->
+                settingsViewModel.switchDevice(deviceId)
+            },
+            onAdd = {
+                showHostSwitcher = false
+                onAddDevice()
+            },
+            onDismiss = { showHostSwitcher = false },
+        )
     }
 }
 
@@ -492,9 +519,9 @@ private fun ConnectionPanel(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
-                AnyaMetaRow(label = stringResource(R.string.connection_panel_host), value = credential.host)
+                AnyaMetaRow(label = stringResource(R.string.connection_panel_host), value = credential.resolvedDisplayName())
+                AnyaMetaRow(label = stringResource(R.string.connection_panel_address), value = credential.host)
                 AnyaMetaRow(label = stringResource(R.string.connection_panel_port), value = credential.port.toString())
-                AnyaMetaRow(label = stringResource(R.string.connection_panel_device), value = credential.deviceId.take(8) + "…")
             }
         }
         if (pendingCount > 0) {

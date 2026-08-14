@@ -2,6 +2,14 @@
 
 All notable Companion releases. Desktop Anya has its own changelog in [rururunu/Anya](https://github.com/rururunu/Anya).
 
+## [Unreleased]
+
+### Added
+
+- Save multiple desktop hosts; switch from the Settings host list or by long-pressing the top-left logo
+- Set a host display name (max 16 characters) while pairing; the top-bar “Anya” label uses that name
+- Re-pair a saved host when its tunnel hostname, token, or other connection fields change (the local name is kept)
+
 ## [0.1.0] — 2026-08-13
 
 First public Android remote.

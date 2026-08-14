@@ -6,9 +6,9 @@ import ai.anya.companion.core.common.di.IoDispatcher
 import ai.anya.companion.core.common.di.MainDispatcher
 import ai.anya.companion.core.data.repository.DefaultApprovalRepository
 import ai.anya.companion.core.data.repository.DefaultConnectionRepository
+import ai.anya.companion.core.data.repository.DefaultLocaleRepository
 import ai.anya.companion.core.data.repository.DefaultSessionRepository
 import ai.anya.companion.core.data.repository.DefaultWorkspaceRepository
-import ai.anya.companion.core.data.repository.DefaultLocaleRepository
 import ai.anya.companion.core.domain.repository.ApprovalRepository
 import ai.anya.companion.core.domain.repository.ConnectionRepository
 import ai.anya.companion.core.domain.repository.LocaleRepository

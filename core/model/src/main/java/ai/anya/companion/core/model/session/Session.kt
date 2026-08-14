@@ -88,6 +88,8 @@ public data class ChatSharedFile(
     public val name: String,
     public val mime: String = "application/octet-stream",
     public val size: Long = 0L,
+    /** Bytes written while [status] is [SharedFileStatus.Pending]. */
+    public val bytesReceived: Long = 0L,
     /** Absolute path under the app files directory (null while caching / on failure). */
     public val localPath: String? = null,
     /** content:// URI after the user saved a copy to system Downloads. */

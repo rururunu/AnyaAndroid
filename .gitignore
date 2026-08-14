@@ -43,3 +43,12 @@ keystore/
 secrets.properties
 .env
 .env.*
+
+# Desktop Anya workspace (uploads, shared files, local previews)
+.anya/
+
+# SVG sources next to vector XML (Android does not load .svg from res/drawable)
+*.svg
+
+# Profiling
+*.hprof

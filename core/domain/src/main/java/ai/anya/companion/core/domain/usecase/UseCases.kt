@@ -30,8 +30,11 @@ import kotlinx.coroutines.flow.StateFlow
 public class PairDeviceUseCase @Inject constructor(
     private val connectionRepository: ConnectionRepository,
 ) {
-    public suspend operator fun invoke(payload: PairingPayload): AnyaResult<DeviceCredential> =
-        connectionRepository.pair(payload)
+    public suspend operator fun invoke(
+        payload: PairingPayload,
+        replaceDeviceId: String? = null,
+    ): AnyaResult<DeviceCredential> =
+        connectionRepository.pair(payload, replaceDeviceId)
 }
 
 public class ConnectGatewayUseCase @Inject constructor(

@@ -46,7 +46,16 @@ public object NetworkModule {
             // is a common source of mid-handshake RST / "connection closed".
             .protocols(listOf(Protocol.HTTP_1_1))
             // TLS 1.3 ClientHello is often RST in China; Compatible adds 1.2 fallback.
-            .connectionSpecs(listOf(ConnectionSpec.MODERN_TLS, ConnectionSpec.COMPATIBLE_TLS))
+            // CLEARTEXT is required for LAN `ws://` — without it
+            // OkHttp throws "CLEARTEXT communication not enabled for client" even when
+            // network_security_config permits cleartext.
+            .connectionSpecs(
+                listOf(
+                    ConnectionSpec.MODERN_TLS,
+                    ConnectionSpec.COMPATIBLE_TLS,
+                    ConnectionSpec.CLEARTEXT,
+                ),
+            )
             // Never reuse a pooled TCP/TLS session — a dead Cloudflare socket reused
             // on the next connect shows up as SSLHandshakeException: connection closed
             // in ~200ms.

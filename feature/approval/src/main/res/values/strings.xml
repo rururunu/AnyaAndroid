@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="inbox_tab_pending">Pending</string>
+    <string name="inbox_tab_results">Results</string>
+    <string name="inbox_pending_empty_title">Nothing to confirm</string>
+    <string name="inbox_pending_empty_subtitle">Approvals and questions from desktop show up here</string>
+    <string name="inbox_results_empty_title">No results yet</string>
+    <string name="inbox_results_empty_subtitle">Shared files and links stay here after you receive or open them</string>
+    <string name="inbox_kind_tool">Permission request</string>
+    <string name="inbox_kind_ask">Question</string>
+    <string name="inbox_kind_path">Path permission</string>
+    <string name="inbox_kind_file">File</string>
+    <string name="inbox_kind_url">Link</string>
+    <string name="inbox_hint_tool">Tap to review in chat</string>
+    <string name="inbox_hint_ask">Tap to answer in chat</string>
+    <string name="inbox_hint_file_pending">Not received yet — tap to open chat</string>
+    <string name="inbox_hint_file_ready">Saved — tap to open chat</string>
+    <string name="inbox_hint_file_failed">Receive failed — tap to retry in chat</string>
+    <string name="inbox_hint_url_pending">Not opened yet — tap to view</string>
+    <string name="inbox_hint_url_viewed">Opened — tap to view again</string>
+    <string name="inbox_status_file_pending">Not received</string>
+    <string name="inbox_status_file_ready">Saved</string>
+    <string name="inbox_status_file_failed">Failed</string>
+    <string name="inbox_status_url_pending">Not opened</string>
+    <string name="inbox_status_url_viewed">Opened</string>
+    <string name="inbox_session_label">Chat: %1$s</string>
+    <string name="inbox_quick_ask">Ask</string>
+    <string name="inbox_delete_title">Remove this result</string>
+    <string name="inbox_delete_body">“%1$s” will be removed from the inbox. The chat itself is kept.</string>
+    <string name="inbox_delete_confirm">Remove</string>
+    <string name="inbox_delete_cancel">Cancel</string>
+</resources>

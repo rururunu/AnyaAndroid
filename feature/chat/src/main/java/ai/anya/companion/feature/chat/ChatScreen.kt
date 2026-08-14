@@ -1,5 +1,6 @@
 package ai.anya.companion.feature.chat
 
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -46,6 +47,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.DisableSelection
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -58,6 +61,7 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudOff
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Extension
@@ -80,6 +84,9 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToDown
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.zIndex
 import ai.anya.companion.core.model.workspace.McpServerSummary
@@ -98,6 +105,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -112,9 +121,12 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import ai.anya.companion.core.designsystem.haptic.rememberAnyaHaptics
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -398,6 +410,7 @@ public fun ChatRoute(
         onDownloadFile = viewModel::downloadFile,
         onExportSharedFile = viewModel::exportSharedFile,
         onFetchSharedFile = viewModel::fetchSharedFile,
+        onMarkSharedUrlViewed = viewModel::markInboxUrlViewed,
         onDismissDownload = viewModel::dismissDownloadNotice,
     )
 }
@@ -425,6 +438,7 @@ public fun ChatScreen(
     onDownloadFile: (String) -> Unit = {},
     onExportSharedFile: (String) -> Unit = {},
     onFetchSharedFile: (String) -> Unit = {},
+    onMarkSharedUrlViewed: (String) -> Unit = {},
     onDismissDownload: () -> Unit = {},
 ) {
     val listState = rememberLazyListState()
@@ -542,6 +556,7 @@ public fun ChatScreen(
     }
     val hazeState = rememberHazeState()
     val canvas = MaterialTheme.colorScheme.surface
+    var selectionEpoch by remember { mutableIntStateOf(0) }
 
     val foldController = remember { CompletedFoldController() }
 
@@ -574,33 +589,40 @@ public fun ChatScreen(
                     .padding(top = headerContentDp, bottom = composerFootprintDp),
             )
         } else {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .hazeSource(hazeState),
-                contentPadding = PaddingValues(
-                    start = AnyaSpace.Screen,
-                    end = AnyaSpace.Screen,
-                    top = headerContentDp + AnyaSpace.Lg,
-                    bottom = composerFootprintDp + AnyaSpace.Sm + bottomInset,
-                ),
-                verticalArrangement = Arrangement.spacedBy(AnyaSpace.Lg),
-            ) {
-                items(state.messages, key = ChatMessage::id) { message ->
-                    MessageBubble(
-                        message = message,
-                        skills = attachCatalog.skills,
-                        mcpServers = attachCatalog.mcpServers,
-                        onApprovePlan = onApprovePlan,
-                        approvedPlanIds = state.planApprovedMessageIds,
-                        foldController = foldController,
-                        onOpenDiff = { request -> diffRequest = request },
-                        onExportSharedFile = onExportSharedFile,
-                        onFetchSharedFile = onFetchSharedFile,
-                        onPreviewSharedImage = { previewSharedFile = it },
-                        onOpenSharedUrl = { previewSharedUrl = it },
-                    )
+            key(selectionEpoch) {
+                SelectionContainer(modifier = Modifier.fillMaxSize()) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .hazeSource(hazeState),
+                        contentPadding = PaddingValues(
+                            start = AnyaSpace.Screen,
+                            end = AnyaSpace.Screen,
+                            top = headerContentDp + AnyaSpace.Lg,
+                            bottom = composerFootprintDp + AnyaSpace.Sm + bottomInset,
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(AnyaSpace.Lg),
+                    ) {
+                        items(state.messages, key = ChatMessage::id) { message ->
+                            MessageBubble(
+                                message = message,
+                                skills = attachCatalog.skills,
+                                mcpServers = attachCatalog.mcpServers,
+                                onApprovePlan = onApprovePlan,
+                                approvedPlanIds = state.planApprovedMessageIds,
+                                foldController = foldController,
+                                onOpenDiff = { request -> diffRequest = request },
+                                onExportSharedFile = onExportSharedFile,
+                                onFetchSharedFile = onFetchSharedFile,
+                                onPreviewSharedImage = { previewSharedFile = it },
+                                onOpenSharedUrl = {
+                                    previewSharedUrl = it
+                                    onMarkSharedUrlViewed(it.offerId)
+                                },
+                            )
+                        }
+                    }
                 }
             }
             androidx.compose.animation.AnimatedVisibility(
@@ -618,6 +640,7 @@ public fun ChatScreen(
                 Surface(
                     onClick = {
                         haptics.buttonPress()
+                        selectionEpoch++
                         scrollToBottom()
                     },
                     shape = CircleShape,
@@ -642,6 +665,16 @@ public fun ChatScreen(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            if (event.changes.any { it.changedToDown() }) {
+                                selectionEpoch++
+                            }
+                        }
+                    }
+                }
                 .hazeEffect(state = hazeState) {
                     backgroundColor = canvas
                     tints = listOf(HazeTint(canvas.copy(alpha = 0.78f)))
@@ -731,6 +764,16 @@ public fun ChatScreen(
             onHistoryClick = { sheet = ChatSheet.UserTurns },
             modifier = Modifier
                 .align(Alignment.TopCenter)
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            if (event.changes.any { it.changedToDown() }) {
+                                selectionEpoch++
+                            }
+                        }
+                    }
+                }
                 .zIndex(3f),
         )
     }
@@ -2473,20 +2516,22 @@ private fun MessageBubble(
     onOpenSharedUrl: (ai.anya.companion.core.model.session.ChatSharedUrl) -> Unit = {},
 ) {
     if (message.sharedFiles.isNotEmpty() || message.sharedUrls.isNotEmpty()) {
-        Column(verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm)) {
-            if (message.sharedFiles.isNotEmpty()) {
-                SharedFilesBlock(
-                    files = message.sharedFiles,
-                    onExport = onExportSharedFile,
-                    onPreviewImage = onPreviewSharedImage,
-                    onFetch = onFetchSharedFile,
-                )
-            }
-            if (message.sharedUrls.isNotEmpty()) {
-                SharedUrlsBlock(
-                    urls = message.sharedUrls,
-                    onOpen = onOpenSharedUrl,
-                )
+        DisableSelection {
+            Column(verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm)) {
+                if (message.sharedFiles.isNotEmpty()) {
+                    SharedFilesBlock(
+                        files = message.sharedFiles,
+                        onExport = onExportSharedFile,
+                        onPreviewImage = onPreviewSharedImage,
+                        onFetch = onFetchSharedFile,
+                    )
+                }
+                if (message.sharedUrls.isNotEmpty()) {
+                    SharedUrlsBlock(
+                        urls = message.sharedUrls,
+                        onOpen = onOpenSharedUrl,
+                    )
+                }
             }
         }
         if (message.content.isBlank()) {
@@ -2507,6 +2552,31 @@ private fun MessageBubble(
                 approvedPlanIds = approvedPlanIds,
                 foldController = foldController,
                 onOpenDiff = onOpenDiff,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MessageCopyButton(text: String) {
+    if (text.isBlank()) return
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    val haptic = rememberAnyaHaptics()
+    DisableSelection {
+        IconButton(
+            onClick = {
+                haptic.buttonPress()
+                clipboard.setText(AnnotatedString(text))
+                Toast.makeText(context, context.getString(R.string.chat_copied), Toast.LENGTH_SHORT).show()
+            },
+            modifier = Modifier.size(32.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.ContentCopy,
+                contentDescription = stringResource(R.string.chat_copy),
+                modifier = Modifier.size(15.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
             )
         }
     }
@@ -2564,13 +2634,19 @@ private fun UserBubble(
                 }
             }
         }
-        if (message.createdAtEpochMs > 0L) {
-            Text(
-                text = formatMessageTime(message.createdAtEpochMs),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
-                modifier = Modifier.padding(end = AnyaSpace.Xs),
-            )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            MessageCopyButton(text = message.content)
+            if (message.createdAtEpochMs > 0L) {
+                Text(
+                    text = formatMessageTime(message.createdAtEpochMs),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                    modifier = Modifier.padding(end = AnyaSpace.Xs),
+                )
+            }
         }
     }
 }
@@ -2595,20 +2671,24 @@ private fun AssistantContent(
         // Only once it's done do reasoning + tool activity fold into "已完成".
         val live = message.status == MessageStatus.Streaming || message.status == MessageStatus.Pending
         if (live) {
-            if (hasReasoning) {
-                ReasoningSection(reasoning = reasoning!!, streaming = message.status == MessageStatus.Streaming)
-            }
-            if (hasActivities) {
-                ToolActivityList(activities = message.toolActivities, onOpenDiff = onOpenDiff)
+            DisableSelection {
+                if (hasReasoning) {
+                    ReasoningSection(reasoning = reasoning!!, streaming = message.status == MessageStatus.Streaming)
+                }
+                if (hasActivities) {
+                    ToolActivityList(activities = message.toolActivities, onOpenDiff = onOpenDiff)
+                }
             }
         } else if (hasReasoning || hasActivities) {
-            CompletedWorkFold(
-                messageId = message.id,
-                reasoning = reasoning,
-                activities = message.toolActivities,
-                controller = foldController,
-                onOpenDiff = onOpenDiff,
-            )
+            DisableSelection {
+                CompletedWorkFold(
+                    messageId = message.id,
+                    reasoning = reasoning,
+                    activities = message.toolActivities,
+                    controller = foldController,
+                    onOpenDiff = onOpenDiff,
+                )
+            }
         }
         if (message.content.isNotBlank() || message.status == MessageStatus.Streaming) {
             val body = message.content.ifBlank {
@@ -2619,6 +2699,7 @@ private fun AssistantContent(
                     content = body,
                     textStyle = MaterialTheme.typography.bodyLarge,
                 )
+                MessageCopyButton(text = message.content)
             }
         } else if (reasoning.isNullOrBlank() && message.toolActivities.isEmpty()) {
             Text(
@@ -2628,23 +2709,27 @@ private fun AssistantContent(
             )
         }
         if (message.planTasks.isNotEmpty()) {
-            PlanCard(
-                tasks = message.planTasks,
-                approved = message.id in approvedPlanIds ||
-                    message.planTasks.any { it.status != "pending" },
-                onApprove = { onApprovePlan(message.id) },
-            )
+            DisableSelection {
+                PlanCard(
+                    tasks = message.planTasks,
+                    approved = message.id in approvedPlanIds ||
+                        message.planTasks.any { it.status != "pending" },
+                    onApprove = { onApprovePlan(message.id) },
+                )
+            }
         }
         if (message.codeChanges.isNotEmpty()) {
-            CodeChangesCard(
-                changes = message.codeChanges,
-                onOpenChange = { change ->
-                    val diff = findDiffForPath(message.toolActivities, change.path)
-                    if (diff != null) {
-                        onOpenDiff(DiffViewRequest(path = change.path, unifiedDiff = diff))
-                    }
-                },
-            )
+            DisableSelection {
+                CodeChangesCard(
+                    changes = message.codeChanges,
+                    onOpenChange = { change ->
+                        val diff = findDiffForPath(message.toolActivities, change.path)
+                        if (diff != null) {
+                            onOpenDiff(DiffViewRequest(path = change.path, unifiedDiff = diff))
+                        }
+                    },
+                )
+            }
         }
         if (message.status == MessageStatus.Error) {
             Text(

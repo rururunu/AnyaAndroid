@@ -12,9 +12,11 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -82,11 +84,13 @@ import ai.anya.companion.core.designsystem.theme.AnyaColors
 import ai.anya.companion.core.designsystem.theme.AnyaSpace
 import kotlin.math.roundToInt
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 public fun AnyaBrandMark(
     modifier: Modifier = Modifier,
     size: androidx.compose.ui.unit.Dp = 36.dp,
     clipped: Boolean = true,
+    onLongClick: (() -> Unit)? = null,
 ) {
     val dark = androidx.compose.foundation.isSystemInDarkTheme()
     // Transparent line-art: invert in dark mode so strokes stay readable.
@@ -108,6 +112,13 @@ public fun AnyaBrandMark(
             .then(
                 if (clipped) {
                     Modifier.clip(RoundedCornerShape((size.value * 0.28f).dp))
+                } else {
+                    Modifier
+                },
+            )
+            .then(
+                if (onLongClick != null) {
+                    Modifier.combinedClickable(onClick = {}, onLongClick = onLongClick)
                 } else {
                     Modifier
                 },
@@ -369,20 +380,25 @@ public fun AnyaTopBarIconChip(
 
 @Composable
 public fun AnyaBrandRow(
+    title: String = "Anya",
     subtitle: String = "Companion",
     modifier: Modifier = Modifier,
+    onBrandLongClick: (() -> Unit)? = null,
 ) {
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
     ) {
-        AnyaBrandMark(size = 40.dp)
+        AnyaBrandMark(size = 40.dp, onLongClick = onBrandLongClick)
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
-                text = "Anya",
+                text = title,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 168.dp),
             )
             Text(
                 text = subtitle,
@@ -399,13 +415,19 @@ public fun AnyaTopBar(
     title: String,
     subtitle: String? = null,
     showBrand: Boolean = false,
+    brandTitle: String = "Anya",
+    onBrandLongClick: (() -> Unit)? = null,
     navigationIcon: @Composable (() -> Unit)? = null,
     actions: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit = {},
 ) {
     TopAppBar(
         title = {
             if (showBrand) {
-                AnyaBrandRow(subtitle = subtitle ?: "Companion")
+                AnyaBrandRow(
+                    title = brandTitle,
+                    subtitle = subtitle ?: "Companion",
+                    onBrandLongClick = onBrandLongClick,
+                )
             } else {
                 Column {
                     Text(text = title, style = MaterialTheme.typography.titleLarge)

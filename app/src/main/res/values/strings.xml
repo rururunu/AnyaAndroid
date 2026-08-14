@@ -18,7 +18,8 @@
     <string name="connection_panel_subtitle">Desktop pairing and channel</string>
     <string name="connection_panel_status">Status</string>
     <string name="connection_panel_not_paired">Not paired with the desktop app. Scan the QR code or enter a pairing code first.</string>
-    <string name="connection_panel_host">Host</string>
+    <string name="connection_panel_host">Name</string>
+    <string name="connection_panel_address">Address</string>
     <string name="connection_panel_port">Port</string>
     <string name="connection_panel_device">Device</string>
     <string name="connection_panel_view_inbox">View inbox (%1$d)</string>
