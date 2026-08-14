@@ -1,5 +1,11 @@
 # Anya Companion
 
+<p align="center">
+  <img src="./docs/img/icon.png" alt="Anya" width="120" height="120" />
+</p>
+
+<h1 align="center">Anya Companion</h1>
+
 <p align="center"><strong>The Android remote for desktop Anya.</strong></p>
 
 <p align="center">

@@ -1,6 +1,8 @@
 {
   "version": "0.1.1",
   "versionCode": 2,
-  "notes": "Anya Companion 首个公开版。扫码连接桌面 Anya，在手机上对话、审批工具、收发文件（上限 500MB）。同一 Wi-Fi 走局域网，外出走 Cloudflare 隧道。",
-  "apkUrl": "https://github.com/rururunu/AnyaAndroid/releases/download/v0.1.1/Anya-v0.1.1.apk"
+  "notes": "v0.1.1：可保存多台桌面并起显示名，隧道失效后重新配对。收件新增结果页，桌面分享可后台下载。",
+  "apkUrl": "https://github.com/rururunu/AnyaAndroid/releases/download/v0.1.1/Anya-v0.1.1.apk",
+  "sizeBytes": 2921481,
+  "sha256": "38d265ef257d79c970a8ae86b597d492aa12eb39284896f0a4198fa4fc6e85bb"
 }
