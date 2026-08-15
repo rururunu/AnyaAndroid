@@ -2,6 +2,20 @@
 
 Companion 的版本记录。桌面 Anya 的变更见 [rururunu/Anya](https://github.com/rururunu/Anya)。
 
+## [0.1.2] — 2026-08-15
+
+桌面分享到手机的「获取文件」能打到电脑，Windows 路径也能对上。
+
+### 修复
+
+- 桌面签发的下载地址若是 `http://127.0.0.1:8787/…`，改写到当前局域网或隧道源
+- `file.download.begin` 优先用工作区相对路径；HTTP 失败则回退 `workspace.readFile` 分片
+- `share_to_companion` 的 Windows 路径不再在第一个空格处被截断
+
+### 说明
+
+需要已开启 Remote Gateway 的桌面 Anya。Companion 不会自己调用模型服务商。
+
 ## [0.1.1] — 2026-08-15
 
 多台桌面、主机显示名，以及离开对话后仍能用的收件箱。
@@ -38,5 +52,6 @@ Companion 的版本记录。桌面 Anya 的变更见 [rururunu/Anya](https://git
 
 需要已开启 Remote Gateway 的桌面 Anya。Companion 不会自己调用模型服务商。
 
+[0.1.2]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.2
 [0.1.1]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.1
 [0.1.0]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.0

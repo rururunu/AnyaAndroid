@@ -62,6 +62,53 @@ public data class DeviceCredential(
         return origin(ws, host, port)
     }
 
+    /** HTTP origin matching [scheme]/[host]/[port] (`ws`→`http`, `wss`→`https`). */
+    public fun httpOrigin(): String {
+        val http = when (scheme.lowercase()) {
+            "https", "wss" -> "https"
+            else -> "http"
+        }
+        return origin(http, host, port)
+    }
+
+    /**
+     * Endpoint that completed `hello.ok`, else the primary pairing host.
+     * Used when rewriting desktop-minted HTTP URLs onto the live transport.
+     */
+    public fun transportEndpoint(): DeviceCredential {
+        val liveHost = lastGoodHost?.trim()?.takeIf { it.isNotEmpty() } ?: return this
+        if (isLoopbackLanHost(liveHost)) return this
+        return copy(
+            host = liveHost,
+            port = lastGoodPort?.takeIf { it in 1..65535 } ?: port,
+            scheme = lastGoodScheme?.trim()?.takeIf { it.isNotEmpty() } ?: scheme,
+        )
+    }
+
+    /**
+     * Desktop often mints download/preview URLs against loopback (the PC).
+     * Keep path/query/fragment and point the origin at this phone's live gateway.
+     */
+    public fun rewriteHttpUrl(url: String): String {
+        val trimmed = url.trim()
+        if (trimmed.isEmpty()) return url
+        val base = httpOrigin()
+        val parsed = runCatching { java.net.URI(trimmed) }.getOrNull()
+        val pathQuery = if (parsed == null ||
+            parsed.scheme.isNullOrBlank() ||
+            parsed.host.isNullOrBlank()
+        ) {
+            if (trimmed.contains("://")) return trimmed
+            if (trimmed.startsWith("/")) trimmed else "/$trimmed"
+        } else {
+            val path = parsed.rawPath.orEmpty().ifBlank { "/" }
+            val query = parsed.rawQuery?.let { "?$it" }.orEmpty()
+            val fragment = parsed.rawFragment?.let { "#$it" }.orEmpty()
+            path + query + fragment
+        }
+        return base + pathQuery
+    }
+
     /** Ordered connect candidates: LAN first (ws), then the primary public/LAN host. */
     public fun connectCandidates(): List<DeviceCredential> {
         val primary = takeUnless { isLoopbackLanHost(host) }

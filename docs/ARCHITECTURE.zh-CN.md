@@ -11,7 +11,7 @@
 | ---------- | ---------------------------------------------------------------------------- |
 | **产品**   | Anya Companion — [桌面 Anya](https://github.com/rururunu/Anya) 的远程控制台 |
 | **仓库**   | [rururunu/AnyaAndroid](https://github.com/rururunu/AnyaAndroid)              |
-| **版本**   | v0.1.1                                                                       |
+| **版本**   | v0.1.2                                                                       |
 | **运行时** | Android 8.0+（minSdk 26，compile/target 36）                                 |
 | **界面**   | Jetpack Compose · Hilt · Navigation                                          |
 | **传输**   | OkHttp WebSocket → 桌面 `/remote/v1`                                         |

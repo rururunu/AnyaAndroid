@@ -52,6 +52,8 @@ import ai.anya.companion.core.model.workspace.SkillSummary
 import ai.anya.companion.core.model.workspace.WorkspaceFilesCatalog
 import ai.anya.companion.core.model.workspace.WorkspaceSnapshot
 import ai.anya.companion.core.model.workspace.WorkspaceSummary
+import ai.anya.companion.core.model.workspace.downloadPathCandidates
+import ai.anya.companion.core.model.workspace.normalizeSharedFilePath
 import ai.anya.companion.core.network.gateway.GatewaySocketState
 import ai.anya.companion.core.network.gateway.RemoteGatewayClient
 import android.content.ContentValues
@@ -62,6 +64,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.util.Base64
 import androidx.core.content.FileProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
@@ -771,7 +774,7 @@ public class DefaultConnectionRepository @Inject constructor(
             ClientMessage.Hello(
                 deviceId = credential.deviceId,
                 credential = credential.credential,
-                appVersion = "0.1.1",
+                appVersion = "0.1.2",
             ),
         )
         if (sent is AnyaResult.Failure) {
@@ -1527,7 +1530,8 @@ public class DefaultSessionRepository @Inject constructor(
             }
             "file.offer", "file-offer", "FileOffer" -> {
                 val sessionId = data.string("sessionId") ?: return
-                val path = data.string("path") ?: return
+                val path = data.string("path")?.let(::normalizeSharedFilePath).orEmpty()
+                if (path.isEmpty()) return
                 val offer = CompanionFileOffer(
                     sessionId = sessionId,
                     offerId = data.string("offerId").orEmpty(),
@@ -2051,11 +2055,7 @@ public class DefaultSessionRepository @Inject constructor(
         }
         when (activity.toolName) {
             "share_to_companion" -> {
-                val path = activity.arguments?.string("path")?.trim().orEmpty().ifEmpty {
-                    SHARE_PATH_RE.find(activity.result.orEmpty())?.groupValues?.getOrNull(1)
-                        ?.trim()
-                        .orEmpty()
-                }
+                val path = extractSharePath(activity.arguments, activity.result)
                 if (path.isEmpty()) return
                 val offerId = extractOfferId(activity.result, activity.id)
                 if (!markNewOffer(sessionId, offerId, seenOfferIds)) return
@@ -2142,6 +2142,14 @@ public class DefaultSessionRepository @Inject constructor(
             message.sharedFiles.map { it.offerId } + message.sharedUrls.map { it.offerId }
         }.toSet()
 
+    private fun extractSharePath(arguments: JsonObject?, result: String?): String {
+        val fromArgs = arguments?.string("path")?.let(::normalizeSharedFilePath).orEmpty()
+        if (fromArgs.isNotEmpty()) return fromArgs
+        val match = SHARE_PATH_RE.find(result.orEmpty()) ?: return ""
+        val raw = match.groupValues.drop(1).firstOrNull { it.isNotBlank() }.orEmpty()
+        return normalizeSharedFilePath(raw)
+    }
+
     private fun extractOfferId(result: String?, fallback: String): String {
         val fromResult = result?.let { SHARE_OFFER_ID_RE.find(it)?.groupValues?.getOrNull(1) }
         return fromResult?.ifBlank { null } ?: fallback
@@ -2167,7 +2175,11 @@ public class DefaultSessionRepository @Inject constructor(
         val SHARE_OFFER_ID_RE = Regex("""offerId=([A-Za-z0-9-]+)""")
         val SHARE_MIME_RE = Regex("""mime=([^,\s)]+)""")
         val SHARE_SIZE_RE = Regex("""size=(\d+)""")
-        val SHARE_PATH_RE = Regex("""path=([^,\s)]+)""")
+        // Do not stop at spaces — Windows paths often contain them.
+        val SHARE_PATH_RE = Regex(
+            """path\s*=\s*(?:"([^"]+)"|'([^']+)'|(.+?))(?=\s*,\s*(?:mime|size|offerId)\s*=|\s*\)\s*$|$)""",
+            RegexOption.IGNORE_CASE,
+        )
         val SHARE_URL_RE = Regex("""https?://\S+""")
     }
 }
@@ -2445,9 +2457,44 @@ public class DefaultWorkspaceRepository @Inject constructor(
         workspaceId: String?,
         onProgress: ((Long, Long) -> Unit)?,
     ): AnyaResult<DownloadedWorkspaceFile> = withContext(Dispatchers.IO) {
+        if (_snapshot.value?.rootPath.isNullOrBlank() && _filesCatalog.value?.rootPath.isNullOrBlank()) {
+            runCatching { refresh(sessionId) }
+        }
+        val root = _snapshot.value?.rootPath ?: _filesCatalog.value?.rootPath
+        val candidates = downloadPathCandidates(path, root)
+        if (candidates.isEmpty()) {
+            return@withContext AnyaResult.Failure(AnyaError.Unknown("empty download path"))
+        }
+        var lastError: Throwable? = null
+        for (candidate in candidates) {
+            val http = runCatching {
+                downloadViaHttp(candidate, sessionId, workspaceId, onProgress)
+            }
+            http.getOrNull()?.let { return@withContext AnyaResult.Success(it) }
+            lastError = http.exceptionOrNull()
+            Timber.w(lastError, "HTTP download failed for %s", candidate)
+            if (lastError?.message?.let(::isRetryableDownloadError) == false) break
+        }
+        for (candidate in candidates) {
+            val streamed = runCatching {
+                downloadViaReadFile(candidate, sessionId, workspaceId, onProgress)
+            }
+            streamed.getOrNull()?.let { return@withContext AnyaResult.Success(it) }
+            lastError = streamed.exceptionOrNull()
+            Timber.w(lastError, "workspace.readFile download failed for %s", candidate)
+            if (lastError?.message?.let(::isRetryableDownloadError) == false) break
+        }
+        AnyaResult.Failure(AnyaError.Unknown(lastError?.message ?: "缓存文件失败"))
+    }
+
+    private suspend fun downloadViaHttp(
+        path: String,
+        sessionId: String?,
+        workspaceId: String?,
+        onProgress: ((Long, Long) -> Unit)?,
+    ): DownloadedWorkspaceFile {
         var dest: File? = null
-        runCatching {
-            // 1. Mint a short-lived download URL over the WebSocket.
+        try {
             val beginId = UUID.randomUUID().toString()
             val begun = gateway.request(
                 ClientMessage.FileDownloadBegin(
@@ -2468,8 +2515,15 @@ public class DefaultWorkspaceRepository @Inject constructor(
             }
             val payload = beginRpc.data as? JsonObject
                 ?: error("file.download.begin returned no payload")
-            val url = payload.string("url")
+            val rawUrl = payload.string("url")
                 ?: error("file.download.begin returned no url")
+            val connected = gateway.connectedCredential()
+                ?: connectionRepository.credential.value?.transportEndpoint()
+                ?: error("gateway is not connected")
+            val url = connected.rewriteHttpUrl(rawUrl)
+            if (url != rawUrl) {
+                Timber.i("Rewrote download URL %s → %s", rawUrl, url)
+            }
             val size = payload["size"]?.jsonPrimitive?.longOrNull ?: 0L
             if (size > MAX_UPLOAD_BYTES) {
                 error("file too large: $size bytes (max $MAX_UPLOAD_BYTES)")
@@ -2477,19 +2531,12 @@ public class DefaultWorkspaceRepository @Inject constructor(
             val name = payload.string("name")
                 ?: path.replace('\\', '/').substringAfterLast('/').ifBlank { "file.bin" }
             val mime = payload.string("mime") ?: "application/octet-stream"
-
             val created = uniqueSharedCacheFile(name)
             dest = created
 
-            // Shared OkHttp client has infinite readTimeout (tuned for the WS);
-            // a download needs a finite read timeout so a silent drop fails
-            // instead of hanging. Build a one-off client from its settings.
             val downloadClient = okHttpClient.newBuilder()
                 .readTimeout(60, TimeUnit.SECONDS)
                 .build()
-
-            // 2. Parallel segmented download: split into ranges, each streamed
-            //    to a preallocated RandomAccessFile at its own offset (resumable).
             val segments = if (size >= DOWNLOAD_PARALLEL_MIN_BYTES) DOWNLOAD_SEGMENTS else 1
             val downloadedBytes = AtomicLong(0L)
             RandomAccessFile(created, "rw").use { raf ->
@@ -2509,7 +2556,9 @@ public class DefaultWorkspaceRepository @Inject constructor(
                                         .header("Range", "bytes=$pos-$end")
                                         .build()
                                     downloadClient.newCall(request).execute().use { resp ->
-                                        if (resp.code != 206) {
+                                        val rangeOk = resp.code == 206
+                                        val fullOk = segments == 1 && resp.code == 200
+                                        if (!rangeOk && !fullOk) {
                                             error("download failed: HTTP ${resp.code}")
                                         }
                                         val body = resp.body ?: error("download returned no body")
@@ -2529,7 +2578,6 @@ public class DefaultWorkspaceRepository @Inject constructor(
                                 } catch (t: Throwable) {
                                     attempts++
                                     if (attempts >= 3) throw t
-                                    // Resume this segment from `pos`.
                                 }
                             }
                             if (pos <= end) error("incomplete download segment")
@@ -2537,29 +2585,128 @@ public class DefaultWorkspaceRepository @Inject constructor(
                     }.awaitAll()
                 }
             }
-
             if (created.length() != size) {
                 error("incomplete download: ${created.length()} of $size bytes")
             }
-
-            val cached = dest ?: error("download produced no file")
-            val uri = fileProviderUri(cached)
-            DownloadedWorkspaceFile(
+            return DownloadedWorkspaceFile(
                 path = path,
                 name = name,
                 mime = mime,
-                size = cached.length(),
-                localPath = cached.absolutePath,
-                localUri = uri.toString(),
+                size = created.length(),
+                localPath = created.absolutePath,
+                localUri = fileProviderUri(created).toString(),
             )
-        }.fold(
-            onSuccess = { AnyaResult.Success(it) },
-            onFailure = { e ->
-                dest?.delete()
-                Timber.w(e, "Failed to cache downloaded file")
-                AnyaResult.Failure(AnyaError.Unknown(e.message ?: "缓存文件失败"))
-            },
-        )
+        } catch (t: Throwable) {
+            dest?.delete()
+            throw t
+        }
+    }
+
+    private suspend fun downloadViaReadFile(
+        path: String,
+        sessionId: String?,
+        workspaceId: String?,
+        onProgress: ((Long, Long) -> Unit)?,
+    ): DownloadedWorkspaceFile {
+        var dest: File? = null
+        try {
+            var name = path.replace('\\', '/').substringAfterLast('/').ifBlank { "file.bin" }
+            var mime = "application/octet-stream"
+            val created = uniqueSharedCacheFile(name)
+            dest = created
+            var offset = 0L
+            var total = 0L
+            FileOutputStream(created).use { out ->
+                while (true) {
+                    val requestId = UUID.randomUUID().toString()
+                    val rpc = gateway.request(
+                        ClientMessage.WorkspaceReadFile(
+                            requestId = requestId,
+                            path = path,
+                            sessionId = sessionId,
+                            workspaceId = workspaceId,
+                            mode = "download",
+                            offset = offset,
+                            length = DOWNLOAD_CHUNK_BYTES.toLong(),
+                        ),
+                        requestId,
+                        timeoutMs = DOWNLOAD_CHUNK_TIMEOUT_MS,
+                    )
+                    val result = when (rpc) {
+                        is AnyaResult.Failure -> error(rpc.error.toString())
+                        is AnyaResult.Success -> rpc.data
+                    }
+                    if (!result.ok) {
+                        error(result.error ?: "workspace.readFile download failed")
+                    }
+                    val payload = result.data as? JsonObject
+                        ?: error("workspace.readFile returned no payload")
+                    payload.string("name")?.takeIf { it.isNotBlank() }?.let { name = it }
+                    payload.string("mime")?.takeIf { it.isNotBlank() }?.let { mime = it }
+                    val reported = payload["size"]?.jsonPrimitive?.longOrNull ?: 0L
+                    if (reported > 0L) total = reported
+                    if (total > MAX_UPLOAD_BYTES) {
+                        error("file too large: $total bytes (max $MAX_UPLOAD_BYTES)")
+                    }
+                    val chunkB64 = payload.string("dataBase64")
+                        ?: payload.string("content").orEmpty()
+                    val eof = payload["eof"]?.jsonPrimitive?.booleanOrNull ?: false
+                    if (chunkB64.isNotEmpty()) {
+                        val bytes = decodeBase64(chunkB64)
+                        out.write(bytes)
+                        offset += bytes.size
+                        onProgress?.invoke(offset, total.takeIf { it > 0L } ?: offset)
+                    }
+                    if (eof) break
+                    if (chunkB64.isEmpty()) {
+                        error("workspace.readFile returned an empty slice")
+                    }
+                }
+            }
+            val renamed = renameCachedDownload(created, name)
+            dest = renamed
+            return DownloadedWorkspaceFile(
+                path = path,
+                name = name,
+                mime = mime,
+                size = renamed.length(),
+                localPath = renamed.absolutePath,
+                localUri = fileProviderUri(renamed).toString(),
+            )
+        } catch (t: Throwable) {
+            dest?.delete()
+            throw t
+        }
+    }
+
+    private fun renameCachedDownload(file: File, name: String): File {
+        val target = uniqueSharedCacheFile(name)
+        if (target.absolutePath == file.absolutePath) return file
+        return if (file.renameTo(target)) {
+            target
+        } else {
+            file.copyTo(target, overwrite = true)
+            file.delete()
+            target
+        }
+    }
+
+    private fun decodeBase64(value: String): ByteArray {
+        val padded = value.replace("\\s".toRegex(), "")
+        return runCatching { Base64.decode(padded, Base64.DEFAULT) }
+            .recoverCatching { Base64.decode(padded, Base64.URL_SAFE) }
+            .getOrElse { error("invalid base64 slice") }
+    }
+
+    private fun isRetryableDownloadError(message: String): Boolean {
+        val m = message.lowercase()
+        return "file not found" in m ||
+            "no such file" in m ||
+            "not found" in m ||
+            "unknown type" in m ||
+            "unknown method" in m ||
+            "unsupported" in m ||
+            "unrecognized" in m
     }
 
     override suspend fun exportCachedFileToDownloads(

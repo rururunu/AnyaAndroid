@@ -1,8 +1,8 @@
 {
-  "version": "0.1.1",
-  "versionCode": 2,
-  "notes": "v0.1.1：可保存多台桌面并起显示名，隧道失效后重新配对。收件新增结果页，桌面分享可后台下载。",
-  "apkUrl": "https://github.com/rururunu/AnyaAndroid/releases/download/v0.1.1/Anya-v0.1.1.apk",
-  "sizeBytes": 2921481,
-  "sha256": "38d265ef257d79c970a8ae86b597d492aa12eb39284896f0a4198fa4fc6e85bb"
+  "version": "0.1.2",
+  "versionCode": 3,
+  "notes": "v0.1.2：获取文件不再连手机 127.0.0.1；Windows 路径改为工作区相对路径，失败则回退分片下载。",
+  "apkUrl": "https://github.com/rururunu/AnyaAndroid/releases/download/v0.1.2/Anya-v0.1.2.apk",
+  "sizeBytes": 2937863,
+  "sha256": "f526818f4f632639b175a57f1cb0e9f19f0dd04a3988aaabadd24458101245b6"
 }

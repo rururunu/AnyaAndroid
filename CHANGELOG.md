@@ -2,6 +2,20 @@
 
 All notable Companion releases. Desktop Anya has its own changelog in [rururunu/Anya](https://github.com/rururunu/Anya).
 
+## [0.1.2] — 2026-08-15
+
+Desktop → phone file fetch actually reaches the PC, including Windows paths.
+
+### Fixed
+
+- Rewrite desktop-minted download URLs (`http://127.0.0.1:8787/…`) onto the live LAN or tunnel origin
+- Prefer a workspace-relative path for `file.download.begin`; fall back to `workspace.readFile` slices if HTTP begin fails
+- Keep spaces in Windows `share_to_companion` paths instead of truncating at the first blank
+
+### Notes
+
+Requires desktop Anya with Remote Gateway. Companion does not call model providers itself.
+
 ## [0.1.1] — 2026-08-15
 
 Multiple desktops, named hosts, and an inbox that still works after you leave the chat.
@@ -38,5 +52,6 @@ First public Android remote.
 
 Requires desktop Anya with Remote Gateway. Companion does not call model providers itself.
 
+[0.1.2]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.2
 [0.1.1]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.1
 [0.1.0]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.0

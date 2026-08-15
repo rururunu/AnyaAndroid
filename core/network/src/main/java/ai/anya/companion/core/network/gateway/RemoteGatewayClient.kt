@@ -61,6 +61,8 @@ public class RemoteGatewayClient @Inject constructor(
     }
 
     private val socketRef = AtomicReference<WebSocket?>(null)
+    /** Transport endpoint of the in-flight / last [connect] attempt. */
+    private val connectedRef = AtomicReference<DeviceCredential?>(null)
     /** Bumped on every connect/disconnect so superseded OkHttp callbacks cannot mutate state. */
     private val connectGeneration = AtomicInteger(0)
     private val rpcWaiters =
@@ -80,11 +82,15 @@ public class RemoteGatewayClient @Inject constructor(
     )
     public val incoming: SharedFlow<ServerMessage> = _incoming.asSharedFlow()
 
+    /** Host/port/scheme of the socket this client last tried to open. */
+    public fun connectedCredential(): DeviceCredential? = connectedRef.get()
+
     public fun connect(
         credential: DeviceCredential,
         timeoutMs: Long = CONNECT_TIMEOUT_MS,
     ): AnyaResult<Unit> {
         val generation = connectGeneration.incrementAndGet()
+        connectedRef.set(credential)
         // Quietly drop any prior socket so callers can reconnect without a Closed → reconnect race.
         failPending("Gateway reconnecting")
         cancelConnectWatchdog()
@@ -108,7 +114,7 @@ public class RemoteGatewayClient @Inject constructor(
             ClientMessage.Hello(
                 deviceId = credential.deviceId,
                 credential = credential.credential,
-                appVersion = "0.1.1",
+                appVersion = "0.1.2",
             ),
         )
         return try {
@@ -225,6 +231,7 @@ public class RemoteGatewayClient @Inject constructor(
         connectGeneration.incrementAndGet()
         cancelConnectWatchdog()
         failPending("Gateway disconnected")
+        connectedRef.set(null)
         socketRef.getAndSet(null)?.close(1000, "client disconnect")
         _state.value = GatewaySocketState.Closed
     }

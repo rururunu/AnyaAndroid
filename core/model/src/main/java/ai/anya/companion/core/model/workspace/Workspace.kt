@@ -117,3 +117,41 @@ public data class McpServerSummary(
     public val qualifiedName: String? = null,
     public val iconUrl: String? = null,
 )
+
+/** Trim quotes and collapse accidentally doubled Windows separators. */
+public fun normalizeSharedFilePath(path: String): String {
+    var p = path.trim().trim('"').trim('\'')
+    if (p.startsWith("\\\\")) {
+        p = "\\\\" + p.drop(2).replace("\\\\", "\\")
+    } else {
+        while (p.contains("\\\\")) {
+            p = p.replace("\\\\", "\\")
+        }
+    }
+    return p
+}
+
+/**
+ * Paths the desktop may accept for a download. Workspace-relative first:
+ * `file.download.begin` often joins onto the workspace root and will miss an
+ * absolute `C:\...` path that [workspace.readFile] would still open.
+ */
+public fun downloadPathCandidates(path: String, rootPath: String? = null): List<String> {
+    val trimmed = normalizeSharedFilePath(path)
+    if (trimmed.isEmpty()) return emptyList()
+    val unix = trimmed.replace('\\', '/')
+    val ordered = LinkedHashSet<String>()
+    val rootUnix = rootPath
+        ?.let { normalizeSharedFilePath(it).replace('\\', '/').trimEnd('/') }
+        ?.takeIf { it.isNotEmpty() }
+    if (rootUnix != null && unix.startsWith(rootUnix, ignoreCase = true) && unix.length > rootUnix.length) {
+        val sep = unix[rootUnix.length]
+        if (sep == '/') {
+            val rel = unix.substring(rootUnix.length + 1).trimStart('/')
+            if (rel.isNotEmpty()) ordered += rel
+        }
+    }
+    ordered += trimmed
+    if (unix != trimmed) ordered += unix
+    return ordered.toList()
+}

@@ -13,7 +13,7 @@ reconnects.
 | ------------- | ---------------------------------------------------------------------------- |
 | **Product**   | Anya Companion — remote console for [desktop Anya](https://github.com/rururunu/Anya) |
 | **Repo**      | [rururunu/AnyaAndroid](https://github.com/rururunu/AnyaAndroid)              |
-| **Version**   | v0.1.1                                                                       |
+| **Version**   | v0.1.2                                                                       |
 | **Runtime**   | Android 8.0+ (minSdk 26, compile/target 36)                                  |
 | **UI**        | Jetpack Compose · Hilt · Navigation                                          |
 | **Transport** | OkHttp WebSocket → desktop `/remote/v1`                                      |
