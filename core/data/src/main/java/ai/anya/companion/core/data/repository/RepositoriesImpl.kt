@@ -30,6 +30,7 @@ import ai.anya.companion.core.model.session.ChatModelInfo
 import ai.anya.companion.core.model.session.ChatRole
 import ai.anya.companion.core.model.session.ChatSessionSummary
 import ai.anya.companion.core.model.session.CodeChangeEntry
+import ai.anya.companion.core.model.session.ContextUsageSnapshot
 import ai.anya.companion.core.model.session.MessageStatus
 import ai.anya.companion.core.model.session.PlanTaskItem
 import ai.anya.companion.core.model.session.SessionCompose
@@ -1137,6 +1138,7 @@ public class DefaultSessionRepository @Inject constructor(
         chatModel: String?,
         chatModelProvider: String?,
         chatModelLabel: String?,
+        reasoningEffort: String?,
     ): AnyaResult<SessionCompose> {
         val requestId = UUID.randomUUID().toString()
         val current = composeBySession.value[sessionId] ?: SessionCompose()
@@ -1146,6 +1148,7 @@ public class DefaultSessionRepository @Inject constructor(
             chatModel = chatModel ?: current.chatModel,
             chatModelProvider = chatModelProvider ?: current.chatModelProvider,
             chatModelLabel = chatModelLabel ?: current.chatModelLabel,
+            reasoningEffort = reasoningEffort ?: current.reasoningEffort,
         )
         composeBySession.update { it + (sessionId to optimistic) }
         return when (
@@ -1158,6 +1161,7 @@ public class DefaultSessionRepository @Inject constructor(
                     chatModel = chatModel,
                     chatModelProvider = chatModelProvider,
                     chatModelLabel = chatModelLabel,
+                    reasoningEffort = reasoningEffort,
                 ),
                 requestId,
             )
@@ -1172,8 +1176,10 @@ public class DefaultSessionRepository @Inject constructor(
                     val compose = payload?.get("compose")?.let { element ->
                         runCatching { json.decodeFromJsonElement<SessionCompose>(element) }.getOrNull()
                     } ?: optimistic
-                    composeBySession.update { it + (sessionId to compose) }
-                    AnyaResult.Success(compose)
+                    composeBySession.update {
+                        it + (sessionId to mergeCompose(optimistic, compose, reasoningEffort))
+                    }
+                    AnyaResult.Success(mergeCompose(optimistic, compose, reasoningEffort))
                 }
             }
         }
@@ -1201,6 +1207,38 @@ public class DefaultSessionRepository @Inject constructor(
                     }.orEmpty()
                     _models.value = models
                     AnyaResult.Success(models)
+                }
+            }
+        }
+    }
+
+    override suspend fun refreshContextUsage(
+        sessionId: String?,
+        draftMessage: String?,
+        modelId: String?,
+    ): AnyaResult<ContextUsageSnapshot> {
+        val requestId = UUID.randomUUID().toString()
+        return when (
+            val result = gateway.request(
+                ClientMessage.ContextUsage(
+                    requestId = requestId,
+                    sessionId = sessionId?.takeIf { it.isNotBlank() },
+                    draftMessage = draftMessage?.takeIf { it.isNotBlank() },
+                    modelId = modelId?.takeIf { it.isNotBlank() },
+                ),
+                requestId,
+            )
+        ) {
+            is AnyaResult.Failure -> result
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                if (!rpc.ok) {
+                    AnyaResult.Failure(AnyaError.Network(rpc.error ?: "context.usage failed"))
+                } else {
+                    val usage = (rpc.data as? JsonObject)?.let { element ->
+                        runCatching { json.decodeFromJsonElement<ContextUsageSnapshot>(element) }.getOrNull()
+                    } ?: ContextUsageSnapshot()
+                    AnyaResult.Success(usage)
                 }
             }
         }
@@ -1410,7 +1448,10 @@ public class DefaultSessionRepository @Inject constructor(
                 val compose = runCatching {
                     json.decodeFromJsonElement<SessionCompose>(composeElement)
                 }.getOrNull() ?: return
-                composeBySession.update { it + (sessionId to compose) }
+                composeBySession.update { map ->
+                    val previous = map[sessionId]
+                    map + (sessionId to mergeIncomingCompose(previous, compose))
+                }
             }
             "session.tasks" -> {
                 val sessionId = data.string("sessionId") ?: return
@@ -3041,5 +3082,24 @@ public class DefaultWorkspaceRepository @Inject constructor(
 
     private fun JsonObject.string(key: String): String? =
         this[key]?.jsonPrimitive?.contentOrNull
+}
+
+private fun mergeCompose(
+    optimistic: SessionCompose,
+    incoming: SessionCompose,
+    requestedEffort: String?,
+): SessionCompose {
+    val effort = incoming.reasoningEffort.takeIf { it.isNotBlank() }
+        ?: requestedEffort?.takeIf { it.isNotBlank() }
+        ?: optimistic.reasoningEffort
+    return incoming.copy(reasoningEffort = effort)
+}
+
+private fun mergeIncomingCompose(
+    previous: SessionCompose?,
+    incoming: SessionCompose,
+): SessionCompose {
+    if (incoming.reasoningEffort.isNotBlank() || previous == null) return incoming
+    return incoming.copy(reasoningEffort = previous.reasoningEffort)
 }
 

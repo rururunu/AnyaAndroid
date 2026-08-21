@@ -195,6 +195,7 @@ public data class SessionCompose(
     public val chatModel: String = "",
     public val chatModelProvider: String = "",
     public val chatModelLabel: String? = null,
+    public val reasoningEffort: String = "",
 ) {
     public val modelDisplayName: String
         get() = chatModelLabel?.takeIf { it.isNotBlank() }
@@ -202,13 +203,47 @@ public data class SessionCompose(
 }
 
 @Serializable
+public data class ModelThinkingVariant(
+    public val id: String,
+    public val label: String = "",
+    public val recommended: Boolean = false,
+)
+
+@Serializable
+public data class ModelReasoningInfo(
+    public val supported: Boolean = false,
+    public val canDisable: Boolean? = null,
+)
+
+@Serializable
 public data class ChatModelInfo(
     public val id: String,
     public val provider: String = "",
     public val displayName: String? = null,
     public val ownedBy: String = "",
+    public val thinkingVariants: List<ModelThinkingVariant> = emptyList(),
+    public val reasoning: ModelReasoningInfo? = null,
+    /** Desktop picker group title for this model's provider. */
+    public val providerName: String = "",
+    /** Desktop preset id (`volcengine`, `kimi`, …) when this is a custom provider. */
+    public val providerPresetId: String = "",
+    /** Desktop favicon URL for custom provider groups. */
+    public val providerFaviconUrl: String = "",
 ) {
     public val label: String
         get() = displayName?.takeIf { it.isNotBlank() }
             ?: id.substringAfterLast('/').substringAfterLast(':').ifBlank { id }
+}
+
+@Serializable
+public data class ContextUsageSnapshot(
+    public val usageRatio: Float = 0f,
+    public val estimatedTokens: Long = 0,
+    public val contextWindowTokens: Long = 0,
+    public val systemPromptTokens: Long = 0,
+    public val toolsTokens: Long = 0,
+    public val messageTokens: Long = 0,
+) {
+    public val percent: Int
+        get() = (usageRatio.coerceIn(0f, 1f) * 100f).toInt()
 }

@@ -2,6 +2,25 @@
 
 Companion 的版本记录。桌面 Anya 的变更见 [rururunu/Anya](https://github.com/rururunu/Anya)。
 
+## [0.1.3] - 2026-08-21
+
+对齐桌面端的模型元数据，补齐提供商标识、按模型选择的思考强度与实时上下文估算。
+
+### 新增
+
+- 模型选择器按提供商分组，使用桌面端下发的名称与图标，并为常见提供商补全品牌标识
+- 按模型能力显示思考控件：优先使用桌面端下发的思考变体，否则提供兼容的推理强度选择
+- 上下文占用指示，会随当前模型和输入中的草稿刷新估算值
+
+### 变更
+
+- 所选推理强度会与桌面端的对话编辑状态同步并保持
+- 旧版桌面端响应未返回该字段时，保留本地已选的推理强度
+
+### 说明
+
+需要已开启 Remote Gateway 且支持 `context.usage` 与 compose `reasoningEffort` 的桌面 Anya。Companion 不会自行调用模型服务提供商。
+
 ## [0.1.2] — 2026-08-15
 
 桌面分享到手机的「获取文件」能打到电脑，Windows 路径也能对上。
@@ -52,6 +71,7 @@ Companion 的版本记录。桌面 Anya 的变更见 [rururunu/Anya](https://git
 
 需要已开启 Remote Gateway 的桌面 Anya。Companion 不会自己调用模型服务商。
 
+[0.1.3]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.3
 [0.1.2]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.2
 [0.1.1]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.1
 [0.1.0]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.0

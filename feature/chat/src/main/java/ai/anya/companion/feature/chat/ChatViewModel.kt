@@ -19,6 +19,7 @@ import ai.anya.companion.core.domain.usecase.ObservePlanTasksUseCase
 import ai.anya.companion.core.domain.usecase.RefreshAttachCatalogUseCase
 import ai.anya.companion.core.domain.usecase.LoadCachedAttachCatalogUseCase
 import ai.anya.companion.core.domain.usecase.RefreshComposeUseCase
+import ai.anya.companion.core.domain.usecase.RefreshContextUsageUseCase
 import ai.anya.companion.core.domain.usecase.RefreshModelsUseCase
 import ai.anya.companion.core.domain.usecase.RespondAskUseCase
 import ai.anya.companion.core.domain.usecase.SendChatMessageUseCase
@@ -36,6 +37,7 @@ import ai.anya.companion.core.model.session.SessionCompose
 import ai.anya.companion.core.model.session.ToolApprovalMode
 import ai.anya.companion.core.model.session.ChatSharedFile
 import ai.anya.companion.core.model.session.ChatSharedUrl
+import ai.anya.companion.core.model.session.ContextUsageSnapshot
 import ai.anya.companion.core.model.session.SharedFileStatus
 import ai.anya.companion.core.model.workspace.CompanionFileOffer
 import ai.anya.companion.core.model.workspace.CompanionUrlOffer
@@ -153,6 +155,7 @@ public class ChatViewModel @Inject constructor(
     private val refreshCompose: RefreshComposeUseCase,
     private val setComposeUseCase: SetComposeUseCase,
     private val refreshModels: RefreshModelsUseCase,
+    private val refreshContextUsageUseCase: RefreshContextUsageUseCase,
     private val approvePlanUseCase: ApprovePlanUseCase,
     private val refreshAttachCatalog: RefreshAttachCatalogUseCase,
     private val loadCachedAttachCatalog: LoadCachedAttachCatalogUseCase,
@@ -188,6 +191,9 @@ public class ChatViewModel @Inject constructor(
 
     private val _localUploads = MutableStateFlow<List<LocalUploadItem>>(emptyList())
     public val localUploads: StateFlow<List<LocalUploadItem>> = _localUploads.asStateFlow()
+
+    private val _contextUsage = MutableStateFlow(ContextUsageSnapshot())
+    public val contextUsage: StateFlow<ContextUsageSnapshot> = _contextUsage.asStateFlow()
 
     /** Compose choices made before the first message creates the session. */
     private val draftCompose = MutableStateFlow(SessionCompose())
@@ -580,6 +586,49 @@ public class ChatViewModel @Inject constructor(
                 chatModelProvider = model.provider,
                 chatModelLabel = model.label,
             )
+        }
+    }
+
+    public fun applyThinkingOption(optionId: String) {
+        val snapshot = state.value
+        val model = findModelEntry(
+            snapshot.models,
+            snapshot.compose.chatModel,
+            snapshot.compose.chatModelProvider,
+        )
+        when (resolveReasoningControl(model, snapshot.compose.chatModel, snapshot.compose.chatModelProvider)) {
+            is ReasoningControl.Effort -> setReasoningEffort(optionId)
+            ReasoningControl.Variants -> {
+                val variant = model?.thinkingVariants?.find { it.id == optionId } ?: return
+                setModel(model.copy(id = variant.id))
+            }
+            ReasoningControl.None -> Unit
+        }
+    }
+
+    public fun setReasoningEffort(effort: String) {
+        val sid = activeSessionId.value
+        if (sid == null) {
+            draftCompose.update { it.copy(reasoningEffort = effort) }
+        }
+        val target = sid ?: NewChatSessionId
+        viewModelScope.launch { setComposeUseCase(target, reasoningEffort = effort) }
+    }
+
+    public fun refreshContextUsage() {
+        if (connectionRepository.connectionState.value != ConnectionState.Connected) return
+        viewModelScope.launch {
+            val snapshot = state.value
+            when (
+                val result = refreshContextUsageUseCase(
+                    snapshot.sessionId.takeIf { it.isNotBlank() && it != NewChatSessionId },
+                    snapshot.draft.takeIf { it.isNotBlank() },
+                    snapshot.compose.chatModel.takeIf { it.isNotBlank() },
+                )
+            ) {
+                is AnyaResult.Success -> _contextUsage.value = result.data
+                is AnyaResult.Failure -> Unit
+            }
         }
     }
 

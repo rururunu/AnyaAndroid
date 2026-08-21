@@ -117,8 +117,14 @@ public interface SessionRepository {
         chatModel: String? = null,
         chatModelProvider: String? = null,
         chatModelLabel: String? = null,
+        reasoningEffort: String? = null,
     ): AnyaResult<SessionCompose>
     public suspend fun refreshModels(): AnyaResult<List<ChatModelInfo>>
+    public suspend fun refreshContextUsage(
+        sessionId: String?,
+        draftMessage: String? = null,
+        modelId: String? = null,
+    ): AnyaResult<ai.anya.companion.core.model.session.ContextUsageSnapshot>
     public suspend fun approvePlan(sessionId: String): AnyaResult<Unit>
 
     /** Insert/replace a Companion-local shared-file chat card (not synced to desktop). */

@@ -214,6 +214,16 @@ public sealed class ClientMessage {
         public val chatModel: String? = null,
         public val chatModelProvider: String? = null,
         public val chatModelLabel: String? = null,
+        public val reasoningEffort: String? = null,
+    ) : ClientMessage()
+
+    @Serializable
+    @SerialName("context.usage")
+    public data class ContextUsage(
+        public val requestId: String,
+        public val sessionId: String? = null,
+        public val draftMessage: String? = null,
+        public val modelId: String? = null,
     ) : ClientMessage()
 
     @Serializable

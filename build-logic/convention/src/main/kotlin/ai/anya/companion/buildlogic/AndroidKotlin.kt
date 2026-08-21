@@ -72,8 +72,8 @@ internal fun Project.configureAndroidHilt() {
 internal fun ApplicationExtension.configureAppDefaults() {
     defaultConfig.targetSdk = AnyaTargetSdk
     defaultConfig.applicationId = "ai.anya.companion"
-    defaultConfig.versionCode = 3
-    defaultConfig.versionName = "0.1.2"
+    defaultConfig.versionCode = 4
+    defaultConfig.versionName = "0.1.3"
 }
 
 internal fun ApplicationExtension.configureReleaseSigning(project: Project) {

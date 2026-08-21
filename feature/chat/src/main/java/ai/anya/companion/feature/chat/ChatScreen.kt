@@ -58,6 +58,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.automirrored.rounded.Assignment
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudOff
@@ -154,6 +155,7 @@ import ai.anya.companion.core.model.session.ChatMode
 import ai.anya.companion.core.model.session.ChatModelInfo
 import ai.anya.companion.core.model.session.ChatRole
 import ai.anya.companion.core.model.session.ChatSharedFile
+import ai.anya.companion.core.model.session.ContextUsageSnapshot
 import ai.anya.companion.core.model.session.SharedFileStatus
 import ai.anya.companion.core.model.session.CodeChangeEntry
 import ai.anya.companion.core.model.session.MessageStatus
@@ -385,8 +387,18 @@ public fun ChatRoute(
     val attachCatalog by viewModel.attachCatalog.collectAsStateWithLifecycle()
     val download by viewModel.download.collectAsStateWithLifecycle()
     val localUploads by viewModel.localUploads.collectAsStateWithLifecycle()
+    val contextUsage by viewModel.contextUsage.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) {
         viewModel.refreshAttachCatalog()
+    }
+    LaunchedEffect(
+        state.sessionId,
+        state.messages.size,
+        state.draft,
+        state.compose.chatModel,
+        state.connectionState,
+    ) {
+        viewModel.refreshContextUsage()
     }
     ChatScreen(
         state = state,
@@ -398,6 +410,7 @@ public fun ChatRoute(
         onChatModeSelect = viewModel::setChatMode,
         onApprovalModeSelect = viewModel::setApprovalMode,
         onModelSelect = viewModel::setModel,
+        onThinkingSelect = viewModel::applyThinkingOption,
         onAttachInsert = viewModel::attachInsert,
         onAttachOpen = viewModel::refreshAttachCatalog,
         onApprovePlan = viewModel::approvePlan,
@@ -412,6 +425,7 @@ public fun ChatRoute(
         onFetchSharedFile = viewModel::fetchSharedFile,
         onMarkSharedUrlViewed = viewModel::markInboxUrlViewed,
         onDismissDownload = viewModel::dismissDownloadNotice,
+        contextUsage = contextUsage,
     )
 }
 
@@ -426,6 +440,7 @@ public fun ChatScreen(
     onChatModeSelect: (ChatMode) -> Unit,
     onApprovalModeSelect: (ToolApprovalMode) -> Unit,
     onModelSelect: (ChatModelInfo) -> Unit,
+    onThinkingSelect: (String) -> Unit,
     onAttachInsert: (String) -> Unit,
     onAttachOpen: () -> Unit,
     onApprovePlan: (String) -> Unit,
@@ -440,6 +455,7 @@ public fun ChatScreen(
     onFetchSharedFile: (String) -> Unit = {},
     onMarkSharedUrlViewed: (String) -> Unit = {},
     onDismissDownload: () -> Unit = {},
+    contextUsage: ContextUsageSnapshot = ContextUsageSnapshot(),
 ) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -732,6 +748,7 @@ public fun ChatScreen(
                     modelLabel = state.compose.modelDisplayName,
                     modelProvider = state.compose.chatModelProvider,
                     modelId = state.compose.chatModel,
+                    contextUsage = contextUsage,
                     skills = attachCatalog.skills,
                     mcpServers = attachCatalog.mcpServers,
                     pendingAsk = state.pendingAsk,
@@ -743,6 +760,7 @@ public fun ChatScreen(
                         sheet = ChatSheet.Attach
                     },
                     onModelClick = { sheet = ChatSheet.Model },
+                    onContextClick = { sheet = ChatSheet.Context },
                     onAnswerAsk = onAnswerAsk,
                     onAnswerToolApproval = onAnswerToolApproval,
                 )
@@ -797,11 +815,17 @@ public fun ChatScreen(
         )
         ChatSheet.Model -> ModelSheet(
             models = state.models,
-            current = state.compose.chatModel,
-            onSelect = {
-                onModelSelect(it)
-                sheet = ChatSheet.None
-            },
+            currentId = state.compose.chatModel,
+            currentProvider = state.compose.chatModelProvider,
+            reasoningEffort = state.compose.reasoningEffort,
+            onSelect = { onModelSelect(it) },
+            onThinkingSelect = onThinkingSelect,
+            onDismiss = { sheet = ChatSheet.None },
+        )
+        ChatSheet.Context -> ContextUsageSheet(
+            usage = contextUsage,
+            rounds = sessionRoundCount(state.messages),
+            steps = sessionStepCount(state.messages),
             onDismiss = { sheet = ChatSheet.None },
         )
         ChatSheet.Attach -> AttachSheet(
@@ -867,7 +891,7 @@ public fun ChatScreen(
     }
 }
 
-private enum class ChatSheet { None, ChatMode, ApprovalMode, Model, Attach, UserTurns }
+private enum class ChatSheet { None, ChatMode, ApprovalMode, Model, Context, Attach, UserTurns }
 
 @Composable
 private fun chatTopChipColor(): Color =
@@ -1060,7 +1084,7 @@ private fun ToolApprovalMode.icon(): ImageVector = when (this) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AnyaBottomSheet(
+internal fun AnyaBottomSheet(
     onDismiss: () -> Unit,
     content: @Composable () -> Unit,
 ) {
@@ -1236,11 +1260,38 @@ private fun ApprovalModeSheet(
 @Composable
 private fun ModelSheet(
     models: List<ChatModelInfo>,
-    current: String,
+    currentId: String,
+    currentProvider: String,
+    reasoningEffort: String,
     onSelect: (ChatModelInfo) -> Unit,
+    onThinkingSelect: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val haptic = rememberAnyaHaptics()
+    val groups = remember(models) { groupModelsByProvider(models) }
+    val hierarchical = groups.size > 1
+    var activeProvider by remember { mutableStateOf<String?>(null) }
+    val showingGroups = hierarchical && activeProvider == null
+    val visibleModels = remember(groups, activeProvider, models) {
+        when {
+            activeProvider != null -> groups.find { it.provider == activeProvider }?.models.orEmpty()
+            groups.size == 1 -> groups.first().models
+            else -> models
+        }
+    }
+    val activeGroupLabel = groups.find { it.provider == activeProvider }?.label.orEmpty()
+    val currentModel = findModelEntry(models, currentId, currentProvider)
+    val thinkingControl = resolveReasoningControl(currentModel, currentId, currentProvider)
+    val thinkingOptions = thinkingOptionsFor(thinkingControl, currentModel)
+    val thinkingBranding = resolveModelBranding(
+        modelId = currentId,
+        displayName = currentModel?.displayName ?: currentModel?.label.orEmpty(),
+    )
+    val thinkingAccent = if (thinkingBranding.monochrome) {
+        MaterialTheme.colorScheme.onBackground
+    } else {
+        thinkingBranding.accent
+    }
     AnyaBottomSheet(onDismiss = onDismiss) {
         Column(
             modifier = Modifier
@@ -1250,12 +1301,16 @@ private fun ModelSheet(
                 .padding(bottom = AnyaSpace.Md),
         ) {
             Text(
-                text = "选择模型",
+                text = if (showingGroups) "选择提供商" else "选择模型",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
-                text = "切换后将用于后续消息",
+                text = if (showingGroups) {
+                    "先选择分组，再选择该分组下的模型"
+                } else {
+                    "切换后将用于后续消息"
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 4.dp, bottom = AnyaSpace.Md),
@@ -1273,23 +1328,102 @@ private fun ModelSheet(
                         .heightIn(max = 360.dp)
                         .verticalScroll(androidx.compose.foundation.rememberScrollState()),
                 ) {
-                    models.forEach { model ->
-                        val branding = resolveModelProviderBranding(model)
-                        SheetOptionRow(
-                            label = modelUiLabel(branding, model.label, model.id),
-                            selected = model.id == current,
-                            leading = if (branding.hasIcon) {
-                                { VendorBadge(branding = branding, size = 28.dp) }
-                            } else {
-                                null
-                            },
-                            onClick = {
-                                haptic.tick()
-                                onSelect(model)
-                            },
-                        )
+                    if (showingGroups) {
+                        groups.forEach { group ->
+                            val branding = resolveGroupBranding(group)
+                            val hasCurrent = group.models.any { model ->
+                                isModelSelected(model, currentId, currentProvider)
+                            }
+                            SheetOptionRow(
+                                label = group.label,
+                                subtitle = "${group.models.size} 个模型",
+                                selected = hasCurrent,
+                                leading = if (branding.hasIcon) {
+                                    { VendorBadge(branding = branding, size = 28.dp) }
+                                } else {
+                                    null
+                                },
+                                trailing = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (hasCurrent) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Check,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.onBackground,
+                                            )
+                                        }
+                                        Icon(
+                                            imageVector = Icons.Rounded.ChevronRight,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                },
+                                onClick = {
+                                    haptic.tick()
+                                    activeProvider = group.provider
+                                },
+                            )
+                        }
+                    } else {
+                        if (hierarchical && activeProvider != null) {
+                            SheetOptionRow(
+                                label = activeGroupLabel.ifBlank { "返回分组" },
+                                selected = false,
+                                leading = {
+                                    Icon(
+                                        imageVector = Icons.Rounded.ChevronLeft,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                },
+                                onClick = {
+                                    haptic.tick()
+                                    activeProvider = null
+                                },
+                            )
+                        }
+                        visibleModels.forEach { model ->
+                            val branding = resolveModelBranding(model)
+                            val selected = isModelSelected(model, currentId, currentProvider)
+                            SheetOptionRow(
+                                label = getModelDisplayLabel(model),
+                                subtitle = getModelDisplaySubtitle(model),
+                                selected = selected,
+                                leading = if (branding.hasIcon) {
+                                    { VendorBadge(branding = branding, size = 28.dp) }
+                                } else {
+                                    null
+                                },
+                                onClick = {
+                                    haptic.tick()
+                                    onSelect(model)
+                                },
+                            )
+                        }
                     }
                 }
+            }
+            if (thinkingOptions.size > 1) {
+                Spacer(modifier = Modifier.height(AnyaSpace.Md))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
+                )
+                Spacer(modifier = Modifier.height(AnyaSpace.Md))
+                ThinkingEffortPanel(
+                    options = thinkingOptions,
+                    selectedId = selectedThinkingId(
+                        thinkingControl,
+                        currentModel,
+                        currentId,
+                        reasoningEffort,
+                    ),
+                    accent = thinkingAccent,
+                    onSelect = onThinkingSelect,
+                )
             }
         }
     }
@@ -1741,7 +1875,9 @@ private fun SheetOptionRow(
     label: String,
     selected: Boolean,
     onClick: () -> Unit,
+    subtitle: String? = null,
     leading: (@Composable () -> Unit)? = null,
+    trailing: (@Composable () -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier
@@ -1759,14 +1895,28 @@ private fun SheetOptionRow(
         if (leading != null) {
             leading()
         }
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyLarge,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = MaterialTheme.colorScheme.onBackground,
-            modifier = Modifier.weight(1f),
-        )
-        if (selected) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                color = MaterialTheme.colorScheme.onBackground,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (!subtitle.isNullOrBlank()) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        if (trailing != null) {
+            trailing()
+        } else if (selected) {
             Icon(
                 imageVector = Icons.Rounded.Check,
                 contentDescription = null,
@@ -1792,6 +1942,7 @@ private fun MobileComposer(
     modelLabel: String,
     modelProvider: String,
     modelId: String,
+    contextUsage: ContextUsageSnapshot,
     skills: List<SkillSummary>,
     mcpServers: List<McpServerSummary>,
     pendingAsk: ai.anya.companion.core.model.approval.PendingApproval?,
@@ -1800,6 +1951,7 @@ private fun MobileComposer(
     onStop: () -> Unit,
     onAttachClick: () -> Unit,
     onModelClick: () -> Unit,
+    onContextClick: () -> Unit,
     onAnswerAsk: (Map<Int, List<String>>, Boolean) -> Unit,
     onAnswerToolApproval: (ai.anya.companion.core.model.approval.ApprovalDecision) -> Unit,
 ) {
@@ -1813,11 +1965,7 @@ private fun MobileComposer(
     val controlSize = 40.dp
     val edge = 8.dp
     val modelBranding = remember(modelProvider, modelId, modelLabel) {
-        resolveModelProviderBranding(
-            provider = modelProvider,
-            modelId = modelId,
-            label = modelLabel,
-        )
+        resolveModelBranding(modelId, modelLabel)
     }
 
     Column(
@@ -1969,6 +2117,14 @@ private fun MobileComposer(
                 enabled = pendingAsk == null,
             )
             Spacer(modifier = Modifier.weight(1f))
+            MeterRingButton(
+                ratio = contextUsage.usageRatio,
+                color = contextUsageColor(contextUsage.usageRatio),
+                onClick = onContextClick,
+                contentDescription = "上下文占用",
+                enabled = pendingAsk == null,
+                size = controlSize,
+            )
             val haptic = rememberAnyaHaptics()
             ComposerCircleButton(
                 background = when {
@@ -2416,7 +2572,7 @@ private fun ModelPill(
     enabled: Boolean = true,
 ) {
     val haptic = rememberAnyaHaptics()
-    val displayLabel = modelUiLabel(branding, label)
+    val displayLabel = label
     Row(
         modifier = Modifier
             .height(height)

@@ -2,6 +2,25 @@
 
 All notable Companion releases. Desktop Anya has its own changelog in [rururunu/Anya](https://github.com/rururunu/Anya).
 
+## [0.1.3] - 2026-08-21
+
+Chat now follows desktop model metadata more closely, with provider branding, per-model reasoning controls, and a live context estimate.
+
+### Added
+
+- Provider-grouped model picker with desktop-provided names and logos, plus built-in branding for common providers
+- Per-model thinking controls: desktop thinking variants where available, otherwise a compatible reasoning-effort selector
+- Context-usage meter that refreshes for the selected model and current draft
+
+### Changed
+
+- Persist and synchronize the selected reasoning effort with the desktop compose state
+- Keep a locally selected reasoning effort when an older desktop response omits the field
+
+### Notes
+
+Requires a desktop Anya Remote Gateway that supports `context.usage` and compose `reasoningEffort`. Companion does not call model providers itself.
+
 ## [0.1.2] — 2026-08-15
 
 Desktop → phone file fetch actually reaches the PC, including Windows paths.
@@ -52,6 +71,7 @@ First public Android remote.
 
 Requires desktop Anya with Remote Gateway. Companion does not call model providers itself.
 
+[0.1.3]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.3
 [0.1.2]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.2
 [0.1.1]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.1
 [0.1.0]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.0

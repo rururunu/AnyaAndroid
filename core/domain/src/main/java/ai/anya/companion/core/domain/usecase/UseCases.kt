@@ -140,8 +140,17 @@ public class SetComposeUseCase @Inject constructor(
         chatModel: String? = null,
         chatModelProvider: String? = null,
         chatModelLabel: String? = null,
+        reasoningEffort: String? = null,
     ): AnyaResult<SessionCompose> =
-        sessionRepository.setCompose(sessionId, chatMode, toolApprovalMode, chatModel, chatModelProvider, chatModelLabel)
+        sessionRepository.setCompose(
+            sessionId,
+            chatMode,
+            toolApprovalMode,
+            chatModel,
+            chatModelProvider,
+            chatModelLabel,
+            reasoningEffort,
+        )
 }
 
 public class ObserveModelsUseCase @Inject constructor(
@@ -154,6 +163,17 @@ public class RefreshModelsUseCase @Inject constructor(
     private val sessionRepository: SessionRepository,
 ) {
     public suspend operator fun invoke(): AnyaResult<List<ChatModelInfo>> = sessionRepository.refreshModels()
+}
+
+public class RefreshContextUsageUseCase @Inject constructor(
+    private val sessionRepository: SessionRepository,
+) {
+    public suspend operator fun invoke(
+        sessionId: String?,
+        draftMessage: String? = null,
+        modelId: String? = null,
+    ): AnyaResult<ai.anya.companion.core.model.session.ContextUsageSnapshot> =
+        sessionRepository.refreshContextUsage(sessionId, draftMessage, modelId)
 }
 
 public class ObservePlanTasksUseCase @Inject constructor(

@@ -1,8 +1,8 @@
 {
-  "version": "0.1.2",
-  "versionCode": 3,
-  "notes": "v0.1.2：获取文件不再连手机 127.0.0.1；Windows 路径改为工作区相对路径，失败则回退分片下载。",
-  "apkUrl": "https://github.com/rururunu/AnyaAndroid/releases/download/v0.1.2/Anya-v0.1.2.apk",
-  "sizeBytes": 2937863,
-  "sha256": "f526818f4f632639b175a57f1cb0e9f19f0dd04a3988aaabadd24458101245b6"
+  "version": "0.1.3",
+  "versionCode": 4,
+  "notes": "v0.1.3\uFF1A\u6A21\u578B\u6309\u63D0\u4F9B\u5546\u5206\u7EC4\u5E76\u663E\u793A\u56FE\u6807\uFF1B\u652F\u6301\u6309\u6A21\u578B\u9009\u62E9\u601D\u8003\u5F3A\u5EA6\uFF0C\u65B0\u589E\u5B9E\u65F6\u4E0A\u4E0B\u6587\u5360\u7528\u4F30\u7B97\u3002",
+  "apkUrl": "https://github.com/rururunu/AnyaAndroid/releases/download/v0.1.3/Anya-v0.1.3.apk",
+  "sizeBytes": 2981023,
+  "sha256": "8b0e5e87613dcbab6e42a8669d0cb8531f195f4b15619a9ce8e3cc8e4f1035e5"
 }
