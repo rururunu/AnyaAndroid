@@ -122,6 +122,31 @@ class CompanionNotifier @Inject constructor(
                             requestId = message.data.string("requestId"),
                         )
                     }
+                    "file.offer", "file-offer", "FileOffer" -> {
+                        val name = message.data.string("name")
+                            ?.takeIf { it.isNotBlank() }
+                            ?: message.data.string("path")?.substringAfterLast('/')
+                            ?: "文件"
+                        onAlert(
+                            app,
+                            title = "收到文件",
+                            body = name,
+                            sessionId = message.data.string("sessionId"),
+                            requestId = message.data.string("offerId"),
+                        )
+                    }
+                    "url.offer", "url-offer", "UrlOffer" -> {
+                        val label = message.data.string("label")
+                            ?.takeIf { it.isNotBlank() }
+                            ?: "预览链接"
+                        onAlert(
+                            app,
+                            title = "收到链接",
+                            body = label,
+                            sessionId = message.data.string("sessionId"),
+                            requestId = message.data.string("offerId"),
+                        )
+                    }
                     "interaction.resolved", "interaction-resolved" -> {
                         message.data.string("requestId")?.let { clearByRequestId(app, it) }
                     }

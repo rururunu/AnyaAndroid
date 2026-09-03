@@ -6,8 +6,10 @@ import ai.anya.companion.core.domain.repository.AppUpdateMonitor
 import ai.anya.companion.core.domain.repository.ConnectionRepository
 import ai.anya.companion.core.domain.repository.ConnectionState
 import ai.anya.companion.core.domain.repository.LocaleRepository
+import ai.anya.companion.core.domain.repository.ThemeRepository
 import ai.anya.companion.core.model.protocol.DeviceCredential
 import ai.anya.companion.core.model.settings.AppLanguage
+import ai.anya.companion.core.model.settings.AppTheme
 import ai.anya.companion.core.model.update.formatDisplayVersion
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -22,6 +24,7 @@ public data class SettingsUiState(
     public val credential: DeviceCredential? = null,
     public val pairedDevices: List<DeviceCredential> = emptyList(),
     public val language: AppLanguage = AppLanguage.System,
+    public val theme: AppTheme = AppTheme.System,
     public val availableUpdateVersion: String? = null,
 )
 
@@ -29,6 +32,7 @@ public data class SettingsUiState(
 public class SettingsViewModel @Inject constructor(
     private val connectionRepository: ConnectionRepository,
     private val localeRepository: LocaleRepository,
+    private val themeRepository: ThemeRepository,
     updateMonitor: AppUpdateMonitor,
 ) : ViewModel() {
 
@@ -36,14 +40,15 @@ public class SettingsViewModel @Inject constructor(
         connectionRepository.connectionState,
         connectionRepository.credential,
         connectionRepository.pairedDevices,
-        localeRepository.language,
+        combine(localeRepository.language, themeRepository.theme, ::Pair),
         updateMonitor.badgeVersion,
-    ) { connection, credential, devices, language, badgeVersion ->
+    ) { connection, credential, devices, appearance, badgeVersion ->
         SettingsUiState(
             connectionState = connection,
             credential = credential,
             pairedDevices = devices,
-            language = language,
+            language = appearance.first,
+            theme = appearance.second,
             availableUpdateVersion = badgeVersion?.let(::formatDisplayVersion),
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState())
@@ -74,5 +79,9 @@ public class SettingsViewModel @Inject constructor(
 
     public fun setLanguage(language: AppLanguage) {
         localeRepository.setLanguage(language)
+    }
+
+    public fun setTheme(theme: AppTheme) {
+        themeRepository.setTheme(theme)
     }
 }

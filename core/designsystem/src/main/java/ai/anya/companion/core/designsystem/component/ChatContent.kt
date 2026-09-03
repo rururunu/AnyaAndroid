@@ -14,6 +14,7 @@ import kotlinx.serialization.json.jsonPrimitive
 internal sealed class ChatContentSegment {
     data class Markdown(val text: String) : ChatContentSegment()
     data class Chart(val specJson: String) : ChatContentSegment()
+    data class Mermaid(val source: String) : ChatContentSegment()
 }
 
 private val CHART_TYPES = setOf(
@@ -38,9 +39,10 @@ internal fun tryParseChartSpec(text: String): String? {
 }
 
 /**
- * Splits assistant output into markdown and chart segments. Mirrors desktop:
- * only fenced ```chart (or ```json with a valid chart spec) becomes a chart;
- * all other text — including other code fences — stays intact as markdown.
+ * Splits assistant output into markdown, chart and mermaid segments. Mirrors desktop:
+ * only fenced ```chart (or ```json with a valid chart spec) becomes a chart and only
+ * fenced ```mermaid becomes a diagram; all other text — including other code
+ * fences — stays intact as markdown.
  */
 internal fun splitChatContent(content: String): List<ChatContentSegment> {
     if (content.isBlank()) return emptyList()
@@ -49,15 +51,19 @@ internal fun splitChatContent(content: String): List<ChatContentSegment> {
     CODE_FENCE_RE.findAll(content).forEach { fence ->
         val lang = fence.groupValues[1].trim().split(Regex("\\s+")).firstOrNull()?.lowercase()
         val body = fence.groupValues[2]
-        val chartSpec = if (lang == "chart" || lang == "json") tryParseChartSpec(body) else null
-        if (chartSpec != null) {
+        val special: ChatContentSegment? = when {
+            lang == "mermaid" -> body.trim().takeIf { it.isNotEmpty() }?.let(ChatContentSegment::Mermaid)
+            lang == "chart" || lang == "json" -> tryParseChartSpec(body)?.let(ChatContentSegment::Chart)
+            else -> null
+        }
+        if (special != null) {
             if (fence.range.first > cursor) {
                 segments += ChatContentSegment.Markdown(content.substring(cursor, fence.range.first))
             }
-            segments += ChatContentSegment.Chart(chartSpec)
+            segments += special
             cursor = fence.range.last + 1
         }
-        // Non-chart fences stay inside the surrounding markdown run untouched.
+        // Other fences stay inside the surrounding markdown run untouched.
     }
     if (cursor < content.length) {
         segments += ChatContentSegment.Markdown(content.substring(cursor))
@@ -66,6 +72,7 @@ internal fun splitChatContent(content: String): List<ChatContentSegment> {
         when (it) {
             is ChatContentSegment.Markdown -> it.text.isNotBlank()
             is ChatContentSegment.Chart -> it.specJson.isNotBlank()
+            is ChatContentSegment.Mermaid -> it.source.isNotBlank()
         }
     }
 }
@@ -97,6 +104,9 @@ public fun AnyaChatContent(
                 }
                 is ChatContentSegment.Chart -> {
                     AnyaChartBlock(specJson = segment.specJson)
+                }
+                is ChatContentSegment.Mermaid -> {
+                    AnyaMermaidBlock(source = segment.source)
                 }
             }
         }

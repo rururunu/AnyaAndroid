@@ -4,7 +4,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -76,6 +75,7 @@ import ai.anya.companion.core.designsystem.component.AnyaSegmentedControl
 import ai.anya.companion.core.designsystem.haptic.rememberAnyaHaptics
 import ai.anya.companion.core.designsystem.theme.AnyaColors
 import ai.anya.companion.core.designsystem.theme.AnyaSpace
+import ai.anya.companion.core.designsystem.theme.LocalDarkTheme
 import ai.anya.companion.core.model.session.AgentRunState
 import ai.anya.companion.core.model.session.ChatSessionSummary
 import ai.anya.companion.core.model.session.SessionSearchHit
@@ -100,7 +100,9 @@ public fun SessionsRoute(
         onOpenSession = onOpenSession,
         onToggleWorkspace = viewModel::toggleWorkspace,
         onRefresh = viewModel::refresh,
+        onArchiveSession = viewModel::archiveSession,
         onDeleteSession = viewModel::deleteSession,
+        onArchiveWorkspace = viewModel::archiveWorkspace,
     )
 }
 
@@ -133,9 +135,10 @@ public fun SessionsAskContent(
     onOpenSession: (String) -> Unit,
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
+    onArchiveSession: ((String) -> Unit)? = null,
     onDeleteSession: ((String) -> Unit)? = null,
 ) {
-    var pendingDelete by remember { mutableStateOf<ChatSessionSummary?>(null) }
+    var pendingActions by remember { mutableStateOf<ChatSessionSummary?>(null) }
     AnyaPullToRefreshBox(
         isRefreshing = state.isRefreshing,
         onRefresh = onRefresh,
@@ -146,17 +149,29 @@ public fun SessionsAskContent(
         QuickAskPane(
             sessions = state.quickAskSessions,
             onOpenSession = onOpenSession,
-            onLongPressSession = onDeleteSession?.let { { session -> pendingDelete = session } },
+            onLongPressSession = if (onArchiveSession != null || onDeleteSession != null) {
+                { session -> pendingActions = session }
+            } else {
+                null
+            },
         )
     }
-    pendingDelete?.let { session ->
-        SessionDeleteConfirmSheet(
+    pendingActions?.let { session ->
+        SessionActionsSheet(
             session = session,
-            onConfirm = {
-                pendingDelete = null
-                onDeleteSession?.invoke(session.id)
+            onArchive = onArchiveSession?.let { archive ->
+                {
+                    pendingActions = null
+                    archive(session.id)
+                }
             },
-            onDismiss = { pendingDelete = null },
+            onDelete = onDeleteSession?.let { delete ->
+                {
+                    pendingActions = null
+                    delete(session.id)
+                }
+            },
+            onDismiss = { pendingActions = null },
         )
     }
 }
@@ -169,10 +184,13 @@ public fun SessionsWorkspaceContent(
     onOpenSession: (String) -> Unit,
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
+    onArchiveSession: ((String) -> Unit)? = null,
     onDeleteSession: ((String) -> Unit)? = null,
     onNewSessionInWorkspace: ((String) -> Unit)? = null,
+    onArchiveWorkspace: ((String) -> Unit)? = null,
 ) {
-    var pendingDelete by remember { mutableStateOf<ChatSessionSummary?>(null) }
+    var pendingActions by remember { mutableStateOf<ChatSessionSummary?>(null) }
+    var pendingWorkspace by remember { mutableStateOf<WorkspaceGroup?>(null) }
     AnyaPullToRefreshBox(
         isRefreshing = state.isRefreshing,
         onRefresh = onRefresh,
@@ -185,18 +203,44 @@ public fun SessionsWorkspaceContent(
             expandedIds = state.expandedWorkspaceIds,
             onToggleWorkspace = onToggleWorkspace,
             onOpenSession = onOpenSession,
-            onLongPressSession = onDeleteSession?.let { { session -> pendingDelete = session } },
+            onLongPressSession = if (onArchiveSession != null || onDeleteSession != null) {
+                { session -> pendingActions = session }
+            } else {
+                null
+            },
             onNewSessionInWorkspace = onNewSessionInWorkspace,
+            onLongPressWorkspace = onArchiveWorkspace?.let { archive ->
+                { group -> pendingWorkspace = group }
+            },
         )
     }
-    pendingDelete?.let { session ->
-        SessionDeleteConfirmSheet(
+    pendingActions?.let { session ->
+        SessionActionsSheet(
             session = session,
-            onConfirm = {
-                pendingDelete = null
-                onDeleteSession?.invoke(session.id)
+            onArchive = onArchiveSession?.let { archive ->
+                {
+                    pendingActions = null
+                    archive(session.id)
+                }
             },
-            onDismiss = { pendingDelete = null },
+            onDelete = onDeleteSession?.let { delete ->
+                {
+                    pendingActions = null
+                    delete(session.id)
+                }
+            },
+            onDismiss = { pendingActions = null },
+        )
+    }
+    pendingWorkspace?.let { group ->
+        WorkspaceActionsSheet(
+            workspaceName = group.workspace.name,
+            sessionCount = group.sessions.size,
+            onArchive = {
+                pendingWorkspace = null
+                onArchiveWorkspace?.invoke(group.workspace.id)
+            },
+            onDismiss = { pendingWorkspace = null },
         )
     }
 }
@@ -209,8 +253,10 @@ public fun SessionsTabContent(
     onOpenSession: (String) -> Unit,
     onToggleWorkspace: (String) -> Unit,
     onRefresh: () -> Unit,
+    onArchiveSession: ((String) -> Unit)? = null,
     onDeleteSession: ((String) -> Unit)? = null,
     onNewSessionInWorkspace: ((String) -> Unit)? = null,
+    onArchiveWorkspace: ((String) -> Unit)? = null,
 ) {
     val segment = segmentIndex.coerceIn(0, 1)
     Column(modifier = Modifier.fillMaxSize()) {
@@ -223,6 +269,7 @@ public fun SessionsTabContent(
                 state = state,
                 onOpenSession = onOpenSession,
                 onRefresh = onRefresh,
+                onArchiveSession = onArchiveSession,
                 onDeleteSession = onDeleteSession,
             )
             else -> SessionsWorkspaceContent(
@@ -230,8 +277,10 @@ public fun SessionsTabContent(
                 onToggleWorkspace = onToggleWorkspace,
                 onOpenSession = onOpenSession,
                 onRefresh = onRefresh,
+                onArchiveSession = onArchiveSession,
                 onDeleteSession = onDeleteSession,
                 onNewSessionInWorkspace = onNewSessionInWorkspace,
+                onArchiveWorkspace = onArchiveWorkspace,
             )
         }
     }
@@ -239,9 +288,76 @@ public fun SessionsTabContent(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SessionDeleteConfirmSheet(
+private fun SessionActionsSheet(
     session: ChatSessionSummary,
-    onConfirm: () -> Unit,
+    onArchive: (() -> Unit)?,
+    onDelete: (() -> Unit)?,
+    onDismiss: () -> Unit,
+) {
+    val haptics = rememberAnyaHaptics()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val title = session.title.ifBlank { stringResource(R.string.sessions_delete_untitled) }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.background,
+        tonalElevation = 0.dp,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AnyaSpace.Screen)
+                .padding(bottom = AnyaSpace.Xxl),
+            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
+        ) {
+            Text(
+                text = stringResource(R.string.sessions_actions_title),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (onArchive != null) {
+                AnyaPrimaryButton(
+                    text = stringResource(R.string.sessions_archive),
+                    onClick = {
+                        haptics.confirm()
+                        onArchive()
+                    },
+                )
+            }
+            if (onDelete != null) {
+                AnyaSecondaryButton(
+                    text = stringResource(R.string.sessions_delete_confirm),
+                    onClick = {
+                        haptics.confirm()
+                        onDelete()
+                    },
+                )
+            }
+            AnyaSecondaryButton(
+                text = stringResource(R.string.sessions_delete_cancel),
+                onClick = {
+                    haptics.tick()
+                    onDismiss()
+                },
+            )
+            Spacer(modifier = Modifier.height(AnyaSpace.Sm))
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun WorkspaceActionsSheet(
+    workspaceName: String,
+    sessionCount: Int,
+    onArchive: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val haptics = rememberAnyaHaptics()
@@ -259,35 +375,25 @@ private fun SessionDeleteConfirmSheet(
                 .padding(bottom = AnyaSpace.Xxl),
             verticalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.DeleteOutline,
-                    contentDescription = null,
-                    tint = AnyaColors.Danger,
-                    modifier = Modifier.size(22.dp),
-                )
-                Text(
-                    text = stringResource(R.string.sessions_delete_title),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
+            Text(
+                text = stringResource(R.string.sessions_workspace_actions_title),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
             Text(
                 text = stringResource(
-                    R.string.sessions_delete_body,
-                    session.title.ifBlank { stringResource(R.string.sessions_delete_untitled) },
+                    R.string.sessions_workspace_archive_body,
+                    workspaceName,
+                    sessionCount,
                 ),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             AnyaPrimaryButton(
-                text = stringResource(R.string.sessions_delete_confirm),
+                text = stringResource(R.string.sessions_workspace_archive),
                 onClick = {
                     haptics.confirm()
-                    onConfirm()
+                    onArchive()
                 },
             )
             AnyaSecondaryButton(
@@ -303,7 +409,7 @@ private fun SessionDeleteConfirmSheet(
 }
 
 @Composable
-private fun QuickAskPane(
+internal fun QuickAskPane(
     sessions: List<ChatSessionSummary>,
     onOpenSession: (String) -> Unit,
     onLongPressSession: ((ChatSessionSummary) -> Unit)? = null,
@@ -334,13 +440,14 @@ private fun QuickAskPane(
 }
 
 @Composable
-private fun WorkspacePane(
+internal fun WorkspacePane(
     groups: List<WorkspaceGroup>,
     expandedIds: Set<String>,
     onToggleWorkspace: (String) -> Unit,
     onOpenSession: (String) -> Unit,
     onLongPressSession: ((ChatSessionSummary) -> Unit)? = null,
     onNewSessionInWorkspace: ((String) -> Unit)? = null,
+    onLongPressWorkspace: ((WorkspaceGroup) -> Unit)? = null,
 ) {
     if (groups.isEmpty()) {
         AnyaEmptyState(
@@ -366,6 +473,7 @@ private fun WorkspacePane(
                     onNewSession = onNewSessionInWorkspace?.let {
                         { it(group.workspace.id) }
                     },
+                    onLongPress = onLongPressWorkspace?.let { { it(group) } },
                 )
             }
             if (group.workspace.id in expandedIds) {
@@ -396,6 +504,7 @@ private fun WorkspacePane(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun WorkspaceHeader(
     name: String,
@@ -403,6 +512,7 @@ private fun WorkspaceHeader(
     expanded: Boolean,
     onToggle: () -> Unit,
     onNewSession: (() -> Unit)? = null,
+    onLongPress: (() -> Unit)? = null,
 ) {
     val haptics = rememberAnyaHaptics()
     Row(
@@ -410,7 +520,15 @@ private fun WorkspaceHeader(
             .fillMaxWidth()
             .clip(RoundedCornerShape(AnyaSpace.ControlRadius))
             .background(MaterialTheme.colorScheme.surface)
-            .clickable(onClick = onToggle)
+            .combinedClickable(
+                onClick = onToggle,
+                onLongClick = onLongPress?.let {
+                    {
+                        haptics.confirm()
+                        it()
+                    }
+                },
+            )
             .padding(horizontal = AnyaSpace.Md, vertical = AnyaSpace.Sm),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
@@ -461,7 +579,7 @@ private fun WorkspaceHeader(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SessionCard(
+internal fun SessionCard(
     session: ChatSessionSummary,
     onClick: () -> Unit,
     indented: Boolean = false,
@@ -693,7 +811,7 @@ private fun SearchQueryField(
     focusRequester: FocusRequester,
     onSearch: () -> Unit,
 ) {
-    val dark = isSystemInDarkTheme()
+    val dark = LocalDarkTheme.current
     val fill = if (dark) Color(0xFF2A2A2C) else Color(0xFFF2F2F2)
     val placeholder = if (dark) Color(0xFF8E8E93) else Color(0xFF9A9A9A)
     Row(

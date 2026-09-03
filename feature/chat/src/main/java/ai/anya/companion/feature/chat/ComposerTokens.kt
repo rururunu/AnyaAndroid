@@ -112,6 +112,38 @@ internal fun serializeComposerSegments(
     return joinInlineParts(parts)
 }
 
+/** Chip tokens only (file / skill / mcp) — shown above the editable body. */
+internal fun composerChips(text: String): List<ComposerSegment> =
+    parseComposerText(text).segments.filter { it !is ComposerSegment.Text }
+
+/**
+ * Editable prose with inline tokens stripped. Used so long text stays in a real
+ * [androidx.compose.foundation.text.BasicTextField] instead of static Text chips.
+ */
+internal fun composerBody(text: String): String {
+    if (text.isEmpty() || !COMPOSER_INLINE_TOKEN_RE.containsMatchIn(text)) return text
+    return COMPOSER_INLINE_TOKEN_RE.replace(text) { "" }
+        .replace(Regex("[ \\t]{2,}"), " ")
+        .replace(Regex(" *\\n[ \\t]*"), "\n")
+        .replace(Regex("[ \\t]*\\n *"), "\n")
+        .trim()
+}
+
+/** Rebuild draft: chips first (attach order), then the editable body. */
+internal fun rebuildComposerDraft(chips: List<ComposerSegment>, body: String): String {
+    val parts = mutableListOf<String>()
+    for (chip in chips) {
+        when (chip) {
+            is ComposerSegment.Mention -> parts += formatMentionPath(chip.path, chip.isDir)
+            is ComposerSegment.Skill -> parts += "#skill:${chip.id}"
+            is ComposerSegment.Mcp -> parts += "#mcp:${chip.id}"
+            is ComposerSegment.Text -> Unit
+        }
+    }
+    if (body.isNotEmpty()) parts += body
+    return joinInlineParts(parts)
+}
+
 internal fun joinInlineParts(parts: List<String>): String {
     var out = ""
     for (part in parts) {

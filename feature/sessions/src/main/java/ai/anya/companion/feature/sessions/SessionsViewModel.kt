@@ -6,6 +6,8 @@ import ai.anya.companion.core.domain.repository.ApprovalRepository
 import ai.anya.companion.core.domain.repository.ConnectionRepository
 import ai.anya.companion.core.domain.repository.ConnectionState
 import ai.anya.companion.core.domain.repository.SessionRepository
+import ai.anya.companion.core.domain.usecase.ArchiveSessionUseCase
+import ai.anya.companion.core.domain.usecase.ArchiveWorkspaceUseCase
 import ai.anya.companion.core.domain.usecase.DeleteSessionUseCase
 import ai.anya.companion.core.domain.usecase.FindSessionsByMessageUseCase
 import ai.anya.companion.core.domain.usecase.RefreshSessionsUseCase
@@ -58,6 +60,8 @@ public class SessionsViewModel @Inject constructor(
     private val refreshSessions: RefreshSessionsUseCase,
     private val findSessionsByMessage: FindSessionsByMessageUseCase,
     private val deleteSessionUseCase: DeleteSessionUseCase,
+    private val archiveSessionUseCase: ArchiveSessionUseCase,
+    private val archiveWorkspaceUseCase: ArchiveWorkspaceUseCase,
 ) : ViewModel() {
 
     private val expanded = MutableStateFlow<Set<String>>(emptySet())
@@ -184,6 +188,18 @@ public class SessionsViewModel @Inject constructor(
     public fun deleteSession(sessionId: String) {
         viewModelScope.launch {
             deleteSessionUseCase(sessionId)
+        }
+    }
+
+    public fun archiveSession(sessionId: String) {
+        viewModelScope.launch {
+            archiveSessionUseCase(sessionId, archived = true)
+        }
+    }
+
+    public fun archiveWorkspace(workspaceId: String) {
+        viewModelScope.launch {
+            archiveWorkspaceUseCase(workspaceId, archived = true)
         }
     }
 

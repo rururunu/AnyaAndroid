@@ -9,10 +9,12 @@ import ai.anya.companion.core.domain.repository.ConnectionState
 import ai.anya.companion.core.domain.repository.SessionRepository
 import ai.anya.companion.core.domain.repository.WorkspaceRepository
 import ai.anya.companion.core.data.local.AttachCatalogStore
+import ai.anya.companion.core.data.local.ImageGenComposeStore
 import ai.anya.companion.core.data.local.InboxResultStore
 import ai.anya.companion.core.model.inbox.InboxResultKind
 import ai.anya.companion.core.model.inbox.InboxResultRecord
 import ai.anya.companion.core.data.local.CredentialStore
+import ai.anya.companion.core.data.local.CompanionIdentityStore
 import ai.anya.companion.core.model.approval.ApprovalDecision
 import ai.anya.companion.core.model.approval.ApprovalKind
 import ai.anya.companion.core.model.approval.AskUserQuestion
@@ -31,8 +33,13 @@ import ai.anya.companion.core.model.session.ChatRole
 import ai.anya.companion.core.model.session.ChatSessionSummary
 import ai.anya.companion.core.model.session.CodeChangeEntry
 import ai.anya.companion.core.model.session.ContextUsageSnapshot
+import ai.anya.companion.core.model.image.ImageGenCompose
+import ai.anya.companion.core.model.image.ImageGenOptions
+import ai.anya.companion.core.model.protocol.ImageGenWire
+import ai.anya.companion.core.model.session.MessageCacheUsage
 import ai.anya.companion.core.model.session.MessageStatus
 import ai.anya.companion.core.model.session.PlanTaskItem
+import ai.anya.companion.core.model.session.SessionCheckpoint
 import ai.anya.companion.core.model.session.SessionCompose
 import ai.anya.companion.core.model.session.SessionSearchHit
 import ai.anya.companion.core.model.session.SessionSearchMatchKind
@@ -42,6 +49,9 @@ import ai.anya.companion.core.model.session.ToolPreviewPayload
 import ai.anya.companion.core.model.session.ChatSharedFile
 import ai.anya.companion.core.model.session.ChatSharedUrl
 import ai.anya.companion.core.model.session.SharedFileStatus
+import ai.anya.companion.core.model.session.WorkTimelineItem
+import ai.anya.companion.core.model.session.appendTimelineText
+import ai.anya.companion.core.model.session.appendTimelineTool
 import ai.anya.companion.core.model.session.wireValue
 import ai.anya.companion.core.model.workspace.CompanionFileOffer
 import ai.anya.companion.core.model.workspace.CompanionUrlOffer
@@ -106,10 +116,12 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import java.util.UUID
@@ -122,12 +134,32 @@ import javax.inject.Singleton
 public class DefaultConnectionRepository @Inject constructor(
     @ApplicationContext private val context: Context,
     private val credentialStore: CredentialStore,
+    private val identityStore: CompanionIdentityStore,
     private val gateway: RemoteGatewayClient,
     @ApplicationScope private val appScope: CoroutineScope,
 ) : ConnectionRepository {
 
     private val _connectionState = MutableStateFlow(ConnectionState.Disconnected)
     override val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
+
+    /** Installed versionName, reported in `hello.appVersion` so the desktop can log/gate clients. */
+    private val appVersion: String by lazy {
+        runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: RemoteGatewayClient.UNKNOWN_APP_VERSION
+    }
+
+    /** Label shown on the desktop paired-device list. */
+    private val deviceName: String by lazy {
+        runCatching {
+            android.provider.Settings.Global
+                .getString(context.contentResolver, android.provider.Settings.Global.DEVICE_NAME)
+        }.getOrNull()
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: android.os.Build.MODEL.trim().takeIf { it.isNotEmpty() }
+            ?: "Android"
+    }
 
     private val _credential = MutableStateFlow<DeviceCredential?>(null)
     override val credential: StateFlow<DeviceCredential?> = _credential.asStateFlow()
@@ -161,7 +193,7 @@ public class DefaultConnectionRepository @Inject constructor(
     init {
         appScope.launch {
             credentialStore.rosterFlow.collect { roster ->
-                val previousId = _credential.value?.deviceId
+                val previousKey = _credential.value?.rosterKey()
                 val saved = roster.active()
                 _pairedDevices.value = roster.devices
                 _credential.value = saved
@@ -174,10 +206,10 @@ public class DefaultConnectionRepository @Inject constructor(
                     reconnectJob?.cancel()
                     gateway.disconnect()
                     _connectionState.value = ConnectionState.Disconnected
-                } else if (saved.deviceId != previousId) {
+                } else if (saved.rosterKey() != previousKey) {
                     lastGoodEndpoint.set(saved.lastGoodEndpointKey())
                     lastAttempt.set(null)
-                    if (previousId != null) {
+                    if (previousKey != null) {
                         sessionReachedConnected.set(false)
                         reconnectJob?.cancel()
                         gateway.disconnect()
@@ -340,8 +372,11 @@ public class DefaultConnectionRepository @Inject constructor(
                 existing = existing?.displayName,
             ),
         )
+        // Stable phone identity for desktop; desktopKey keeps multi-PC roster slots distinct.
+        val phoneId = existing?.deviceId ?: identityStore.getOrCreate()
+        val desktopKey = existing?.rosterKey() ?: java.util.UUID.randomUUID().toString()
         val credential = DeviceCredential(
-            deviceId = existing?.deviceId ?: UUID.randomUUID().toString(),
+            deviceId = phoneId,
             credential = payload.pairingToken,
             host = payload.host,
             port = payload.port,
@@ -350,6 +385,7 @@ public class DefaultConnectionRepository @Inject constructor(
             lanHost = payload.lanHost ?: existing?.lanHost,
             lanPort = payload.lanPort ?: existing?.lanPort,
             displayName = displayName,
+            desktopKey = desktopKey,
         )
         sessionReachedConnected.set(false)
         lastGoodEndpoint.set(null)
@@ -360,16 +396,16 @@ public class DefaultConnectionRepository @Inject constructor(
         credentialStore.upsert(credential, makeActive = true)
         _credential.value = credential
         _pairedDevices.update { list ->
-            list.filterNot { it.deviceId == credential.deviceId } + credential
+            list.filterNot { it.rosterKey() == credential.rosterKey() } + credential
         }
         ensureConnected(credential)
         return AnyaResult.Success(credential)
     }
 
     override suspend fun switchDevice(deviceId: String): AnyaResult<Unit> {
-        val target = _pairedDevices.value.find { it.deviceId == deviceId }
+        val target = _pairedDevices.value.find { it.rosterKey() == deviceId }
             ?: return AnyaResult.Failure(AnyaError.NotPaired())
-        if (target.deviceId == _credential.value?.deviceId) {
+        if (target.rosterKey() == _credential.value?.rosterKey()) {
             return connect()
         }
         wantConnected.value = true
@@ -385,26 +421,26 @@ public class DefaultConnectionRepository @Inject constructor(
     }
 
     override suspend fun renameDevice(deviceId: String, displayName: String) {
-        val current = _pairedDevices.value.find { it.deviceId == deviceId } ?: return
+        val current = _pairedDevices.value.find { it.rosterKey() == deviceId } ?: return
         val name = HostDisplayName.orFallback(displayName)
         if (current.displayName == name) return
         val updated = current.copy(displayName = name)
         credentialStore.upsert(
             updated,
-            makeActive = current.deviceId == _credential.value?.deviceId,
+            makeActive = current.rosterKey() == _credential.value?.rosterKey(),
         )
         _pairedDevices.update { list ->
-            list.map { if (it.deviceId == deviceId) updated else it }
+            list.map { if (it.rosterKey() == deviceId) updated else it }
         }
-        if (_credential.value?.deviceId == deviceId) {
+        if (_credential.value?.rosterKey() == deviceId) {
             _credential.value = updated
         }
     }
 
     override suspend fun removeDevice(deviceId: String) {
-        val wasActive = _credential.value?.deviceId == deviceId
+        val wasActive = _credential.value?.rosterKey() == deviceId
         credentialStore.remove(deviceId)
-        _pairedDevices.update { list -> list.filterNot { it.deviceId == deviceId } }
+        _pairedDevices.update { list -> list.filterNot { it.rosterKey() == deviceId } }
         if (!wasActive) return
         sessionReachedConnected.set(false)
         lastGoodEndpoint.set(null)
@@ -640,7 +676,7 @@ public class DefaultConnectionRepository @Inject constructor(
             val handshakeTries = 1
             var openedOk = false
             handshake@ for (tryIndex in 0 until handshakeTries) {
-                val opened = gateway.connect(candidate, timeoutMs)
+                val opened = gateway.connect(candidate, timeoutMs, appVersion, deviceName)
                 if (opened is AnyaResult.Failure) {
                     lastFailure = opened
                     continue
@@ -692,14 +728,17 @@ public class DefaultConnectionRepository @Inject constructor(
         replaceDeviceId: String?,
     ): DeviceCredential? {
         if (!replaceDeviceId.isNullOrBlank()) {
-            devices.find { it.deviceId == replaceDeviceId }?.let { return it }
+            devices.find { it.rosterKey() == replaceDeviceId }?.let { return it }
         }
         val lan = payload.lanHost?.trim()?.takeIf { it.isNotEmpty() }
         if (lan != null) {
             devices.find { it.lanHost?.trim().equals(lan, ignoreCase = true) }?.let { return it }
         }
         val host = payload.host.trim()
-        return devices.find { it.host.equals(host, ignoreCase = true) }
+        devices.find { it.host.equals(host, ignoreCase = true) }?.let { return it }
+        // Tunnel hostname rotates often; if only one desktop is stored, treat re-scan as repair.
+        if (devices.size == 1) return devices.first()
+        return null
     }
 
     private fun orderedCandidates(credential: DeviceCredential): List<DeviceCredential> {
@@ -761,7 +800,7 @@ public class DefaultConnectionRepository @Inject constructor(
         )
         _credential.value = updated
         _pairedDevices.update { list ->
-            list.map { if (it.deviceId == updated.deviceId) updated else it }
+            list.map { if (it.rosterKey() == updated.rosterKey()) updated else it }
         }
         appScope.launch { credentialStore.upsert(updated, makeActive = true) }
     }
@@ -775,7 +814,8 @@ public class DefaultConnectionRepository @Inject constructor(
             ClientMessage.Hello(
                 deviceId = credential.deviceId,
                 credential = credential.credential,
-                appVersion = "0.1.2",
+                appVersion = appVersion,
+                deviceName = deviceName,
             ),
         )
         if (sent is AnyaResult.Failure) {
@@ -829,13 +869,37 @@ public class DefaultSessionRepository @Inject constructor(
     private val connectionRepository: ConnectionRepository,
     @ApplicationScope private val appScope: CoroutineScope,
     private val inboxResultStore: InboxResultStore,
+    private val imageGenComposeStore: ImageGenComposeStore,
 ) : SessionRepository {
 
     private val _sessions = MutableStateFlow<List<ChatSessionSummary>>(emptyList())
     override val sessions: StateFlow<List<ChatSessionSummary>> = _sessions.asStateFlow()
 
+    private val _archivedSessions = MutableStateFlow<List<ChatSessionSummary>>(emptyList())
+    override val archivedSessions: StateFlow<List<ChatSessionSummary>> = _archivedSessions.asStateFlow()
+
     private val _workspaces = MutableStateFlow<List<WorkspaceSummary>>(emptyList())
     override val workspaces: StateFlow<List<WorkspaceSummary>> = _workspaces.asStateFlow()
+
+    private val _archivedWorkspaces = MutableStateFlow<List<WorkspaceSummary>>(emptyList())
+    override val archivedWorkspaces: StateFlow<List<WorkspaceSummary>> = _archivedWorkspaces.asStateFlow()
+
+    private val _imageGenOptions = MutableStateFlow(ImageGenOptions())
+    override val imageGenOptions: StateFlow<ImageGenOptions> = _imageGenOptions.asStateFlow()
+
+    override val imageGenCompose: Flow<ImageGenCompose> = imageGenComposeStore.flow
+
+    override suspend fun saveImageGenCompose(compose: ImageGenCompose) {
+        imageGenComposeStore.save(compose)
+    }
+
+    /**
+     * `session.listArchived` / `workspace.listArchived` replies look like the live snapshot
+     * (`{sessions}` / `{workspaces}`); track their request ids so [handleRpc] does not swap
+     * the main lists for the archived ones.
+     */
+    private val archivedSessionRequests: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    private val archivedWorkspaceRequests: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     private val _fileOffers = MutableSharedFlow<CompanionFileOffer>(extraBufferCapacity = 8)
     override val fileOffers: SharedFlow<CompanionFileOffer> = _fileOffers.asSharedFlow()
@@ -853,7 +917,12 @@ public class DefaultSessionRepository @Inject constructor(
     /** Companion-only shared-file cards; survive desktop history reloads. */
     private val localSharedBySession = MutableStateFlow<Map<String, List<ChatMessage>>>(emptyMap())
     private val composeBySession = MutableStateFlow<Map<String, SessionCompose>>(emptyMap())
+    private val stagedBySession = MutableStateFlow<Map<String, List<String>>>(emptyMap())
+    private val stagedFlushing = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val tasksBySession = MutableStateFlow<Map<String, List<PlanTaskItem>>>(emptyMap())
+    private val checkpointsBySession = MutableStateFlow<Map<String, List<SessionCheckpoint>>>(emptyMap())
+    private val cacheUsageBySession =
+        MutableStateFlow<Map<String, Map<String, MessageCacheUsage>>>(emptyMap())
     private val _models = MutableStateFlow<List<ChatModelInfo>>(emptyList())
 
     init {
@@ -878,8 +947,12 @@ public class DefaultSessionRepository @Inject constructor(
                         // Desktop also pushes session.snapshot after hello; pull explicitly
                         // so a missed event still fills the home list after cold start.
                         appScope.launch {
-                            refreshSessions()
-                            refreshModels()
+                            coroutineScope {
+                                launch { refreshSessions() }
+                                launch { refreshModels() }
+                                launch { refreshArchivedSessions() }
+                                launch { refreshArchivedWorkspaces() }
+                            }
                             settleIdleStreaming()
                         }
                     }
@@ -898,6 +971,187 @@ public class DefaultSessionRepository @Inject constructor(
 
     override fun compose(sessionId: String): Flow<SessionCompose> =
         composeBySession.map { it[sessionId] ?: SessionCompose() }
+
+    override fun stagedMessages(sessionId: String): Flow<List<String>> =
+        stagedBySession.map { it[sessionId].orEmpty() }
+
+    override suspend fun refreshStaged(sessionId: String): AnyaResult<List<String>> {
+        val requestId = UUID.randomUUID().toString()
+        return when (
+            val result = gateway.request(
+                ClientMessage.SessionStagedGet(requestId = requestId, sessionId = sessionId),
+                requestId,
+                timeoutMs = 15_000,
+            )
+        ) {
+            is AnyaResult.Failure -> result
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                if (!rpc.ok) {
+                    AnyaResult.Failure(AnyaError.Network(rpc.error ?: "session.staged.get failed"))
+                } else {
+                    val messages = parseStagedMessages(rpc.data as? JsonObject)
+                    stagedBySession.update { it + (sessionId to messages) }
+                    AnyaResult.Success(messages)
+                }
+            }
+        }
+    }
+
+    override suspend fun pushStaged(sessionId: String, message: String): AnyaResult<List<String>> {
+        val trimmed = message.trim()
+        if (trimmed.isEmpty()) return AnyaResult.Success(stagedBySession.value[sessionId].orEmpty())
+        val requestId = UUID.randomUUID().toString()
+        return when (
+            val result = gateway.request(
+                ClientMessage.SessionStagedPush(
+                    requestId = requestId,
+                    sessionId = sessionId,
+                    message = trimmed,
+                ),
+                requestId,
+                timeoutMs = 15_000,
+            )
+        ) {
+            is AnyaResult.Failure -> result
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                if (!rpc.ok) {
+                    AnyaResult.Failure(AnyaError.Network(rpc.error ?: "session.staged.push failed"))
+                } else {
+                    val messages = parseStagedMessages(rpc.data as? JsonObject)
+                    stagedBySession.update { it + (sessionId to messages) }
+                    AnyaResult.Success(messages)
+                }
+            }
+        }
+    }
+
+    override suspend fun removeStaged(sessionId: String, index: Int): AnyaResult<List<String>> {
+        val requestId = UUID.randomUUID().toString()
+        return when (
+            val result = gateway.request(
+                ClientMessage.SessionStagedRemove(
+                    requestId = requestId,
+                    sessionId = sessionId,
+                    index = index,
+                ),
+                requestId,
+                timeoutMs = 15_000,
+            )
+        ) {
+            is AnyaResult.Failure -> result
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                if (!rpc.ok) {
+                    AnyaResult.Failure(AnyaError.Network(rpc.error ?: "session.staged.remove failed"))
+                } else {
+                    val messages = parseStagedMessages(rpc.data as? JsonObject)
+                    stagedBySession.update { it + (sessionId to messages) }
+                    AnyaResult.Success(messages)
+                }
+            }
+        }
+    }
+
+    override suspend fun guideStaged(sessionId: String, index: Int): AnyaResult<Unit> {
+        val preview = stagedBySession.value[sessionId]?.getOrNull(index)?.trim().orEmpty()
+        val requestId = UUID.randomUUID().toString()
+        return when (
+            val result = gateway.request(
+                ClientMessage.SessionStagedGuide(
+                    requestId = requestId,
+                    sessionId = sessionId,
+                    index = index,
+                ),
+                requestId,
+                timeoutMs = 30_000,
+            )
+        ) {
+            is AnyaResult.Failure -> result
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                if (!rpc.ok) {
+                    AnyaResult.Failure(AnyaError.Network(rpc.error ?: "session.staged.guide failed"))
+                } else {
+                    // Soft inject is not broadcast as chat.started — show locally.
+                    if (preview.isNotEmpty()) {
+                        upsertMessage(
+                            sessionId,
+                            ChatMessage(
+                                id = "local-inject-$requestId",
+                                sessionId = sessionId,
+                                role = ChatRole.User,
+                                content = "<!--peek:soft-inject-->\n$preview",
+                                status = MessageStatus.Complete,
+                                createdAtEpochMs = System.currentTimeMillis(),
+                            ),
+                        )
+                    }
+                    refreshStaged(sessionId)
+                    AnyaResult.Success(Unit)
+                }
+            }
+        }
+    }
+
+    override suspend fun popStaged(sessionId: String): AnyaResult<String?> {
+        val requestId = UUID.randomUUID().toString()
+        return when (
+            val result = gateway.request(
+                ClientMessage.SessionStagedPop(requestId = requestId, sessionId = sessionId),
+                requestId,
+                timeoutMs = 15_000,
+            )
+        ) {
+            is AnyaResult.Failure -> result
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                if (!rpc.ok) {
+                    AnyaResult.Failure(AnyaError.Network(rpc.error ?: "session.staged.pop failed"))
+                } else {
+                    val obj = rpc.data as? JsonObject
+                    val messages = parseStagedMessages(obj)
+                    stagedBySession.update { it + (sessionId to messages) }
+                    val message = obj?.string("message")?.takeIf { it.isNotBlank() }
+                    AnyaResult.Success(message)
+                }
+            }
+        }
+    }
+
+    private fun parseStagedMessages(obj: JsonObject?): List<String> {
+        val arr = obj?.get("messages")?.jsonArray ?: return emptyList()
+        return arr.mapNotNull { el -> el.jsonPrimitive.contentOrNull?.takeIf { it.isNotBlank() } }
+    }
+
+    private suspend fun flushStagedAfterTurn(sessionId: String) {
+        if (!stagedFlushing.add(sessionId)) return
+        try {
+            // Wait briefly so desktop flush and ours don't both see a still-busy assistant.
+            kotlinx.coroutines.delay(120)
+            when (val popped = popStaged(sessionId)) {
+                is AnyaResult.Failure -> Unit
+                is AnyaResult.Success -> {
+                    val content = popped.data?.trim().orEmpty()
+                    if (content.isNotEmpty()) {
+                        sendMessage(
+                            sessionId = sessionId,
+                            message = content,
+                            chatMode = null,
+                            toolApprovalMode = null,
+                            chatModel = null,
+                            chatModelProvider = null,
+                            workspaceId = null,
+                            imageGen = null,
+                        )
+                    }
+                }
+            }
+        } finally {
+            stagedFlushing.remove(sessionId)
+        }
+    }
 
     override fun models(): StateFlow<List<ChatModelInfo>> = _models.asStateFlow()
 
@@ -948,9 +1202,216 @@ public class DefaultSessionRepository @Inject constructor(
                             map + (sessionId to mergeHistory(local, messages, runState))
                         }
                         hydrateSharedCardsFromHistory(sessionId, messages)
+                        payload["checkpoints"]?.let { element ->
+                            runCatching { json.decodeFromJsonElement<List<SessionCheckpoint>>(element) }
+                                .getOrNull()
+                                ?.let { list -> checkpointsBySession.update { it + (sessionId to list) } }
+                        }
+                        payload["messageCacheUsages"]?.let { element ->
+                            runCatching { json.decodeFromJsonElement<List<MessageCacheUsage>>(element) }
+                                .getOrNull()
+                                ?.let { list ->
+                                    cacheUsageBySession.update { map ->
+                                        map + (sessionId to list.associateBy { it.messageId })
+                                    }
+                                }
+                        }
                         AnyaResult.Success(messagesBySession.value[sessionId].orEmpty())
                     } else {
                         AnyaResult.Success(messagesBySession.value[sessionId].orEmpty())
+                    }
+                }
+            }
+        }
+    }
+
+    override suspend fun refreshArchivedSessions(): AnyaResult<List<ChatSessionSummary>> {
+        val requestId = UUID.randomUUID().toString()
+        archivedSessionRequests += requestId
+        return when (
+            val result = gateway.request(ClientMessage.SessionListArchived(requestId), requestId)
+        ) {
+            is AnyaResult.Failure -> {
+                archivedSessionRequests -= requestId
+                result
+            }
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                if (!rpc.ok) {
+                    AnyaResult.Failure(AnyaError.Network(rpc.error ?: "session.listArchived failed"))
+                } else {
+                    // handleRpc() already applied it via the request-id set; read the result.
+                    applyArchivedSessions(rpc.data as? JsonObject)
+                    AnyaResult.Success(_archivedSessions.value)
+                }
+            }
+        }
+    }
+
+    private fun applyArchivedSessions(payload: JsonObject?) {
+        val element = payload?.get("sessions") ?: return
+        runCatching { json.decodeFromJsonElement<List<ChatSessionSummary>>(element) }
+            .onSuccess { _archivedSessions.value = it }
+            .onFailure { Timber.w(it, "Failed to decode archived sessions") }
+    }
+
+    override suspend fun archiveSession(sessionId: String, archived: Boolean): AnyaResult<Unit> {
+        val requestId = UUID.randomUUID().toString()
+        return when (
+            val result = gateway.request(
+                ClientMessage.SessionArchive(requestId, sessionId, archived),
+                requestId,
+            )
+        ) {
+            is AnyaResult.Failure -> result
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                if (!rpc.ok) {
+                    AnyaResult.Failure(AnyaError.Network(rpc.error ?: "session.archive failed"))
+                } else {
+                    // Desktop broadcasts both snapshots; move the row now so the UI does not flash.
+                    val moving = (_sessions.value + _archivedSessions.value).firstOrNull { it.id == sessionId }
+                    if (archived) {
+                        _sessions.update { list -> list.filterNot { it.id == sessionId } }
+                        if (moving != null) _archivedSessions.update { list -> list.filterNot { it.id == sessionId } + moving }
+                    } else {
+                        _archivedSessions.update { list -> list.filterNot { it.id == sessionId } }
+                        if (moving != null) _sessions.update { list -> list.filterNot { it.id == sessionId } + moving }
+                    }
+                    AnyaResult.Success(Unit)
+                }
+            }
+        }
+    }
+
+    override suspend fun refreshArchivedWorkspaces(): AnyaResult<List<WorkspaceSummary>> {
+        val requestId = UUID.randomUUID().toString()
+        archivedWorkspaceRequests += requestId
+        return when (
+            val result = gateway.request(ClientMessage.WorkspaceListArchived(requestId), requestId)
+        ) {
+            is AnyaResult.Failure -> {
+                archivedWorkspaceRequests -= requestId
+                result
+            }
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                if (!rpc.ok) {
+                    AnyaResult.Failure(AnyaError.Network(rpc.error ?: "workspace.listArchived failed"))
+                } else {
+                    applyArchivedWorkspaces(rpc.data as? JsonObject)
+                    AnyaResult.Success(_archivedWorkspaces.value)
+                }
+            }
+        }
+    }
+
+    private fun applyArchivedWorkspaces(payload: JsonObject?) {
+        val element = payload?.get("workspaces") ?: return
+        runCatching { json.decodeFromJsonElement<List<WorkspaceSummary>>(element) }
+            .onSuccess { list -> _archivedWorkspaces.value = list.map { it.copy(archived = true) } }
+            .onFailure { Timber.w(it, "Failed to decode archived workspaces") }
+    }
+
+    override suspend fun archiveWorkspace(workspaceId: String, archived: Boolean): AnyaResult<Unit> {
+        val requestId = UUID.randomUUID().toString()
+        return when (
+            val result = gateway.request(
+                ClientMessage.WorkspaceArchive(requestId, workspaceId, archived),
+                requestId,
+                timeoutMs = 20_000,
+            )
+        ) {
+            is AnyaResult.Failure -> result
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                if (!rpc.ok) {
+                    AnyaResult.Failure(AnyaError.Network(rpc.error ?: "workspace.archive failed"))
+                } else {
+                    val moving = (_workspaces.value + _archivedWorkspaces.value).firstOrNull { it.id == workspaceId }
+                    if (archived) {
+                        _workspaces.update { list -> list.filterNot { it.id == workspaceId } }
+                        if (moving != null) {
+                            _archivedWorkspaces.update { list ->
+                                list.filterNot { it.id == workspaceId } + moving.copy(archived = true)
+                            }
+                        }
+                    } else {
+                        _archivedWorkspaces.update { list -> list.filterNot { it.id == workspaceId } }
+                        if (moving != null) {
+                            _workspaces.update { list -> list.filterNot { it.id == workspaceId } + moving.copy(archived = false) }
+                        }
+                    }
+                    // Session membership follows the workspace; both snapshots arrive right after.
+                    coroutineScope {
+                        launch { refreshSessions() }
+                        launch { refreshArchivedSessions() }
+                    }
+                    AnyaResult.Success(Unit)
+                }
+            }
+        }
+    }
+
+    override suspend fun refreshImageGenOptions(): AnyaResult<ImageGenOptions> {
+        val requestId = UUID.randomUUID().toString()
+        return when (
+            val result = gateway.request(ClientMessage.ImageGenOptions(requestId), requestId)
+        ) {
+            is AnyaResult.Failure -> result
+            is AnyaResult.Success -> decodeImageGenOptions(result.data, "imageGen.options")
+        }
+    }
+
+    override suspend fun setImageGenModel(provider: String, model: String): AnyaResult<ImageGenOptions> {
+        val requestId = UUID.randomUUID().toString()
+        return when (
+            val result = gateway.request(ClientMessage.ImageGenSetModel(requestId, provider, model), requestId)
+        ) {
+            is AnyaResult.Failure -> result
+            is AnyaResult.Success -> decodeImageGenOptions(result.data, "imageGen.setModel")
+        }
+    }
+
+    private fun decodeImageGenOptions(rpc: ServerMessage.RpcResult, op: String): AnyaResult<ImageGenOptions> {
+        if (!rpc.ok) return AnyaResult.Failure(AnyaError.Network(rpc.error ?: "$op failed"))
+        val element = rpc.data ?: return AnyaResult.Failure(AnyaError.Protocol("$op returned no payload"))
+        return runCatching { json.decodeFromJsonElement<ImageGenOptions>(element) }
+            .fold(
+                onSuccess = { options ->
+                    _imageGenOptions.value = options
+                    AnyaResult.Success(options)
+                },
+                onFailure = { AnyaResult.Failure(AnyaError.Protocol("$op decode failed: ${it.message}")) },
+            )
+    }
+
+    override fun checkpoints(sessionId: String): Flow<List<SessionCheckpoint>> =
+        checkpointsBySession.map { it[sessionId].orEmpty() }
+
+    override fun cacheUsages(sessionId: String): Flow<Map<String, MessageCacheUsage>> =
+        cacheUsageBySession.map { it[sessionId].orEmpty() }
+
+    override suspend fun rewindSession(sessionId: String, turn: Int): AnyaResult<Unit> {
+        val requestId = UUID.randomUUID().toString()
+        return when (
+            val result = gateway.request(
+                ClientMessage.SessionRewind(requestId, sessionId, turn),
+                requestId,
+                timeoutMs = 30_000,
+            )
+        ) {
+            is AnyaResult.Failure -> result
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                if (!rpc.ok) {
+                    AnyaResult.Failure(AnyaError.Network(rpc.error ?: "session.rewind failed"))
+                } else {
+                    // Truncated on the desktop: drop what we have and reload from the gateway.
+                    messagesBySession.update { it - sessionId }
+                    when (val reload = loadHistory(sessionId)) {
+                        is AnyaResult.Failure -> reload
+                        is AnyaResult.Success -> AnyaResult.Success(Unit)
                     }
                 }
             }
@@ -988,7 +1449,9 @@ public class DefaultSessionRepository @Inject constructor(
     ): List<SessionSearchHit> {
         val needle = query.trim()
         if (needle.isEmpty()) return emptyList()
-        val targets = _sessions.value.filter { it.id !in excludeSessionIds }
+        val targets = (_sessions.value + _archivedSessions.value)
+            .distinctBy { it.id }
+            .filter { it.id !in excludeSessionIds }
         if (targets.isEmpty()) return emptyList()
         val gate = Semaphore(permits = 4)
         return coroutineScope {
@@ -1025,6 +1488,7 @@ public class DefaultSessionRepository @Inject constructor(
         chatModel: String?,
         chatModelProvider: String?,
         workspaceId: String?,
+        imageGen: ImageGenWire?,
     ): AnyaResult<String> {
         val requestId = UUID.randomUUID().toString()
         val targetSession = sessionId.orEmpty()
@@ -1048,6 +1512,7 @@ public class DefaultSessionRepository @Inject constructor(
             toolApprovalMode = toolApprovalMode?.wireValue(),
             chatModel = chatModel,
             chatModelProvider = chatModelProvider,
+            imageGen = imageGen,
         )
         if (targetSession.isBlank()) {
             // Brand-new session: wait for the RPC so we learn the desktop-assigned id.
@@ -1453,6 +1918,10 @@ public class DefaultSessionRepository @Inject constructor(
                     map + (sessionId to mergeIncomingCompose(previous, compose))
                 }
             }
+            "session.staged" -> {
+                val sessionId = data.string("sessionId") ?: return
+                stagedBySession.update { it + (sessionId to parseStagedMessages(data)) }
+            }
             "session.tasks" -> {
                 val sessionId = data.string("sessionId") ?: return
                 val tasksElement = data["tasks"] ?: return
@@ -1505,15 +1974,65 @@ public class DefaultSessionRepository @Inject constructor(
                 upsertAssistantReasoningDelta(sessionId, messageId, delta)
                 patchRunState(sessionId, AgentRunState.Streaming)
             }
+            "chat.status", "ChatStatus" -> {
+                val sessionId = data.string("sessionId") ?: return
+                val messageId = data.string("messageId") ?: return
+                applyChatStatus(sessionId, messageId, data.string("kind").orEmpty())
+            }
+            "chat.tokenUsage", "ChatTokenUsage" -> {
+                val sessionId = data.string("sessionId") ?: return
+                val messageId = data.string("messageId") ?: return
+                val input = data["inputTokens"]?.jsonPrimitive?.longOrNull ?: 0L
+                val cached = data["cacheReadTokens"]?.jsonPrimitive?.longOrNull ?: return
+                cacheUsageBySession.update { map ->
+                    val current = map[sessionId].orEmpty()
+                    val previous = current[messageId]
+                    // Several model runs can land on one message; accumulate like the desktop.
+                    val merged = MessageCacheUsage(
+                        messageId = messageId,
+                        inputTokens = (previous?.inputTokens ?: 0L) + input,
+                        cacheReadTokens = (previous?.cacheReadTokens ?: 0L) + cached,
+                    )
+                    map + (sessionId to (current + (messageId to merged)))
+                }
+            }
+            "session.archived.snapshot" -> applyArchivedSessions(data)
+            "session.rewound" -> {
+                val sessionId = data.string("sessionId") ?: return
+                // Another client rolled the session back; refetch the truncated history.
+                messagesBySession.update { it - sessionId }
+                appScope.launch { loadHistory(sessionId) }
+            }
+            "chat.userContent", "ChatUserContent" -> {
+                val sessionId = data.string("sessionId") ?: return
+                val messageId = data.string("messageId") ?: return
+                val content = data.string("content") ?: return
+                messagesBySession.update { map ->
+                    val current = map[sessionId].orEmpty().toMutableList()
+                    val index = current.indexOfFirst { it.id == messageId }
+                    if (index >= 0) current[index] = current[index].copy(content = content)
+                    map + (sessionId to current)
+                }
+            }
             "chat.finished", "ChatFinished" -> {
                 val sessionId = data.string("sessionId") ?: return
                 val messageId = data.string("messageId") ?: return
                 val content = data.string("content").orEmpty()
                 val reasoning = data.string("reasoning")
-                finalizeAssistant(sessionId, messageId, content, reasoning)
-                patchRunState(sessionId, AgentRunState.Idle)
+                val completedAt = data["completedAtEpochMs"]?.jsonPrimitive?.longOrNull
+                    ?: System.currentTimeMillis()
+                finalizeAssistant(sessionId, messageId, content, reasoning, completedAt)
+                // Desktop emits `session.status` right before `chat.finished`; when a plan
+                // gate or tool approval is pending it says WaitingApproval and the turn is
+                // not really over, so only fall back to Idle when nothing is blocking.
+                val current = _sessions.value.firstOrNull { it.id == sessionId }?.runState
+                if (current != AgentRunState.WaitingApproval && current != AgentRunState.WaitingAskUser) {
+                    patchRunState(sessionId, AgentRunState.Idle)
+                }
                 // Full history carries server-computed codeChanges/planTasks per message.
                 appScope.launch { loadHistory(sessionId) }
+                // Shared queue with desktop: whoever wins the atomic pop sends the next turn.
+                appScope.launch { flushStagedAfterTurn(sessionId) }
             }
             "chat.error", "ChatError" -> {
                 val sessionId = data.string("sessionId") ?: return
@@ -1634,17 +2153,34 @@ public class DefaultSessionRepository @Inject constructor(
     }
 
     private fun handleRpc(result: ServerMessage.RpcResult) {
+        if (archivedSessionRequests.remove(result.requestId)) {
+            if (result.ok) applyArchivedSessions(result.data as? JsonObject)
+            return
+        }
+        if (archivedWorkspaceRequests.remove(result.requestId)) {
+            if (result.ok) applyArchivedWorkspaces(result.data as? JsonObject)
+            return
+        }
         if (!result.ok) return
         val payload = result.data ?: return
         if (payload is JsonObject) {
+            // imageGen.options / setModel carry `choices`; never confuse them with a snapshot.
+            if (payload.containsKey("choices") && payload.containsKey("model")) return
             if (payload.containsKey("sessions") || payload.containsKey("workspaces")) {
                 applySnapshot(payload)
                 return
             }
             if (payload.containsKey("messages")) {
                 val sessionId = payload.string("sessionId") ?: return
+                // `session.staged.*` also returns `{ sessionId, messages }`, but those
+                // `messages` are plain strings (or `[]`). Treating them as chat history
+                // wiped the transcript whenever the staged queue was empty — which is
+                // exactly when the agent is idle / after chat.finished flush.
+                val rawMessages = payload["messages"] as? JsonArray ?: return
+                if (rawMessages.isEmpty()) return
+                if (rawMessages.first() !is JsonObject) return
                 val incoming = runCatching {
-                    json.decodeFromJsonElement<List<ChatMessage>>(payload["messages"]!!)
+                    json.decodeFromJsonElement<List<ChatMessage>>(rawMessages)
                 }.getOrElse { error ->
                     Timber.w(error, "Failed to decode session history for %s", sessionId)
                     return
@@ -1696,8 +2232,10 @@ public class DefaultSessionRepository @Inject constructor(
             Timber.w(error, "Failed to apply session snapshot")
         }
         if (previousIds.isNotEmpty()) {
+            // Archived sessions leave the main list but keep their received files.
             val nextIds = _sessions.value.map { it.id }.toSet()
-            inboxResultStore.removeSessions(previousIds - nextIds)
+            val archivedIds = _archivedSessions.value.map { it.id }.toSet()
+            inboxResultStore.removeSessions(previousIds - nextIds - archivedIds)
         }
         settleIdleStreaming()
     }
@@ -1782,6 +2320,11 @@ public class DefaultSessionRepository @Inject constructor(
             planTasks = incoming.planTasks.ifEmpty { local.planTasks },
             sharedFiles = incoming.sharedFiles.ifEmpty { local.sharedFiles },
             sharedUrls = incoming.sharedUrls.ifEmpty { local.sharedUrls },
+            // Older desktops omit the timeline; keep the order we observed live.
+            workTimeline = incoming.workTimeline.ifEmpty { local.workTimeline },
+            completedAtEpochMs = incoming.completedAtEpochMs ?: local.completedAtEpochMs,
+            estimatedTokens = incoming.estimatedTokens ?: local.estimatedTokens,
+            activityStatus = if (incomingLive) local.activityStatus else null,
             createdAtEpochMs = if (incoming.createdAtEpochMs > 0L) {
                 incoming.createdAtEpochMs
             } else {
@@ -1830,6 +2373,7 @@ public class DefaultSessionRepository @Inject constructor(
                 current[index] = old.copy(
                     content = old.content + delta,
                     status = MessageStatus.Streaming,
+                    workTimeline = old.workTimeline.appendTimelineText(delta, reasoning = false),
                 )
             } else {
                 current += ChatMessage(
@@ -1839,6 +2383,7 @@ public class DefaultSessionRepository @Inject constructor(
                     content = delta,
                     status = MessageStatus.Streaming,
                     createdAtEpochMs = System.currentTimeMillis(),
+                    workTimeline = emptyList<WorkTimelineItem>().appendTimelineText(delta, reasoning = false),
                 )
             }
             map + (sessionId to current)
@@ -1854,6 +2399,7 @@ public class DefaultSessionRepository @Inject constructor(
                 current[index] = old.copy(
                     reasoning = old.reasoning.orEmpty() + delta,
                     status = MessageStatus.Streaming,
+                    workTimeline = old.workTimeline.appendTimelineText(delta, reasoning = true),
                 )
             } else {
                 current += ChatMessage(
@@ -1864,13 +2410,48 @@ public class DefaultSessionRepository @Inject constructor(
                     reasoning = delta,
                     status = MessageStatus.Streaming,
                     createdAtEpochMs = System.currentTimeMillis(),
+                    workTimeline = emptyList<WorkTimelineItem>().appendTimelineText(delta, reasoning = true),
                 )
             }
             map + (sessionId to current)
         }
     }
 
-    private fun finalizeAssistant(sessionId: String, messageId: String, content: String, reasoning: String?) {
+    /**
+     * Mirrors the desktop store: a stream retry wipes partial text and keeps only finished
+     * tools; `context_compacted*` / blank clears the label; anything else is shown as-is.
+     */
+    private fun applyChatStatus(sessionId: String, messageId: String, kind: String) {
+        messagesBySession.update { map ->
+            val current = map[sessionId].orEmpty().toMutableList()
+            val index = current.indexOfFirst { it.id == messageId }
+            if (index < 0) return@update map
+            val old = current[index]
+            current[index] = if (kind.startsWith("stream_retry")) {
+                old.copy(
+                    content = "",
+                    reasoning = null,
+                    workTimeline = emptyList(),
+                    toolActivities = old.toolActivities.filter { it.status != "running" },
+                    activityStatus = kind,
+                    status = MessageStatus.Streaming,
+                )
+            } else {
+                val status = if (kind.startsWith("context_compacted") || kind.isBlank()) null else kind
+                if (old.activityStatus == status) return@update map
+                old.copy(activityStatus = status)
+            }
+            map + (sessionId to current)
+        }
+    }
+
+    private fun finalizeAssistant(
+        sessionId: String,
+        messageId: String,
+        content: String,
+        reasoning: String?,
+        completedAtEpochMs: Long,
+    ) {
         messagesBySession.update { map ->
             val current = map[sessionId].orEmpty().toMutableList()
             val index = current.indexOfFirst { it.id == messageId }
@@ -1880,6 +2461,8 @@ public class DefaultSessionRepository @Inject constructor(
                     content = content,
                     reasoning = reasoning ?: old.reasoning,
                     status = MessageStatus.Complete,
+                    completedAtEpochMs = completedAtEpochMs,
+                    activityStatus = null,
                     toolActivities = old.toolActivities.map { activity ->
                         if (activity.status == "running") {
                             activity.copy(status = if (activity.success) "done" else "error")
@@ -1953,6 +2536,7 @@ public class DefaultSessionRepository @Inject constructor(
                     } else {
                         MessageStatus.Streaming
                     },
+                    workTimeline = old.workTimeline.appendTimelineTool(activityId),
                 )
             } else {
                 current += ChatMessage(
@@ -1968,6 +2552,7 @@ public class DefaultSessionRepository @Inject constructor(
                     } else {
                         emptyList()
                     },
+                    workTimeline = emptyList<WorkTimelineItem>().appendTimelineTool(activityId),
                 )
             }
             map + (sessionId to current)
@@ -2205,6 +2790,7 @@ public class DefaultSessionRepository @Inject constructor(
         messagesBySession.value = emptyMap()
         localSharedBySession.value = emptyMap()
         composeBySession.value = emptyMap()
+        stagedBySession.value = emptyMap()
         tasksBySession.value = emptyMap()
         _models.value = emptyList()
     }
@@ -3061,6 +3647,7 @@ public class DefaultWorkspaceRepository @Inject constructor(
                     path = path,
                     name = finishPayload.string("name") ?: fileName,
                     size = finishPayload["size"]?.jsonPrimitive?.longOrNull ?: size,
+                    absolutePath = finishPayload.string("absolutePath"),
                 ),
             )
         } catch (t: Throwable) {

@@ -38,6 +38,7 @@ import ai.anya.companion.core.domain.repository.ConnectionState
 import ai.anya.companion.feature.chat.ChatRoute
 import ai.anya.companion.feature.chat.NewChatSessionId
 import ai.anya.companion.feature.pairing.PairingRoute
+import ai.anya.companion.feature.sessions.ArchivedSessionsRoute
 import ai.anya.companion.feature.settings.AboutSettingsRoute
 import ai.anya.companion.feature.settings.ConnectionSettingsRoute
 import ai.anya.companion.feature.settings.GeneralSettingsRoute
@@ -54,6 +55,7 @@ object Routes {
     const val SettingsConnection = "settings/connection"
     const val SettingsGeneral = "settings/general"
     const val SettingsAbout = "settings/about"
+    const val SettingsArchived = "settings/archived"
 
     fun pairing(repairDeviceId: String? = null): String {
         val id = repairDeviceId?.trim().orEmpty()
@@ -192,6 +194,9 @@ fun AnyaNavHost(
                     onOpenAboutSettings = {
                         navController.navigate(Routes.SettingsAbout)
                     },
+                    onOpenArchivedSessions = {
+                        navController.navigate(Routes.SettingsArchived)
+                    },
                     onAddDevice = {
                         navController.navigate(Routes.pairing())
                     },
@@ -244,6 +249,14 @@ fun AnyaNavHost(
             }
             composable(Routes.SettingsAbout) {
                 AboutSettingsRoute(onBack = { navController.popBackStack() })
+            }
+            composable(Routes.SettingsArchived) {
+                ArchivedSessionsRoute(
+                    onBack = { navController.popBackStack() },
+                    onOpenSession = { id, messageId ->
+                        navController.navigate(Routes.chat(id, messageId))
+                    },
+                )
             }
         }
 

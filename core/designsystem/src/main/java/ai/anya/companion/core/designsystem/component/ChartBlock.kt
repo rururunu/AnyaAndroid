@@ -7,7 +7,7 @@ import android.view.View
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.compose.foundation.isSystemInDarkTheme
+import ai.anya.companion.core.designsystem.theme.LocalDarkTheme
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
@@ -22,7 +22,7 @@ public fun AnyaChartBlock(
     specJson: String,
     modifier: Modifier = Modifier,
 ) {
-    val dark = isSystemInDarkTheme()
+    val dark = LocalDarkTheme.current
     val html = remember(specJson, dark) { buildChartHtml(specJson, dark) }
     AndroidView(
         modifier = modifier

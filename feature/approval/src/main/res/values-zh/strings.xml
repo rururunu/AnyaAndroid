@@ -24,6 +24,8 @@
     <string name="inbox_status_url_pending">未查看</string>
     <string name="inbox_status_url_viewed">已查看</string>
     <string name="inbox_session_label">对话：%1$s</string>
+    <string name="inbox_session_untitled">未命名对话</string>
+    <string name="inbox_group_count">%1$d 项</string>
     <string name="inbox_quick_ask">随问</string>
     <string name="inbox_delete_title">删除这条结果</string>
     <string name="inbox_delete_body">「%1$s」将从收件箱移除，对话本身不会被删除。</string>

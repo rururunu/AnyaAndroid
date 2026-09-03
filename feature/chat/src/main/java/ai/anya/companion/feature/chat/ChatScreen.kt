@@ -41,6 +41,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -49,14 +50,18 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.automirrored.rounded.Assignment
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
@@ -68,16 +73,17 @@ import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.UploadFile
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.material.icons.rounded.UploadFile
 import ai.anya.companion.core.designsystem.component.AnyaLoadingIndicator
 import ai.anya.companion.core.designsystem.component.AnyaSegmentedControl
 import androidx.compose.ui.input.key.Key
@@ -92,8 +98,11 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.zIndex
 import ai.anya.companion.core.model.workspace.McpServerSummary
 import ai.anya.companion.core.model.workspace.SkillSummary
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.TextButton
+import androidx.compose.material.icons.rounded.Undo
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -137,12 +146,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import ai.anya.companion.core.designsystem.component.AnyaChatContent
-import ai.anya.companion.core.designsystem.component.AnyaEmptyState
+import ai.anya.companion.core.designsystem.component.MascotFace
+import ai.anya.companion.core.designsystem.component.MascotState
+import ai.anya.companion.core.designsystem.component.MascotTool
 import ai.anya.companion.core.designsystem.component.AnyaInlineLoadingMark
 import ai.anya.companion.core.designsystem.component.AnyaTopBarIconChip
 import ai.anya.companion.core.designsystem.icon.AnyaIcons
 import ai.anya.companion.core.designsystem.theme.AnyaSpace
+import ai.anya.companion.core.designsystem.theme.LocalDarkTheme
 import dev.chrisbanes.haze.HazeProgressive
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.HazeTint
@@ -346,8 +357,64 @@ private fun ConnectionLostBanner(
     }
 }
 
+/** Closest earlier non-soft-inject user message — the one that started the assistant turn. */
+private fun precedingUserMessage(messages: List<ChatMessage>, index: Int): ChatMessage? {
+    for (i in index - 1 downTo 0) {
+        val candidate = messages[i]
+        if (candidate.role == ChatRole.User && !isSoftInjectContent(candidate.content)) {
+            return candidate
+        }
+    }
+    return null
+}
+
+private sealed class ChatDisplayItem {
+    abstract val key: String
+
+    data class User(val message: ChatMessage) : ChatDisplayItem() {
+        override val key: String get() = message.id
+    }
+
+    data class Assistant(
+        val message: ChatMessage,
+        val injects: List<ChatMessage>,
+        val turnUser: ChatMessage?,
+    ) : ChatDisplayItem() {
+        override val key: String get() = message.id
+    }
+}
+
+/** Fold soft-inject user messages into the preceding assistant turn (desktop MessageList). */
+private fun buildChatDisplayItems(messages: List<ChatMessage>): List<ChatDisplayItem> {
+    val items = mutableListOf<ChatDisplayItem>()
+    messages.forEachIndexed { index, message ->
+        when (message.role) {
+            ChatRole.User -> {
+                if (isSoftInjectContent(message.content)) {
+                    val last = items.lastOrNull()
+                    if (last is ChatDisplayItem.Assistant) {
+                        items[items.lastIndex] = last.copy(injects = last.injects + message)
+                    } else {
+                        items += ChatDisplayItem.User(message)
+                    }
+                } else {
+                    items += ChatDisplayItem.User(message)
+                }
+            }
+            else -> {
+                items += ChatDisplayItem.Assistant(
+                    message = message,
+                    injects = emptyList(),
+                    turnUser = precedingUserMessage(messages, index),
+                )
+            }
+        }
+    }
+    return items
+}
+
 /** Tracks which completed-turn "已完成" folds are expanded. */
-private class CompletedFoldController {
+internal class CompletedFoldController {
     val expanded = mutableStateMapOf<String, Boolean>()
 
     fun isExpanded(messageId: String): Boolean = expanded[messageId] == true
@@ -421,11 +488,22 @@ public fun ChatRoute(
         localUploads = localUploads,
         onPickLocalFiles = viewModel::uploadPickedUris,
         onDownloadFile = viewModel::downloadFile,
+        onEnsureImagePreview = viewModel::ensureImagePreview,
         onExportSharedFile = viewModel::exportSharedFile,
         onFetchSharedFile = viewModel::fetchSharedFile,
         onMarkSharedUrlViewed = viewModel::markInboxUrlViewed,
         onDismissDownload = viewModel::dismissDownloadNotice,
         contextUsage = contextUsage,
+        onEditFromImage = viewModel::startImageEdit,
+        onClearImageEditRefs = viewModel::clearImageEditRefs,
+        onRemoveImageEditRef = viewModel::removeImageEditRef,
+        onRewindToUserMessage = viewModel::rewindToUserMessage,
+        onUpdateImageGenCompose = viewModel::updateImageGenCompose,
+        onSetImageGenModel = viewModel::setImageGenModel,
+        onRefreshImageGenOptions = viewModel::refreshImageGenOptions,
+        onPickAlbumRefs = viewModel::uploadAlbumAsRefs,
+        onGuideStaged = viewModel::guideStaged,
+        onRemoveStaged = viewModel::removeStaged,
     )
 }
 
@@ -451,11 +529,27 @@ public fun ChatScreen(
     localUploads: List<LocalUploadItem> = emptyList(),
     onPickLocalFiles: (List<android.net.Uri>) -> Unit = {},
     onDownloadFile: (String) -> Unit = {},
+    onEnsureImagePreview: (String) -> Unit = {},
     onExportSharedFile: (String) -> Unit = {},
     onFetchSharedFile: (String) -> Unit = {},
     onMarkSharedUrlViewed: (String) -> Unit = {},
     onDismissDownload: () -> Unit = {},
     contextUsage: ContextUsageSnapshot = ContextUsageSnapshot(),
+    onEditFromImage: (desktopPath: String, previewDataUrl: String?, regionPlacement: String?) -> Unit = { _, _, _ -> },
+    onClearImageEditRefs: () -> Unit = {},
+    onRemoveImageEditRef: (ImageEditRef) -> Unit = {},
+    onRewindToUserMessage: (String) -> Unit = {},
+    onUpdateImageGenCompose: (
+        ratio: String?,
+        resolution: String?,
+        styleId: String?,
+        count: Int?,
+    ) -> Unit = { _, _, _, _ -> },
+    onSetImageGenModel: (provider: String, model: String) -> Unit = { _, _ -> },
+    onRefreshImageGenOptions: () -> Unit = {},
+    onPickAlbumRefs: (List<android.net.Uri>) -> Unit = {},
+    onGuideStaged: (Int) -> Unit = {},
+    onRemoveStaged: (Int) -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -555,6 +649,15 @@ public fun ChatScreen(
 
     var sheet by remember { mutableStateOf(ChatSheet.None) }
     var diffRequest by remember { mutableStateOf<DiffViewRequest?>(null) }
+    val albumRefPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        if (uris.isNotEmpty()) onPickAlbumRefs(uris)
+    }
+    /** User message whose checkpoint the user asked to roll back to (confirm first). */
+    var rewindTarget by remember { mutableStateOf<String?>(null) }
+    /** Sub-agent parent activity + the pool its children live in. */
+    var subagentInspect by remember { mutableStateOf<Pair<ToolActivity, List<ToolActivity>>?>(null) }
 
     // The composer floats *over* the message list rather than reserving its
     // own row (its height varies a lot: plain field vs. multi-line ask/tool
@@ -595,18 +698,57 @@ public fun ChatScreen(
                 )
             }
         } else if (state.messages.isEmpty()) {
-            AnyaEmptyState(
-                icon = AnyaIcons.ChatCircleOutline,
-                title = "开始对话",
-                subtitle = "消息会同步到桌面端工作台",
+            EmptyConversationHero(
+                chatMode = state.compose.chatMode,
                 modifier = Modifier
                     .fillMaxSize()
                     .hazeSource(hazeState)
                     .padding(top = headerContentDp, bottom = composerFootprintDp),
             )
         } else {
+            val messagesSnapshot = state.messages
+            val imagePreviews = state.imagePreviews
+            val generatedImageActions = remember(
+                messagesSnapshot,
+                imagePreviews,
+                onEnsureImagePreview,
+                onEditFromImage,
+            ) {
+                GeneratedImageActions(
+                    fetch = onEnsureImagePreview,
+                    resolveLocal = { path ->
+                        findLocalSharedImage(
+                            imagePreviews.asSequence() +
+                                messagesSnapshot.asSequence().flatMap { it.sharedFiles.asSequence() },
+                            path,
+                        )
+                    },
+                    preview = { previewSharedFile = it },
+                    editFromImage = { desktopPath ->
+                        onEditFromImage(desktopPath, null, null)
+                    },
+                )
+            }
+            val turnActions = remember(
+                state.checkpointsByUserMessage,
+                state.cacheUsages,
+                state.rewinding,
+                onRewindToUserMessage,
+            ) {
+                TurnActions(
+                    checkpointsByUserMessage = state.checkpointsByUserMessage,
+                    cacheUsages = state.cacheUsages,
+                    rewinding = state.rewinding,
+                    onRewind = { rewindTarget = it },
+                    onInspectSubagent = { parent, pool -> subagentInspect = parent to pool },
+                )
+            }
             key(selectionEpoch) {
                 SelectionContainer(modifier = Modifier.fillMaxSize()) {
+                    androidx.compose.runtime.CompositionLocalProvider(
+                        LocalGeneratedImageActions provides generatedImageActions,
+                        LocalTurnActions provides turnActions,
+                    ) {
                     LazyColumn(
                         state = listState,
                         modifier = Modifier
@@ -620,24 +762,50 @@ public fun ChatScreen(
                         ),
                         verticalArrangement = Arrangement.spacedBy(AnyaSpace.Lg),
                     ) {
-                        items(state.messages, key = ChatMessage::id) { message ->
-                            MessageBubble(
-                                message = message,
-                                skills = attachCatalog.skills,
-                                mcpServers = attachCatalog.mcpServers,
-                                onApprovePlan = onApprovePlan,
-                                approvedPlanIds = state.planApprovedMessageIds,
-                                foldController = foldController,
-                                onOpenDiff = { request -> diffRequest = request },
-                                onExportSharedFile = onExportSharedFile,
-                                onFetchSharedFile = onFetchSharedFile,
-                                onPreviewSharedImage = { previewSharedFile = it },
-                                onOpenSharedUrl = {
-                                    previewSharedUrl = it
-                                    onMarkSharedUrlViewed(it.offerId)
-                                },
-                            )
+                        items(buildChatDisplayItems(messagesSnapshot), key = { it.key }) { item ->
+                            when (item) {
+                                is ChatDisplayItem.User -> MessageBubble(
+                                    message = item.message,
+                                    skills = attachCatalog.skills,
+                                    mcpServers = attachCatalog.mcpServers,
+                                    onApprovePlan = onApprovePlan,
+                                    turnUserMessage = null,
+                                    approvedPlanIds = state.planApprovedMessageIds,
+                                    foldController = foldController,
+                                    onOpenDiff = { request -> diffRequest = request },
+                                    onExportSharedFile = onExportSharedFile,
+                                    onFetchSharedFile = onFetchSharedFile,
+                                    onPreviewSharedImage = { previewSharedFile = it },
+                                    onOpenSharedUrl = {
+                                        previewSharedUrl = it
+                                        onMarkSharedUrlViewed(it.offerId)
+                                    },
+                                )
+                                is ChatDisplayItem.Assistant -> {
+                                    MessageBubble(
+                                        message = item.message,
+                                        skills = attachCatalog.skills,
+                                        mcpServers = attachCatalog.mcpServers,
+                                        onApprovePlan = onApprovePlan,
+                                        turnUserMessage = item.turnUser,
+                                        approvedPlanIds = state.planApprovedMessageIds,
+                                        foldController = foldController,
+                                        onOpenDiff = { request -> diffRequest = request },
+                                        onExportSharedFile = onExportSharedFile,
+                                        onFetchSharedFile = onFetchSharedFile,
+                                        onPreviewSharedImage = { previewSharedFile = it },
+                                        onOpenSharedUrl = {
+                                            previewSharedUrl = it
+                                            onMarkSharedUrlViewed(it.offerId)
+                                        },
+                                    )
+                                    if (item.injects.isNotEmpty()) {
+                                        SoftInjectList(injects = item.injects)
+                                    }
+                                }
+                            }
                         }
+                    }
                     }
                 }
             }
@@ -745,13 +913,28 @@ public fun ChatScreen(
                 MobileComposer(
                     draft = state.draft,
                     busy = state.busy,
-                    modelLabel = state.compose.modelDisplayName,
-                    modelProvider = state.compose.chatModelProvider,
-                    modelId = state.compose.chatModel,
+                    chatMode = state.compose.chatMode,
+                    modelLabel = if (state.compose.chatMode == ChatMode.Image) {
+                        state.imageGenOptions.selectedLabel
+                    } else {
+                        state.compose.modelDisplayName
+                    },
+                    modelProvider = if (state.compose.chatMode == ChatMode.Image) {
+                        state.imageGenOptions.provider
+                    } else {
+                        state.compose.chatModelProvider
+                    },
+                    modelId = if (state.compose.chatMode == ChatMode.Image) {
+                        state.imageGenOptions.model
+                    } else {
+                        state.compose.chatModel
+                    },
                     contextUsage = contextUsage,
                     skills = attachCatalog.skills,
                     mcpServers = attachCatalog.mcpServers,
                     pendingAsk = state.pendingAsk,
+                    imageGenCompose = state.imageGenCompose,
+                    imageGenOptions = state.imageGenOptions,
                     onDraftChange = onDraftChange,
                     onSend = onSend,
                     onStop = onStop,
@@ -759,10 +942,29 @@ public fun ChatScreen(
                         onAttachOpen()
                         sheet = ChatSheet.Attach
                     },
-                    onModelClick = { sheet = ChatSheet.Model },
+                    onModelClick = {
+                        if (state.compose.chatMode == ChatMode.Image) {
+                            onRefreshImageGenOptions()
+                            sheet = ChatSheet.ImageModel
+                        } else {
+                            sheet = ChatSheet.Model
+                        }
+                    },
                     onContextClick = { sheet = ChatSheet.Context },
                     onAnswerAsk = onAnswerAsk,
                     onAnswerToolApproval = onAnswerToolApproval,
+                    imageEditRefs = state.imageEditRefs,
+                    onRemoveImageEditRef = onRemoveImageEditRef,
+                    onImageRatioClick = { sheet = ChatSheet.ImageRatio },
+                    onImageResolutionClick = { sheet = ChatSheet.ImageResolution },
+                    onImageStyleClick = { sheet = ChatSheet.ImageStyle },
+                    onImageCountClick = { sheet = ChatSheet.ImageCount },
+                    onPickAlbumRefs = {
+                        albumRefPicker.launch(arrayOf("image/*"))
+                    },
+                    stagedMessages = state.stagedMessages,
+                    onGuideStaged = onGuideStaged,
+                    onRemoveStaged = onRemoveStaged,
                 )
             }
             Spacer(
@@ -826,11 +1028,13 @@ public fun ChatScreen(
             usage = contextUsage,
             rounds = sessionRoundCount(state.messages),
             steps = sessionStepCount(state.messages),
+            cacheHitPercent = sessionCacheHitPercent(state.cacheUsages.values),
             onDismiss = { sheet = ChatSheet.None },
         )
         ChatSheet.Attach -> AttachSheet(
             catalog = attachCatalog,
             localUploads = localUploads,
+            imageMode = state.compose.chatMode == ChatMode.Image,
             onRefresh = onAttachOpen,
             onInsert = {
                 onAttachInsert(it)
@@ -840,12 +1044,69 @@ public fun ChatScreen(
                 onPickLocalFiles(uris)
                 sheet = ChatSheet.None
             },
+            onPickAlbumRefs = { uris ->
+                onPickAlbumRefs(uris)
+                sheet = ChatSheet.None
+            },
             onDismiss = { sheet = ChatSheet.None },
             onDownloadFile = { path ->
                 onDownloadFile(path)
                 // Close so the progress banner above the composer is visible.
                 sheet = ChatSheet.None
             },
+        )
+        ChatSheet.ImageRatio -> ImageGenOptionSheet(
+            title = "画面比例",
+            options = ai.anya.companion.core.model.image.ImageGenRatio.entries.map {
+                it.id to it.label
+            },
+            currentId = state.imageGenCompose.ratio,
+            onSelect = {
+                onUpdateImageGenCompose(it, null, null, null)
+                sheet = ChatSheet.None
+            },
+            onDismiss = { sheet = ChatSheet.None },
+        )
+        ChatSheet.ImageResolution -> ImageGenOptionSheet(
+            title = "清晰度",
+            options = ai.anya.companion.core.model.image.ImageGenResolution.entries.map {
+                it.id to it.label
+            },
+            currentId = state.imageGenCompose.resolution,
+            onSelect = {
+                onUpdateImageGenCompose(null, it, null, null)
+                sheet = ChatSheet.None
+            },
+            onDismiss = { sheet = ChatSheet.None },
+        )
+        ChatSheet.ImageStyle -> ImageGenStyleSheet(
+            compose = state.imageGenCompose,
+            options = state.imageGenOptions,
+            onSelect = {
+                onUpdateImageGenCompose(null, null, it, null)
+                sheet = ChatSheet.None
+            },
+            onDismiss = { sheet = ChatSheet.None },
+        )
+        ChatSheet.ImageCount -> ImageGenOptionSheet(
+            title = "生成数量",
+            options = ai.anya.companion.core.model.image.IMAGE_GEN_COUNTS.map {
+                it.toString() to "${it} 张"
+            },
+            currentId = state.imageGenCompose.count.toString(),
+            onSelect = {
+                onUpdateImageGenCompose(null, null, null, it.toIntOrNull())
+                sheet = ChatSheet.None
+            },
+            onDismiss = { sheet = ChatSheet.None },
+        )
+        ChatSheet.ImageModel -> ImageGenModelSheet(
+            options = state.imageGenOptions,
+            onSelect = { provider, model ->
+                onSetImageGenModel(provider, model)
+                sheet = ChatSheet.None
+            },
+            onDismiss = { sheet = ChatSheet.None },
         )
         ChatSheet.UserTurns -> UserTurnsSheet(
             turns = userTurns,
@@ -868,12 +1129,48 @@ public fun ChatScreen(
             },
         )
     }
+    subagentInspect?.let { (parent, pool) ->
+        SubagentSheet(
+            parent = parent,
+            pool = pool,
+            onOpenDiff = { request -> diffRequest = request },
+            onDismiss = { subagentInspect = null },
+        )
+    }
+    rewindTarget?.let { userMessageId ->
+        val checkpoint = state.checkpointsByUserMessage[userMessageId]
+        AlertDialog(
+            onDismissRequest = { rewindTarget = null },
+            title = { Text("回退到这一轮之前？") },
+            text = {
+                Text(
+                    if (checkpoint != null && checkpoint.fileCount > 0) {
+                        "将恢复 ${checkpoint.fileCount} 个文件到该轮之前的状态，并删除之后的对话。此操作不可撤销。"
+                    } else {
+                        "将删除这一轮及之后的对话。此操作不可撤销。"
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        rewindTarget = null
+                        onRewindToUserMessage(userMessageId)
+                    },
+                ) { Text("回退") }
+            },
+            dismissButton = { TextButton(onClick = { rewindTarget = null }) { Text("取消") } },
+        )
+    }
     previewSharedFile?.let { file ->
         if (file.mime.startsWith("image/")) {
             SharedImageFullscreenDialog(
                 file = file,
                 onDismiss = { previewSharedFile = null },
                 onExport = { onExportSharedFile(file.offerId) },
+                onEditFromImage = { request ->
+                    onEditFromImage(request.desktopPath, request.previewDataUrl, request.regionPlacement)
+                },
             )
         } else {
             SharedDocumentPreviewDialog(
@@ -891,7 +1188,20 @@ public fun ChatScreen(
     }
 }
 
-private enum class ChatSheet { None, ChatMode, ApprovalMode, Model, Context, Attach, UserTurns }
+private enum class ChatSheet {
+    None,
+    ChatMode,
+    ApprovalMode,
+    Model,
+    Context,
+    Attach,
+    UserTurns,
+    ImageRatio,
+    ImageResolution,
+    ImageStyle,
+    ImageCount,
+    ImageModel,
+}
 
 @Composable
 private fun chatTopChipColor(): Color =
@@ -1058,12 +1368,60 @@ private fun ChatMode.chineseLabel(): String = when (this) {
     ChatMode.Ask -> "询问"
     ChatMode.Agent -> "Agent"
     ChatMode.Plan -> "计划"
+    ChatMode.Image -> "生图"
 }
 
 private fun ChatMode.icon(): ImageVector = when (this) {
     ChatMode.Ask -> AnyaIcons.ChatCircleOutline
     ChatMode.Agent -> AnyaIcons.StarFour
     ChatMode.Plan -> Icons.AutoMirrored.Rounded.Assignment
+    ChatMode.Image -> Icons.Rounded.Brush
+}
+
+/** What the hero mascot holds, per chat mode: ask -> phone, agent -> wrench, plan -> clipboard, image -> brush. */
+private fun ChatMode.mascotTool(): MascotTool = when (this) {
+    ChatMode.Ask -> MascotTool.Phone
+    ChatMode.Agent -> MascotTool.Wrench
+    ChatMode.Plan -> MascotTool.Clipboard
+    ChatMode.Image -> MascotTool.Brush
+}
+
+/** Empty conversation: the mascot greets, carrying the current mode's prop. Tap it to make it beam. */
+@Composable
+private fun EmptyConversationHero(
+    chatMode: ChatMode,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier.padding(horizontal = AnyaSpace.Xxl),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        MascotFace(
+            modifier = Modifier.size(132.dp),
+            state = MascotState.Idle,
+            tool = chatMode.mascotTool(),
+            interactive = true,
+            contentDescription = "Anya",
+        )
+        Spacer(modifier = Modifier.height(AnyaSpace.Lg))
+        Text(
+            text = "开始对话",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = FontWeight.Medium,
+        )
+        Spacer(modifier = Modifier.height(AnyaSpace.Xs))
+        Text(
+            text = when (chatMode) {
+                ChatMode.Image -> "生图模式：每条消息都会出图"
+                else -> "消息会同步到桌面端工作台"
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+            textAlign = TextAlign.Center,
+        )
+    }
 }
 
 private fun ToolApprovalMode.chineseLabel(): String = when (this) {
@@ -1208,7 +1566,7 @@ private fun ChatModeSheet(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 4.dp, bottom = AnyaSpace.Md),
             )
-            listOf(ChatMode.Ask, ChatMode.Agent, ChatMode.Plan).forEach { mode ->
+            listOf(ChatMode.Ask, ChatMode.Agent, ChatMode.Plan, ChatMode.Image).forEach { mode ->
                 SheetOptionRow(
                     label = mode.chineseLabel(),
                     selected = mode == current,
@@ -1252,6 +1610,143 @@ private fun ApprovalModeSheet(
                     leading = { ModeGlyph(icon = mode.icon()) },
                     onClick = { onSelect(mode) },
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImageGenOptionSheet(
+    title: String,
+    options: List<Pair<String, String>>,
+    currentId: String,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AnyaBottomSheet(onDismiss = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AnyaSpace.Lg)
+                .navigationBarsPadding()
+                .padding(bottom = AnyaSpace.Md),
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(bottom = AnyaSpace.Md),
+            )
+            options.forEach { (id, label) ->
+                SheetOptionRow(
+                    label = label,
+                    selected = id == currentId,
+                    onClick = { onSelect(id) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImageGenStyleSheet(
+    compose: ai.anya.companion.core.model.image.ImageGenCompose,
+    options: ai.anya.companion.core.model.image.ImageGenOptions,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val builtins = ai.anya.companion.core.model.image.IMAGE_GEN_STYLE_PRESETS
+    AnyaBottomSheet(onDismiss = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AnyaSpace.Lg)
+                .navigationBarsPadding()
+                .padding(bottom = AnyaSpace.Md),
+        ) {
+            Text(
+                text = "风格",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(bottom = AnyaSpace.Md),
+            )
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                builtins.forEach { preset ->
+                    SheetOptionRow(
+                        label = preset.label,
+                        selected = compose.styleId == preset.id,
+                        onClick = { onSelect(preset.id) },
+                    )
+                }
+                if (options.styles.isNotEmpty()) {
+                    Text(
+                        text = "桌面自定义",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = AnyaSpace.Sm, bottom = AnyaSpace.Xs),
+                    )
+                    options.styles.forEach { style ->
+                        SheetOptionRow(
+                            label = style.name.ifBlank { style.id },
+                            selected = compose.styleId == style.id,
+                            onClick = { onSelect(style.id) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImageGenModelSheet(
+    options: ai.anya.companion.core.model.image.ImageGenOptions,
+    onSelect: (provider: String, model: String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AnyaBottomSheet(onDismiss = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AnyaSpace.Lg)
+                .navigationBarsPadding()
+                .padding(bottom = AnyaSpace.Md),
+        ) {
+            Text(
+                text = "生图模型",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "切换后写入桌面端设置，两端同步",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp, bottom = AnyaSpace.Md),
+            )
+            if (options.choices.isEmpty()) {
+                Text(
+                    text = "暂无可用生图模型（需桌面端 ≥ 0.2.18）",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    options.choices.forEach { choice ->
+                        SheetOptionRow(
+                            label = choice.label,
+                            selected = choice.provider == options.provider && choice.model == options.model,
+                            onClick = { onSelect(choice.provider, choice.model) },
+                        )
+                    }
+                }
             }
         }
     }
@@ -1433,9 +1928,11 @@ private fun ModelSheet(
 private fun AttachSheet(
     catalog: AttachCatalogUiState,
     localUploads: List<LocalUploadItem>,
+    imageMode: Boolean = false,
     onRefresh: () -> Unit,
     onInsert: (String) -> Unit,
     onPickLocalFiles: (List<android.net.Uri>) -> Unit,
+    onPickAlbumRefs: (List<android.net.Uri>) -> Unit = {},
     onDismiss: () -> Unit,
     onDownloadFile: ((String) -> Unit)? = null,
 ) {
@@ -1447,6 +1944,11 @@ private fun AttachSheet(
         ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris ->
         if (uris.isNotEmpty()) onPickLocalFiles(uris)
+    }
+    val albumPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        if (uris.isNotEmpty()) onPickAlbumRefs(uris)
     }
 
     AnyaBottomSheet(onDismiss = onDismiss) {
@@ -1524,7 +2026,9 @@ private fun AttachSheet(
                 when (AttachTab.entries[page]) {
                     AttachTab.Upload -> LocalUploadPage(
                         uploads = localUploads,
+                        showAlbumRef = imageMode,
                         onPick = { picker.launch(arrayOf("*/*")) },
+                        onPickAlbum = { albumPicker.launch(arrayOf("image/*")) },
                     )
                     AttachTab.Files -> AttachFilesPage(
                         catalog = catalog,
@@ -1558,13 +2062,44 @@ private enum class AttachTab { Upload, Files, Skills, Mcp }
 @Composable
 private fun LocalUploadPage(
     uploads: List<LocalUploadItem>,
+    showAlbumRef: Boolean = false,
     onPick: () -> Unit,
+    onPickAlbum: () -> Unit = {},
 ) {
     val haptic = rememberAnyaHaptics()
     Column(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
     ) {
+        if (showAlbumRef) {
+            Button(
+                onClick = {
+                    haptic.buttonPress()
+                    onPickAlbum()
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp),
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                ),
+                contentPadding = PaddingValues(horizontal = AnyaSpace.Lg),
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Image,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "相册作参考图",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
         Button(
             onClick = {
                 haptic.buttonPress()
@@ -1575,8 +2110,16 @@ private fun LocalUploadPage(
                 .height(52.dp),
             shape = RoundedCornerShape(16.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
+                containerColor = if (showAlbumRef) {
+                    MaterialTheme.colorScheme.surfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.primary
+                },
+                contentColor = if (showAlbumRef) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onPrimary
+                },
             ),
             contentPadding = PaddingValues(horizontal = AnyaSpace.Lg),
         ) {
@@ -1939,6 +2482,7 @@ private fun SheetOptionRow(
 private fun MobileComposer(
     draft: String,
     busy: Boolean,
+    chatMode: ChatMode,
     modelLabel: String,
     modelProvider: String,
     modelId: String,
@@ -1954,18 +2498,49 @@ private fun MobileComposer(
     onContextClick: () -> Unit,
     onAnswerAsk: (Map<Int, List<String>>, Boolean) -> Unit,
     onAnswerToolApproval: (ai.anya.companion.core.model.approval.ApprovalDecision) -> Unit,
+    imageEditRefs: List<ImageEditRef> = emptyList(),
+    onRemoveImageEditRef: (ImageEditRef) -> Unit = {},
+    imageGenCompose: ai.anya.companion.core.model.image.ImageGenCompose =
+        ai.anya.companion.core.model.image.ImageGenCompose(),
+    imageGenOptions: ai.anya.companion.core.model.image.ImageGenOptions =
+        ai.anya.companion.core.model.image.ImageGenOptions(),
+    onImageRatioClick: () -> Unit = {},
+    onImageResolutionClick: () -> Unit = {},
+    onImageStyleClick: () -> Unit = {},
+    onImageCountClick: () -> Unit = {},
+    onPickAlbumRefs: () -> Unit = {},
+    stagedMessages: List<String> = emptyList(),
+    onGuideStaged: (Int) -> Unit = {},
+    onRemoveStaged: (Int) -> Unit = {},
 ) {
-    val canSend = draft.isNotBlank() && !busy
-    val dark = androidx.compose.foundation.isSystemInDarkTheme()
+    val canSendNormal = draft.isNotBlank() && !busy
+    val canStage = draft.isNotBlank() && busy && pendingAsk == null
+    val canSend = canSendNormal || canStage
+    val showStop = busy && draft.isBlank() && pendingAsk == null
+    val dark = LocalDarkTheme.current
     val barBg = if (dark) Color(0xFF2A2A2C) else Color(0xFFF2F2F2)
     val toolBg = if (dark) Color(0xFF3A3A3C) else Color.White
     val shape = RoundedCornerShape(20.dp)
     val ink = MaterialTheme.colorScheme.onBackground
-    val parsed = remember(draft) { parseComposerText(draft) }
+    val chips = remember(draft) { composerChips(draft) }
+    val body = remember(draft) { composerBody(draft) }
+    val draftFocus = remember { FocusRequester() }
     val controlSize = 40.dp
     val edge = 8.dp
     val modelBranding = remember(modelProvider, modelId, modelLabel) {
         resolveModelBranding(modelId, modelLabel)
+    }
+    val imageMode = chatMode == ChatMode.Image
+    val styleLabel = remember(imageGenCompose.styleId, imageGenOptions.styles) {
+        ai.anya.companion.core.model.image.IMAGE_GEN_STYLE_PRESETS
+            .firstOrNull { it.id == imageGenCompose.styleId }?.label
+            ?: imageGenOptions.styles.firstOrNull { it.id == imageGenCompose.styleId }?.name
+            ?: "风格"
+    }
+    val fieldPlaceholder = when {
+        busy -> "暂存，本轮结束后发送…"
+        imageMode -> "描述你想生成的画面…"
+        else -> "随时提问…"
     }
 
     Column(
@@ -1984,6 +2559,48 @@ private fun MobileComposer(
             .padding(start = 14.dp, end = 14.dp, top = 14.dp, bottom = 10.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        if (stagedMessages.isNotEmpty() && pendingAsk == null) {
+            StagedMessagesPanel(
+                messages = stagedMessages,
+                onGuide = onGuideStaged,
+                onRemove = onRemoveStaged,
+            )
+        }
+        if (imageEditRefs.isNotEmpty() && pendingAsk == null) {
+            ImageEditRefsStrip(refs = imageEditRefs, onRemove = onRemoveImageEditRef)
+        }
+        if (imageMode && pendingAsk == null) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                ImageGenChip(
+                    label = imageGenCompose.ratioEnum.label,
+                    onClick = onImageRatioClick,
+                    enabled = true,
+                )
+                ImageGenChip(
+                    label = imageGenCompose.resolutionEnum.label,
+                    onClick = onImageResolutionClick,
+                    enabled = true,
+                )
+                ImageGenChip(
+                    label = styleLabel,
+                    onClick = onImageStyleClick,
+                    enabled = true,
+                )
+                ImageGenChip(
+                    label = "${imageGenCompose.count} 张",
+                    onClick = onImageCountClick,
+                    enabled = true,
+                )
+                ImageGenChip(
+                    label = "相册参考",
+                    onClick = onPickAlbumRefs,
+                    enabled = true,
+                )
+            }
+        }
         if (
             pendingAsk != null &&
             (
@@ -2000,86 +2617,73 @@ private fun MobileComposer(
                 ask = pendingAsk,
                 onAnswer = onAnswerAsk,
             )
-        } else if (parsed.segments.isEmpty()) {
-            ComposerPlainField(
-                value = draft,
-                busy = busy,
-                canSend = canSend,
-                ink = ink,
-                onValueChange = onDraftChange,
-                onSend = onSend,
-            )
         } else {
-            FlowRow(
+            val fieldScroll = rememberScrollState()
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 32.dp, max = 140.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+                    .heightIn(min = 32.dp, max = 160.dp)
+                    .verticalScroll(fieldScroll)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = { draftFocus.requestFocus() },
+                    ),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                parsed.segments.forEach { segment ->
-                    when (segment) {
-                        is ComposerSegment.Text -> {
-                            Text(
-                                text = segment.text.trim(),
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = if (busy) {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                } else {
-                                    ink
-                                },
-                            )
-                        }
-                        else -> {
-                            InlineMentionToken(
-                                segment = segment,
-                                skills = skills,
-                                mcpServers = mcpServers,
-                            )
+                if (chips.isNotEmpty()) {
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        chips.forEach { chip ->
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+                                    .clickable(enabled = true) {
+                                        onDraftChange(
+                                            rebuildComposerDraft(
+                                                chips.filterNot { it == chip },
+                                                body,
+                                            ),
+                                        )
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                            ) {
+                                InlineMentionToken(
+                                    segment = chip,
+                                    skills = skills,
+                                    mcpServers = mcpServers,
+                                )
+                            }
                         }
                     }
                 }
                 BasicTextField(
-                    value = parsed.liveMessage,
-                    onValueChange = { live ->
-                        onDraftChange(serializeComposerSegments(parsed.segments, live))
+                    value = body,
+                    onValueChange = { next ->
+                        onDraftChange(rebuildComposerDraft(chips, next))
                     },
-                    enabled = !busy,
+                    enabled = true,
                     modifier = Modifier
-                        .widthIn(min = 48.dp)
-                        .onPreviewKeyEvent { event ->
-                            if (
-                                event.type == KeyEventType.KeyDown &&
-                                event.key == Key.Backspace &&
-                                parsed.liveMessage.isEmpty() &&
-                                parsed.segments.isNotEmpty()
-                            ) {
-                                onDraftChange(
-                                    serializeComposerSegments(parsed.segments.dropLast(1), ""),
-                                )
-                                true
-                            } else {
-                                false
-                            }
-                        },
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 32.dp)
+                        .focusRequester(draftFocus),
                     textStyle = MaterialTheme.typography.bodyLarge.copy(
-                        color = if (busy) {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        } else {
-                            ink
-                        },
+                        color = ink,
                     ),
                     cursorBrush = SolidColor(Color(0xFF3B82F6)),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(
                         onSend = { if (canSend) onSend() },
                     ),
-                    maxLines = 5,
                     decorationBox = { inner ->
-                        Box {
-                            if (parsed.liveMessage.isEmpty() && parsed.segments.isEmpty()) {
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            if (body.isEmpty()) {
                                 Text(
-                                    text = if (busy) "回答中…" else "随时提问…",
+                                    text = fieldPlaceholder,
                                     style = MaterialTheme.typography.bodyLarge,
                                     color = Color(0xFF9A9A9A),
                                 )
@@ -2098,7 +2702,7 @@ private fun MobileComposer(
         ) {
             ComposerCircleButton(
                 background = toolBg,
-                enabled = pendingAsk == null && !busy,
+                enabled = pendingAsk == null,
                 onClick = onAttachClick,
                 size = controlSize,
             ) {
@@ -2114,47 +2718,144 @@ private fun MobileComposer(
                 branding = modelBranding,
                 onClick = onModelClick,
                 height = controlSize,
-                enabled = pendingAsk == null,
+                enabled = pendingAsk == null && !busy,
             )
             Spacer(modifier = Modifier.weight(1f))
-            MeterRingButton(
-                ratio = contextUsage.usageRatio,
-                color = contextUsageColor(contextUsage.usageRatio),
-                onClick = onContextClick,
-                contentDescription = "上下文占用",
-                enabled = pendingAsk == null,
-                size = controlSize,
-            )
+            if (!imageMode) {
+                MeterRingButton(
+                    ratio = contextUsage.usageRatio,
+                    color = contextUsageColor(contextUsage.usageRatio),
+                    onClick = onContextClick,
+                    contentDescription = "上下文占用",
+                    enabled = pendingAsk == null,
+                    size = controlSize,
+                )
+            }
             val haptic = rememberAnyaHaptics()
             ComposerCircleButton(
                 background = when {
-                    busy && pendingAsk == null -> ink
-                    canSend -> ink
+                    canSend || showStop -> ink
                     else -> toolBg
                 },
-                enabled = pendingAsk == null && (busy || canSend),
+                enabled = pendingAsk == null && (canSend || showStop),
                 emitHaptic = false,
                 onClick = {
                     haptic.confirm()
-                    if (busy) onStop() else onSend()
+                    when {
+                        canSend -> onSend()
+                        showStop -> onStop()
+                    }
                 },
                 size = controlSize,
             ) {
                 Icon(
-                    imageVector = if (busy && pendingAsk == null) {
-                        Icons.Rounded.Stop
-                    } else {
-                        AnyaIcons.StarFour
+                    imageVector = if (showStop) Icons.Rounded.Stop else AnyaIcons.StarFour,
+                    contentDescription = when {
+                        showStop -> "停止"
+                        canStage -> "暂存"
+                        else -> "发送"
                     },
-                    contentDescription = if (busy && pendingAsk == null) "停止" else "发送",
                     tint = when {
-                        (busy && pendingAsk == null) || canSend -> MaterialTheme.colorScheme.background
+                        canSend || showStop -> MaterialTheme.colorScheme.background
                         else -> ink
                     },
                     modifier = Modifier.size(20.dp),
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun StagedMessagesPanel(
+    messages: List<String>,
+    onGuide: (Int) -> Unit,
+    onRemove: (Int) -> Unit,
+) {
+    val haptic = rememberAnyaHaptics()
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            text = "暂存 · 本轮结束后自动发送",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        messages.forEachIndexed { index, message ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(
+                    onClick = {
+                        haptic.buttonPress()
+                        onGuide(index)
+                    },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                ) {
+                    Text("引导", style = MaterialTheme.typography.labelMedium)
+                }
+                IconButton(
+                    onClick = {
+                        haptic.tick()
+                        onRemove(index)
+                    },
+                    modifier = Modifier.size(28.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = "移除暂存",
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImageGenChip(
+    label: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+) {
+    val haptic = rememberAnyaHaptics()
+    val dark = LocalDarkTheme.current
+    val bg = if (dark) Color(0xFF3A3A3C) else Color.White
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(bg)
+            .clickable(enabled = enabled) {
+                haptic.linearTick()
+                onClick()
+            }
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (enabled) {
+                MaterialTheme.colorScheme.onBackground
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            maxLines = 1,
+        )
     }
 }
 
@@ -2462,6 +3163,7 @@ private fun ComposerPlainField(
     ink: Color,
     onValueChange: (String) -> Unit,
     onSend: () -> Unit,
+    placeholder: String? = null,
 ) {
     BasicTextField(
         value = value,
@@ -2489,7 +3191,7 @@ private fun ComposerPlainField(
             Box(modifier = Modifier.fillMaxWidth()) {
                 if (value.isEmpty()) {
                     Text(
-                        text = if (busy) "回答中…" else "随时提问…",
+                        text = if (busy) "回答中…" else (placeholder ?: "随时提问…"),
                         style = MaterialTheme.typography.bodyLarge,
                         color = Color(0xFF9A9A9A),
                     )
@@ -2506,7 +3208,7 @@ private fun InlineMentionToken(
     skills: List<SkillSummary>,
     mcpServers: List<McpServerSummary>,
 ) {
-    val dark = androidx.compose.foundation.isSystemInDarkTheme()
+    val dark = LocalDarkTheme.current
     val blue = if (dark) Color(0xFF60A5FA) else Color(0xFF2563EB)
     val teal = if (dark) Color(0xFF2DD4BF) else Color(0xFF0F766E)
     val orange = if (dark) Color(0xFFFB923C) else Color(0xFFC2410C)
@@ -2663,6 +3365,8 @@ private fun MessageBubble(
     skills: List<SkillSummary>,
     mcpServers: List<McpServerSummary>,
     onApprovePlan: (String) -> Unit,
+    /** The user message that started this assistant turn (for duration / token stats). */
+    turnUserMessage: ChatMessage? = null,
     approvedPlanIds: Set<String>,
     foldController: CompletedFoldController,
     onOpenDiff: (DiffViewRequest) -> Unit = {},
@@ -2704,6 +3408,7 @@ private fun MessageBubble(
         } else {
             AssistantContent(
                 message = message,
+                turnUserMessage = turnUserMessage,
                 onApprovePlan = onApprovePlan,
                 approvedPlanIds = approvedPlanIds,
                 foldController = foldController,
@@ -2740,19 +3445,69 @@ private fun MessageCopyButton(text: String) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
+private fun SoftInjectList(injects: List<ChatMessage>) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = AnyaSpace.Xs),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        injects.forEach { inject ->
+            val text = stripSoftInjectMarker(inject.content).ifBlank { "…" }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth(0.92f)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f))
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Text(
+                    text = "已追加到本轮",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun UserBubble(
     message: ChatMessage,
     skills: List<SkillSummary>,
     mcpServers: List<McpServerSummary>,
 ) {
-    val parts = remember(message.content) { parseInlineParts(message.content) }
+    // Reference images (data URLs / desktop paths) render as thumbnails, not as raw markdown.
+    val displayContent = remember(message.content) { stripSoftInjectMarker(message.content) }
+    val userContent = remember(displayContent) { parseUserContent(displayContent) }
+    val parts = remember(userContent.text) { parseInlineParts(userContent.text) }
     val hasTokens = parts.any { it !is ComposerSegment.Text }
+    val softInject = isSoftInjectContent(message.content)
     Column(
         modifier = Modifier.fillMaxWidth(0.86f),
         horizontalAlignment = Alignment.End,
         verticalArrangement = Arrangement.spacedBy(AnyaSpace.Xs),
     ) {
-        Surface(
+        if (softInject) {
+            Text(
+                text = "已追加到本轮",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        if (userContent.images.isNotEmpty()) {
+            DisableSelection { UserMessageImages(images = userContent.images) }
+        }
+        if (userContent.text.isNotBlank()) Surface(
             shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 5.dp),
             color = MaterialTheme.colorScheme.surfaceVariant,
             tonalElevation = 0.dp,
@@ -2760,7 +3515,7 @@ private fun UserBubble(
         ) {
             if (!hasTokens) {
                 Text(
-                    text = message.content,
+                    text = userContent.text,
                     style = MaterialTheme.typography.bodyLarge,
                     modifier = Modifier.padding(horizontal = AnyaSpace.Lg, vertical = AnyaSpace.Md),
                 )
@@ -2794,7 +3549,8 @@ private fun UserBubble(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            MessageCopyButton(text = message.content)
+            MessageCopyButton(text = userContent.text)
+            RewindButton(userMessageId = message.id)
             if (message.createdAtEpochMs > 0L) {
                 Text(
                     text = formatMessageTime(message.createdAtEpochMs),
@@ -2807,9 +3563,35 @@ private fun UserBubble(
     }
 }
 
+/** Desktop "回退到此处": only when the desktop recorded a checkpoint for this user turn. */
+@Composable
+private fun RewindButton(userMessageId: String, modifier: Modifier = Modifier) {
+    val actions = LocalTurnActions.current
+    if (userMessageId !in actions.checkpointsByUserMessage) return
+    val haptic = rememberAnyaHaptics()
+    DisableSelection {
+        IconButton(
+            onClick = {
+                haptic.buttonPress()
+                actions.onRewind(userMessageId)
+            },
+            enabled = !actions.rewinding,
+            modifier = modifier.size(32.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Undo,
+                contentDescription = "回退到此处",
+                modifier = Modifier.size(15.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            )
+        }
+    }
+}
+
 @Composable
 private fun AssistantContent(
     message: ChatMessage,
+    turnUserMessage: ChatMessage?,
     onApprovePlan: (String) -> Unit,
     approvedPlanIds: Set<String>,
     foldController: CompletedFoldController,
@@ -2820,48 +3602,41 @@ private fun AssistantContent(
         modifier = Modifier.fillMaxWidth(0.96f),
         verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
     ) {
-        val reasoning = message.reasoning
-        val hasReasoning = !reasoning.isNullOrBlank()
-        val hasActivities = message.toolActivities.isNotEmpty()
-        // Match desktop: a turn is "live" while pending or actively streaming.
-        // Only once it's done do reasoning + tool activity fold into "已完成".
         val live = message.status == MessageStatus.Streaming || message.status == MessageStatus.Pending
-        if (live) {
+        val hasWork = message.content.isNotBlank() ||
+            !message.reasoning.isNullOrBlank() ||
+            message.toolActivities.isNotEmpty()
+        val turnStartedAt = turnUserMessage?.createdAtEpochMs?.takeIf { it > 0 }
+        if (hasWork) {
+            // Same structure as the desktop: chronological while live; once done, thinking +
+            // tools fold under "已完成" and images + the reply stay open.
             DisableSelection {
-                if (hasReasoning) {
-                    ReasoningSection(reasoning = reasoning!!, streaming = message.status == MessageStatus.Streaming)
-                }
-                if (hasActivities) {
-                    ToolActivityList(activities = message.toolActivities, onOpenDiff = onOpenDiff)
-                }
-            }
-        } else if (hasReasoning || hasActivities) {
-            DisableSelection {
-                CompletedWorkFold(
-                    messageId = message.id,
-                    reasoning = reasoning,
-                    activities = message.toolActivities,
-                    controller = foldController,
+                AgentWorkDetails(
+                    message = message,
+                    foldExpanded = foldController.isExpanded(message.id),
+                    onFoldExpandedChange = { foldController.setExpanded(message.id, it) },
                     onOpenDiff = onOpenDiff,
                 )
             }
         }
-        if (message.content.isNotBlank() || message.status == MessageStatus.Streaming) {
-            val body = message.content.ifBlank {
-                if (message.status == MessageStatus.Streaming && message.toolActivities.isEmpty()) "…" else ""
-            }
-            if (body.isNotBlank()) {
-                AnyaChatContent(
-                    content = body,
-                    textStyle = MaterialTheme.typography.bodyLarge,
-                )
-                MessageCopyButton(text = message.content)
-            }
-        } else if (reasoning.isNullOrBlank() && message.toolActivities.isEmpty()) {
+        val statusLabel = activityLabel(message, hasDuration = turnStartedAt != null)
+        if (statusLabel != null) {
+            val drawing = message.toolActivities.lastOrNull { it.status == "running" }
+                ?.let { isGeneratedImageActivity(it) } == true
+            DisableSelection { AssistantActivityIndicator(label = statusLabel, drawing = drawing) }
+        } else if (!hasWork && live && turnStartedAt == null) {
             Text(
                 text = "…",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        DisableSelection {
+            TurnFooter(
+                message = message,
+                turnStartedAtEpochMs = turnStartedAt,
+                turnUserMessage = turnUserMessage,
+                copyButton = { MessageCopyButton(text = message.content) },
             )
         }
         if (message.planTasks.isNotEmpty()) {
@@ -2885,6 +3660,24 @@ private fun AssistantContent(
                         }
                     },
                 )
+                // Desktop CodeChangesSummary "撤销": restore the workspace to before this turn.
+                val turnActions = LocalTurnActions.current
+                val userId = turnUserMessage?.id
+                if (!live && userId != null && userId in turnActions.checkpointsByUserMessage) {
+                    TextButton(
+                        onClick = { turnActions.onRewind(userId) },
+                        enabled = !turnActions.rewinding,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Undo,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(text = "撤销本轮更改", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
             }
         }
         if (message.status == MessageStatus.Error) {
@@ -2897,88 +3690,12 @@ private fun AssistantContent(
     }
 }
 
-/**
- * Once a turn is done, fold reasoning + tool activity into a single collapsed
- * "已完成" row — matching desktop's completed-turn fold. Only the final reply
- * stays outside of it.
- */
-@Composable
-private fun CompletedWorkFold(
-    messageId: String,
-    reasoning: String?,
-    activities: List<ToolActivity>,
-    controller: CompletedFoldController,
-    onOpenDiff: (DiffViewRequest) -> Unit = {},
-) {
-    val expanded = controller.isExpanded(messageId)
-    val meta = remember(reasoning, activities.size) {
-        val chars = reasoning?.trim()?.length ?: 0
-        when {
-            chars > 0 -> "${java.text.NumberFormat.getIntegerInstance().format(chars)} 字"
-            activities.isNotEmpty() -> "${activities.size} 个操作"
-            else -> null
-        }
-    }
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { controller.setExpanded(messageId, !expanded) }
-                .padding(vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Icon(
-                imageVector = if (expanded) Icons.Rounded.ExpandMore else Icons.Rounded.ChevronRight,
-                contentDescription = null,
-                modifier = Modifier.size(12.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-            )
-            Text(
-                text = "已完成",
-                style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp),
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (!expanded && meta != null) {
-                Spacer(modifier = Modifier.weight(1f))
-                Text(
-                    text = "（$meta）",
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
-                )
-            }
-        }
-        if (expanded) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 2.dp, bottom = 2.dp),
-                verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
-            ) {
-                if (!reasoning.isNullOrBlank()) {
-                    Text(
-                        text = reasoning,
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            fontSize = 13.sp,
-                            lineHeight = 21.sp,
-                            letterSpacing = 0.13.sp,
-                        ),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (activities.isNotEmpty()) {
-                    ToolActivityList(activities = activities, onOpenDiff = onOpenDiff)
-                }
-            }
-        }
-    }
-}
+private val FILE_OP_KINDS = setOf("create", "edit", "delete", "move")
 
 @Composable
-private fun ToolActivityList(
+internal fun ToolActivityList(
     activities: List<ToolActivity>,
+    pool: List<ToolActivity> = activities,
     onOpenDiff: (DiffViewRequest) -> Unit = {},
 ) {
     Column(
@@ -2986,10 +3703,17 @@ private fun ToolActivityList(
         verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
     ) {
         activities.forEach { activity ->
-            when (activity.kind) {
-                "shell" -> ShellTerminalCard(activity = activity)
-                "create", "edit", "delete", "move" -> FileOpCard(activity = activity, onOpenDiff = onOpenDiff)
-                else -> GenericToolCard(activity = activity)
+            val tasks = remember(activity) { tasksFromActivity(activity) }
+            val hunks = remember(activity) { collectActivityHunks(activity) }
+            when {
+                // A running generate_image is a plain row ("图片 · 正在生图…"); the card appears once done.
+                isGeneratedImageActivity(activity) && activity.status != "running" ->
+                    GeneratedImageToolCard(activity = activity)
+                activity.kind == "shell" -> ShellTerminalCard(activity = activity)
+                tasks.isNotEmpty() -> EmbeddedTaskList(tasks = tasks)
+                hunks.isNotEmpty() || activity.kind in FILE_OP_KINDS ->
+                    FileDiffCard(activity = activity, hunks = hunks, onOpenDiff = onOpenDiff)
+                else -> ToolActivityRow(activity = activity, pool = pool, onOpenDiff = onOpenDiff)
             }
         }
     }
@@ -3073,148 +3797,38 @@ private fun ShellTerminalCard(activity: ToolActivity) {
                 }
             }
             if (expanded) {
-                Text(
-                    text = body.ifBlank { if (running) "正在运行…" else "" },
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontFamily = FontFamily.Monospace,
-                        lineHeight = 18.sp,
-                    ),
-                    color = if (body.isBlank() && running) {
-                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                    } else {
-                        MaterialTheme.colorScheme.onBackground
-                    },
+                // Dark terminal body with ANSI colours, like the desktop ShellTerminalCard.
+                val terminalFg = Color(0xFFC9D1D9)
+                val rendered = remember(body) {
+                    if (hasAnsi(body)) parseAnsi(body).toAnnotatedString(terminalFg) else AnnotatedString(body)
+                }
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
-                        .heightIn(max = 220.dp)
-                        .verticalScroll(rememberScrollState()),
-                )
+                        .padding(start = 8.dp, end = 8.dp, bottom = 8.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFF0D1117)),
+                ) {
+                    Text(
+                        text = if (body.isBlank() && running) AnnotatedString("正在运行…") else rendered,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.5.sp,
+                            lineHeight = 17.sp,
+                        ),
+                        color = if (body.isBlank() && running) terminalFg.copy(alpha = 0.6f) else terminalFg,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                            .heightIn(max = 240.dp)
+                            .verticalScroll(rememberScrollState()),
+                    )
+                }
             }
         }
     }
 }
 
-@Composable
-private fun FileOpCard(
-    activity: ToolActivity,
-    onOpenDiff: (DiffViewRequest) -> Unit = {},
-) {
-    val path = activity.preview?.path
-        ?: activity.arguments?.get("path")?.jsonPrimitive?.contentOrNull
-        ?: activity.title
-    val running = activity.status == "running"
-    val kindLabel = when (activity.kind) {
-        "create" -> "新建"
-        "delete" -> "删除"
-        "move" -> "移动"
-        else -> "编辑"
-    }
-    val diff = activity.preview?.unifiedDiff?.takeIf { it.isNotBlank() }
-    val haptics = rememberAnyaHaptics()
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
-        tonalElevation = 0.dp,
-        shadowElevation = 0.dp,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .then(
-                    if (diff != null) {
-                        Modifier.clickable {
-                            haptics.tick()
-                            onOpenDiff(DiffViewRequest(path = path, unifiedDiff = diff))
-                        }
-                    } else {
-                        Modifier
-                    },
-                )
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.Description,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = kindLabel,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    text = path,
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            if (diff != null && !running) {
-                Text(
-                    text = "查看 diff",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            } else {
-                Text(
-                    text = when {
-                        running -> "执行中…"
-                        activity.status == "error" || !activity.success -> "失败"
-                        else -> "完成"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = when {
-                        activity.status == "error" || !activity.success -> MaterialTheme.colorScheme.error
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun GenericToolCard(activity: ToolActivity) {
-    val running = activity.status == "running"
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
-        tonalElevation = 0.dp,
-        shadowElevation = 0.dp,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(
-                text = activity.title.ifBlank { activity.toolName },
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                text = when {
-                    running -> "执行中…"
-                    activity.status == "error" || !activity.success -> "失败"
-                    else -> "完成"
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
 
 private fun shellActivityTitle(activity: ToolActivity): String {
     val description = activity.arguments?.get("description")?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
@@ -3260,8 +3874,30 @@ private fun extractShellOutput(detail: String?): String {
     return detail
 }
 
+/**
+ * Thinking (or, with [title], folded mid-turn narration). [showSummary] = false drops the
+ * disclosure chrome and shows the text directly — used inside the completed "已完成" fold.
+ */
 @Composable
-private fun ReasoningSection(reasoning: String, streaming: Boolean) {
+internal fun ReasoningSection(
+    reasoning: String,
+    streaming: Boolean,
+    showSummary: Boolean = true,
+    title: String? = null,
+) {
+    if (!showSummary) {
+        Text(
+            text = reasoning,
+            style = MaterialTheme.typography.bodySmall.copy(
+                fontSize = 13.sp,
+                lineHeight = 21.sp,
+                letterSpacing = 0.13.sp,
+            ),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        return
+    }
     var expanded by remember { mutableStateOf(false) }
     var userPinned by remember { mutableStateOf(false) }
     LaunchedEffect(streaming) {
@@ -3320,7 +3956,7 @@ private fun ReasoningSection(reasoning: String, streaming: Boolean) {
                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                 )
                 Text(
-                    text = if (streaming) "思考中…" else "思考过程",
+                    text = title ?: if (streaming) "思考中…" else "思考过程",
                     style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp),
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

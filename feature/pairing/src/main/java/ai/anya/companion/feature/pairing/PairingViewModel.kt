@@ -52,7 +52,7 @@ public class PairingViewModel @Inject constructor(
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
         val existing = repairId?.let { id ->
-            connectionRepository.pairedDevices.value.find { it.deviceId == id }
+            connectionRepository.pairedDevices.value.find { it.rosterKey() == id }
         }
         if (existing != null) {
             _state.update {
@@ -63,7 +63,7 @@ public class PairingViewModel @Inject constructor(
                     lanHost = existing.lanHost,
                     lanPort = existing.lanPort,
                     displayName = existing.resolvedDisplayName(),
-                    replaceDeviceId = existing.deviceId,
+                    replaceDeviceId = existing.rosterKey(),
                 )
             }
         }
@@ -152,7 +152,7 @@ public class PairingViewModel @Inject constructor(
                 lanHost = link.lanHost,
                 lanPort = link.lanPort,
                 displayName = displayName,
-                replaceDeviceId = current.replaceDeviceId ?: matched?.deviceId,
+                replaceDeviceId = current.replaceDeviceId ?: matched?.rosterKey(),
                 error = null,
                 info = context.getString(R.string.pairing_recognized_confirm, displayName),
             )
@@ -249,13 +249,15 @@ public class PairingViewModel @Inject constructor(
     ): ai.anya.companion.core.model.protocol.DeviceCredential? {
         val devices = connectionRepository.pairedDevices.value
         if (!replaceDeviceId.isNullOrBlank()) {
-            devices.find { it.deviceId == replaceDeviceId }?.let { return it }
+            devices.find { it.rosterKey() == replaceDeviceId }?.let { return it }
         }
         val lan = lanHost?.trim()?.takeIf { it.isNotEmpty() }
         if (lan != null) {
             devices.find { it.lanHost?.trim().equals(lan, ignoreCase = true) }?.let { return it }
         }
-        return devices.find { it.host.equals(host.trim(), ignoreCase = true) }
+        devices.find { it.host.equals(host.trim(), ignoreCase = true) }?.let { return it }
+        if (devices.size == 1) return devices.first()
+        return null
     }
 }
 

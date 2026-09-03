@@ -58,6 +58,8 @@ public class RemoteGatewayClient @Inject constructor(
         public const val CONNECT_TIMEOUT_MS: Long = 20_000L
         /** Unreachable LAN should fail fast so Cloudflare is tried within seconds. */
         public const val LAN_CONNECT_TIMEOUT_MS: Long = 3_000L
+        /** Sent in `hello.appVersion` when the caller cannot resolve the installed version. */
+        public const val UNKNOWN_APP_VERSION: String = "0.0.0"
     }
 
     private val socketRef = AtomicReference<WebSocket?>(null)
@@ -88,6 +90,8 @@ public class RemoteGatewayClient @Inject constructor(
     public fun connect(
         credential: DeviceCredential,
         timeoutMs: Long = CONNECT_TIMEOUT_MS,
+        appVersion: String = UNKNOWN_APP_VERSION,
+        deviceName: String? = null,
     ): AnyaResult<Unit> {
         val generation = connectGeneration.incrementAndGet()
         connectedRef.set(credential)
@@ -114,7 +118,8 @@ public class RemoteGatewayClient @Inject constructor(
             ClientMessage.Hello(
                 deviceId = credential.deviceId,
                 credential = credential.credential,
-                appVersion = "0.1.2",
+                appVersion = appVersion,
+                deviceName = deviceName?.takeIf { it.isNotBlank() },
             ),
         )
         return try {

@@ -20,6 +20,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Computer
@@ -74,12 +75,14 @@ import ai.anya.companion.core.domain.repository.ConnectionState
 import ai.anya.companion.core.model.protocol.DeviceCredential
 import ai.anya.companion.core.model.protocol.HostDisplayName
 import ai.anya.companion.core.model.settings.AppLanguage
+import ai.anya.companion.core.model.settings.AppTheme
 
 @Composable
 public fun SettingsTabContent(
     state: SettingsUiState,
     onOpenConnection: () -> Unit,
     onOpenGeneral: () -> Unit,
+    onOpenArchived: () -> Unit,
     onOpenAbout: () -> Unit,
 ) {
     SettingsHub(
@@ -87,6 +90,7 @@ public fun SettingsTabContent(
         availableUpdateVersion = state.availableUpdateVersion,
         onOpenConnection = onOpenConnection,
         onOpenGeneral = onOpenGeneral,
+        onOpenArchived = onOpenArchived,
         onOpenAbout = onOpenAbout,
     )
 }
@@ -136,10 +140,12 @@ public fun GeneralSettingsRoute(
     ) { padding ->
         GeneralSettingsPage(
             language = state.language,
+            theme = state.theme,
             onLanguageChange = { language ->
                 viewModel.setLanguage(language)
                 (context as? Activity)?.recreate()
             },
+            onThemeChange = viewModel::setTheme,
             modifier = Modifier.padding(padding),
         )
     }
@@ -181,6 +187,7 @@ private fun SettingsHub(
     availableUpdateVersion: String?,
     onOpenConnection: () -> Unit,
     onOpenGeneral: () -> Unit,
+    onOpenArchived: () -> Unit,
     onOpenAbout: () -> Unit,
 ) {
     val haptic = rememberAnyaHaptics()
@@ -213,6 +220,15 @@ private fun SettingsHub(
             onClick = {
                 haptic.linearTick()
                 onOpenGeneral()
+            },
+        )
+        SettingsMenuRow(
+            icon = Icons.Outlined.Inventory2,
+            title = stringResource(R.string.settings_archived),
+            subtitle = stringResource(R.string.settings_archived_subtitle),
+            onClick = {
+                haptic.linearTick()
+                onOpenArchived()
             },
         )
         SettingsMenuRow(
@@ -315,14 +331,14 @@ private fun ConnectionSettingsPage(
             )
         } else {
             devices.forEach { device ->
-                val active = device.deviceId == credential?.deviceId
+                val active = device.rosterKey() == credential?.rosterKey()
                 SettingsDeviceRow(
                     device = device,
                     active = active,
                     connected = active && state.connectionState == ConnectionState.Connected,
                     onClick = {
                         haptic.linearTick()
-                        if (!active) onSwitchDevice(device.deviceId)
+                        if (!active) onSwitchDevice(device.rosterKey())
                     },
                     onMore = {
                         haptic.tick()
@@ -395,7 +411,7 @@ private fun ConnectionSettingsPage(
             },
             onRepair = {
                 actionsFor = null
-                onRepairDevice(device.deviceId)
+                onRepairDevice(device.rosterKey())
             },
             onUnpair = {
                 actionsFor = null
@@ -408,7 +424,7 @@ private fun ConnectionSettingsPage(
         RenameDeviceSheet(
             device = device,
             onConfirm = { name ->
-                onRenameDevice(device.deviceId, name)
+                onRenameDevice(device.rosterKey(), name)
                 renameFor = null
             },
             onDismiss = { renameFor = null },
@@ -419,7 +435,7 @@ private fun ConnectionSettingsPage(
             hostName = device.resolvedDisplayName(),
             onConfirm = {
                 unpairFor = null
-                onRemoveDevice(device.deviceId)
+                onRemoveDevice(device.rosterKey())
             },
             onDismiss = { unpairFor = null },
         )
@@ -669,7 +685,7 @@ public fun HostSwitcherSheet(
             )
             Spacer(modifier = Modifier.height(AnyaSpace.Sm))
             devices.forEach { device ->
-                val active = device.deviceId == activeDeviceId
+                val active = device.rosterKey() == activeDeviceId
                 SettingsSelectRow(
                     title = device.resolvedDisplayName(),
                     subtitle = if (active && connectionState == ConnectionState.Connected) {
@@ -680,7 +696,7 @@ public fun HostSwitcherSheet(
                     selected = active,
                     onSelect = {
                         haptic.linearTick()
-                        if (!active) onSelect(device.deviceId)
+                        if (!active) onSelect(device.rosterKey())
                         onDismiss()
                     },
                 )
@@ -701,7 +717,9 @@ public fun HostSwitcherSheet(
 @Composable
 private fun GeneralSettingsPage(
     language: AppLanguage,
+    theme: AppTheme,
     onLanguageChange: (AppLanguage) -> Unit,
+    onThemeChange: (AppTheme) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val haptic = rememberAnyaHaptics()
@@ -710,6 +728,32 @@ private fun GeneralSettingsPage(
             .fillMaxSize()
             .verticalScroll(rememberScrollState()),
     ) {
+        SettingsSectionLabel(stringResource(R.string.settings_theme))
+        SettingsSelectRow(
+            title = stringResource(R.string.settings_theme_system),
+            selected = theme == AppTheme.System,
+            onSelect = {
+                haptic.tick()
+                if (theme != AppTheme.System) onThemeChange(AppTheme.System)
+            },
+        )
+        SettingsSelectRow(
+            title = stringResource(R.string.settings_theme_light),
+            selected = theme == AppTheme.Light,
+            onSelect = {
+                haptic.tick()
+                if (theme != AppTheme.Light) onThemeChange(AppTheme.Light)
+            },
+        )
+        SettingsSelectRow(
+            title = stringResource(R.string.settings_theme_dark),
+            selected = theme == AppTheme.Dark,
+            onSelect = {
+                haptic.tick()
+                if (theme != AppTheme.Dark) onThemeChange(AppTheme.Dark)
+            },
+        )
+        Spacer(modifier = Modifier.height(AnyaSpace.Md))
         SettingsSectionLabel(stringResource(R.string.settings_language))
         SettingsSelectRow(
             title = stringResource(R.string.settings_language_system),
@@ -808,7 +852,7 @@ private fun AboutSettingsPage(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Spacer(modifier = Modifier.height(AnyaSpace.Md))
-        AnyaBrandMark(size = 120.dp, clipped = false)
+        AnyaBrandMark(size = 120.dp, clipped = false, interactive = true)
         Spacer(modifier = Modifier.height(AnyaSpace.Lg))
         Text(
             text = state.appName,

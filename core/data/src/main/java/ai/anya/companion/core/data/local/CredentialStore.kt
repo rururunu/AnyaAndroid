@@ -23,11 +23,12 @@ private val Context.credentialDataStore: DataStore<Preferences> by preferencesDa
 @Serializable
 public data class PairedDeviceRoster(
     public val devices: List<DeviceCredential> = emptyList(),
+    /** Stores [DeviceCredential.rosterKey], not necessarily wire `deviceId`. */
     public val activeDeviceId: String? = null,
 ) {
     public fun active(): DeviceCredential? {
         val id = activeDeviceId
-        return devices.firstOrNull { it.deviceId == id } ?: devices.firstOrNull()
+        return devices.firstOrNull { it.rosterKey() == id } ?: devices.firstOrNull()
     }
 }
 
@@ -46,8 +47,8 @@ public class CredentialStore @Inject constructor(
 
     public suspend fun saveRoster(roster: PairedDeviceRoster) {
         val normalized = roster.copy(
-            devices = roster.devices.distinctBy { it.deviceId },
-            activeDeviceId = roster.active()?.deviceId,
+            devices = roster.devices.distinctBy { it.rosterKey() },
+            activeDeviceId = roster.active()?.rosterKey(),
         )
         dataStore.edit { prefs ->
             prefs[KEY_ROSTER] = json.encodeToString(
@@ -61,10 +62,13 @@ public class CredentialStore @Inject constructor(
     public suspend fun upsert(credential: DeviceCredential, makeActive: Boolean = true) {
         dataStore.edit { prefs ->
             val current = decodeRoster(prefs)
-            val devices = current.devices.filterNot { it.deviceId == credential.deviceId } + credential
-            val activeId = if (makeActive) credential.deviceId else {
-                current.activeDeviceId?.takeIf { id -> devices.any { it.deviceId == id } }
-                    ?: credential.deviceId
+            val key = credential.rosterKey()
+            val devices = current.devices.filterNot { it.rosterKey() == key } + credential
+            val activeId = if (makeActive) {
+                key
+            } else {
+                current.activeDeviceId?.takeIf { id -> devices.any { it.rosterKey() == id } }
+                    ?: key
             }
             prefs[KEY_ROSTER] = json.encodeToString(
                 PairedDeviceRoster.serializer(),
@@ -77,7 +81,7 @@ public class CredentialStore @Inject constructor(
     public suspend fun setActive(deviceId: String) {
         dataStore.edit { prefs ->
             val current = decodeRoster(prefs)
-            if (current.devices.none { it.deviceId == deviceId }) return@edit
+            if (current.devices.none { it.rosterKey() == deviceId }) return@edit
             prefs[KEY_ROSTER] = json.encodeToString(
                 PairedDeviceRoster.serializer(),
                 current.copy(activeDeviceId = deviceId),
@@ -89,12 +93,12 @@ public class CredentialStore @Inject constructor(
     public suspend fun remove(deviceId: String) {
         dataStore.edit { prefs ->
             val current = decodeRoster(prefs)
-            val devices = current.devices.filterNot { it.deviceId == deviceId }
+            val devices = current.devices.filterNot { it.rosterKey() == deviceId }
             val activeId = when {
                 devices.isEmpty() -> null
-                current.activeDeviceId == deviceId -> devices.maxByOrNull { it.pairedAtEpochMs }?.deviceId
-                else -> current.activeDeviceId?.takeIf { id -> devices.any { it.deviceId == id } }
-                    ?: devices.first().deviceId
+                current.activeDeviceId == deviceId -> devices.maxByOrNull { it.pairedAtEpochMs }?.rosterKey()
+                else -> current.activeDeviceId?.takeIf { id -> devices.any { it.rosterKey() == id } }
+                    ?: devices.first().rosterKey()
             }
             prefs[KEY_ROSTER] = json.encodeToString(
                 PairedDeviceRoster.serializer(),
@@ -127,7 +131,7 @@ public class CredentialStore @Inject constructor(
             runCatching { json.decodeFromString(DeviceCredential.serializer(), raw) }.getOrNull()
         }
         return if (legacy != null) {
-            PairedDeviceRoster(devices = listOf(legacy), activeDeviceId = legacy.deviceId)
+            PairedDeviceRoster(devices = listOf(legacy), activeDeviceId = legacy.rosterKey())
         } else {
             PairedDeviceRoster()
         }

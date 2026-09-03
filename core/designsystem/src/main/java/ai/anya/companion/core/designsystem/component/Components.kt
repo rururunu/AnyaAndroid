@@ -13,7 +13,6 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -70,10 +69,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.graphics.ColorMatrix
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -84,6 +79,10 @@ import ai.anya.companion.core.designsystem.theme.AnyaColors
 import ai.anya.companion.core.designsystem.theme.AnyaSpace
 import kotlin.math.roundToInt
 
+/**
+ * Brand mark: the blob mascot at rest. [clipped] is kept for call-site compatibility;
+ * the mascot has no square background so it only affects the touch target shape.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 public fun AnyaBrandMark(
@@ -91,22 +90,11 @@ public fun AnyaBrandMark(
     size: androidx.compose.ui.unit.Dp = 36.dp,
     clipped: Boolean = true,
     onLongClick: (() -> Unit)? = null,
+    state: MascotState = MascotState.Idle,
+    tool: MascotTool? = null,
+    interactive: Boolean = false,
 ) {
-    val dark = androidx.compose.foundation.isSystemInDarkTheme()
-    // Transparent line-art: invert in dark mode so strokes stay readable.
-    val invertMatrix = remember {
-        ColorMatrix(
-            floatArrayOf(
-                -1f, 0f, 0f, 0f, 255f,
-                0f, -1f, 0f, 0f, 255f,
-                0f, 0f, -1f, 0f, 255f,
-                0f, 0f, 0f, 1f, 0f,
-            ),
-        )
-    }
-    Image(
-        painter = painterResource(R.drawable.anya_icon),
-        contentDescription = "Anya",
+    Box(
         modifier = modifier
             .size(size)
             .then(
@@ -123,9 +111,17 @@ public fun AnyaBrandMark(
                     Modifier
                 },
             ),
-        contentScale = ContentScale.Fit,
-        colorFilter = if (dark) ColorFilter.colorMatrix(invertMatrix) else null,
-    )
+        contentAlignment = Alignment.Center,
+    ) {
+        MascotFace(
+            modifier = Modifier.fillMaxSize(),
+            state = state,
+            tool = tool,
+            interactive = interactive,
+            followPointer = interactive,
+            contentDescription = "Anya",
+        )
+    }
 }
 
 /** Breathing Anya mark used for splash / connecting / submitting states. */
@@ -185,29 +181,16 @@ public fun AnyaLoadingIndicator(
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.onSurface.copy(alpha = glowAlpha * 0.06f)),
             )
-            val dark = androidx.compose.foundation.isSystemInDarkTheme()
-            val invertMatrix = remember {
-                ColorMatrix(
-                    floatArrayOf(
-                        -1f, 0f, 0f, 0f, 255f,
-                        0f, -1f, 0f, 0f, 255f,
-                        0f, 0f, -1f, 0f, 255f,
-                        0f, 0f, 0f, 1f, 0f,
-                    ),
-                )
-            }
-            Image(
-                painter = painterResource(R.drawable.anya_icon),
-                contentDescription = null,
+            MascotFace(
                 modifier = Modifier
                     .size(size)
                     .graphicsLayer {
                         scaleX = scale
                         scaleY = scale
-                    }
-                    .clip(RoundedCornerShape((size.value * 0.22f).dp)),
-                contentScale = ContentScale.Fit,
-                colorFilter = if (dark) ColorFilter.colorMatrix(invertMatrix) else null,
+                    },
+                state = MascotState.Working,
+                followPointer = false,
+                turnOnChange = false,
             )
         }
         if (!label.isNullOrBlank()) {
@@ -958,7 +941,7 @@ public fun AnyaHeroHeader(
         verticalArrangement = Arrangement.spacedBy(AnyaSpace.Xl),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        AnyaBrandMark(size = markSize, clipped = true)
+        AnyaBrandMark(size = markSize, clipped = false, interactive = true)
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),

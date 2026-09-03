@@ -22,10 +22,16 @@ class KeepAliveService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(
-            NOTI_ID,
-            buildOngoingNotification(),
-        )
+        val notification = buildOngoingNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTI_ID,
+                notification,
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+            )
+        } else {
+            startForeground(NOTI_ID, notification)
+        }
         return START_STICKY
     }
 
@@ -40,6 +46,7 @@ class KeepAliveService : Service() {
             NotificationManager.IMPORTANCE_LOW,
         )
         ch.description = getString(R.string.keep_alive_channel_desc)
+        ch.setShowBadge(false)
         nm.createNotificationChannel(ch)
     }
 
@@ -49,7 +56,10 @@ class KeepAliveService : Service() {
             .setContentTitle(getString(R.string.keep_alive_title))
             .setContentText(getString(R.string.keep_alive_text))
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
     }
 
@@ -58,4 +68,5 @@ class KeepAliveService : Service() {
         const val NOTI_ID = 2001
     }
 }
+
 

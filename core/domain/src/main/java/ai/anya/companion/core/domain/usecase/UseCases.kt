@@ -67,6 +67,7 @@ public class SendChatMessageUseCase @Inject constructor(
         chatModel: String? = null,
         chatModelProvider: String? = null,
         workspaceId: String? = null,
+        imageGen: ai.anya.companion.core.model.protocol.ImageGenWire? = null,
     ): AnyaResult<String> =
         sessionRepository.sendMessage(
             sessionId,
@@ -76,6 +77,7 @@ public class SendChatMessageUseCase @Inject constructor(
             chatModel,
             chatModelProvider,
             workspaceId,
+            imageGen,
         )
 }
 
@@ -98,6 +100,48 @@ public class DeleteSessionUseCase @Inject constructor(
 ) {
     public suspend operator fun invoke(sessionId: String): AnyaResult<Unit> =
         sessionRepository.deleteSession(sessionId)
+}
+
+public class ArchiveSessionUseCase @Inject constructor(
+    private val sessionRepository: SessionRepository,
+) {
+    public suspend operator fun invoke(sessionId: String, archived: Boolean): AnyaResult<Unit> =
+        sessionRepository.archiveSession(sessionId, archived)
+}
+
+public class ArchiveWorkspaceUseCase @Inject constructor(
+    private val sessionRepository: SessionRepository,
+) {
+    public suspend operator fun invoke(workspaceId: String, archived: Boolean): AnyaResult<Unit> =
+        sessionRepository.archiveWorkspace(workspaceId, archived)
+}
+
+public class ObserveArchivedSessionsUseCase @Inject constructor(
+    private val sessionRepository: SessionRepository,
+) {
+    public operator fun invoke(): StateFlow<List<ChatSessionSummary>> =
+        sessionRepository.archivedSessions
+}
+
+public class RefreshArchivedSessionsUseCase @Inject constructor(
+    private val sessionRepository: SessionRepository,
+) {
+    public suspend operator fun invoke(): AnyaResult<List<ChatSessionSummary>> =
+        sessionRepository.refreshArchivedSessions()
+}
+
+public class ObserveArchivedWorkspacesUseCase @Inject constructor(
+    private val sessionRepository: SessionRepository,
+) {
+    public operator fun invoke(): StateFlow<List<ai.anya.companion.core.model.workspace.WorkspaceSummary>> =
+        sessionRepository.archivedWorkspaces
+}
+
+public class RefreshArchivedWorkspacesUseCase @Inject constructor(
+    private val sessionRepository: SessionRepository,
+) {
+    public suspend operator fun invoke(): AnyaResult<List<ai.anya.companion.core.model.workspace.WorkspaceSummary>> =
+        sessionRepository.refreshArchivedWorkspaces()
 }
 
 public class FindSessionsByMessageUseCase @Inject constructor(

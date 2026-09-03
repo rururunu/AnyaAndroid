@@ -17,13 +17,18 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerState
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForwardIos
 import androidx.compose.material.icons.automirrored.rounded.HelpOutline
 import androidx.compose.material.icons.outlined.Inbox
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Shield
@@ -34,9 +39,11 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -59,6 +66,7 @@ import ai.anya.companion.core.designsystem.theme.AnyaSpace
 import ai.anya.companion.core.model.approval.ApprovalKind
 import ai.anya.companion.core.model.inbox.InboxResultKind
 import ai.anya.companion.core.model.session.SharedFileStatus
+import kotlinx.coroutines.launch
 
 @Composable
 public fun ApprovalRoute(
@@ -78,10 +86,12 @@ public fun ApprovalTabContent(
     state: ApprovalUiState,
     onOpenSession: (sessionId: String) -> Unit,
     onDeleteResult: (String) -> Unit = {},
+    pagerState: PagerState = rememberPagerState(pageCount = { 2 }),
 ) {
-    var tab by rememberSaveable { mutableIntStateOf(0) }
     var pendingDelete by rememberSaveable { mutableStateOf<String?>(null) }
     val pendingDeleteItem = state.results.firstOrNull { it.record.id == pendingDelete }
+    val scope = rememberCoroutineScope()
+    val segmentProgress = pagerState.currentPage + pagerState.currentPageOffsetFraction
 
     Column(modifier = Modifier.fillMaxSize()) {
         AnyaSegmentedControl(
@@ -89,20 +99,32 @@ public fun ApprovalTabContent(
                 stringResource(R.string.inbox_tab_pending),
                 stringResource(R.string.inbox_tab_results),
             ),
-            selectedIndex = tab.coerceIn(0, 1),
-            onSelect = { tab = it },
+            selectedIndex = pagerState.currentPage.coerceIn(0, 1),
+            selectedProgress = segmentProgress,
+            onSelect = { index ->
+                scope.launch { pagerState.animateScrollToPage(index) }
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = AnyaSpace.Screen)
                 .padding(top = AnyaSpace.Lg, bottom = AnyaSpace.Md),
         )
-        when (tab) {
-            0 -> PendingInboxList(items = state.items, onOpenSession = onOpenSession)
-            else -> ResultInboxList(
-                items = state.results,
-                onOpenSession = onOpenSession,
-                onDelete = { pendingDelete = it },
-            )
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            beyondViewportPageCount = 1,
+            key = { page -> if (page == 0) "pending" else "results" },
+        ) { page ->
+            when (page) {
+                0 -> PendingInboxList(items = state.items, onOpenSession = onOpenSession)
+                else -> ResultInboxList(
+                    groups = state.resultGroups,
+                    onOpenSession = onOpenSession,
+                    onDelete = { pendingDelete = it },
+                )
+            }
         }
     }
 
@@ -167,11 +189,19 @@ private fun PendingInboxList(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ResultInboxList(
-    items: List<InboxResultListItem>,
+    groups: List<InboxResultGroup>,
     onOpenSession: (sessionId: String) -> Unit,
     onDelete: (String) -> Unit,
 ) {
-    if (items.isEmpty()) {
+    var expandedIds by remember { mutableStateOf(setOf<String>()) }
+    var seenIds by remember { mutableStateOf(setOf<String>()) }
+    LaunchedEffect(groups.map { it.sessionId }) {
+        val ids = groups.map { it.sessionId }.toSet()
+        val newcomers = ids - seenIds
+        expandedIds = (expandedIds.intersect(ids)) + newcomers
+        seenIds = seenIds.intersect(ids) + ids
+    }
+    if (groups.isEmpty()) {
         AnyaEmptyState(
             icon = Icons.Rounded.Description,
             title = stringResource(R.string.inbox_results_empty_title),
@@ -188,29 +218,99 @@ private fun ResultInboxList(
         ),
         verticalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
     ) {
-        items(items, key = { it.record.id }) { item ->
-            val record = item.record
-            InboxCard(
-                kindLabel = when (record.kind) {
-                    InboxResultKind.File -> stringResource(R.string.inbox_kind_file)
-                    InboxResultKind.Url -> stringResource(R.string.inbox_kind_url)
-                },
-                kindIcon = when (record.kind) {
-                    InboxResultKind.File -> Icons.Rounded.Description
-                    InboxResultKind.Url -> Icons.Rounded.Language
-                },
-                workspaceName = item.workspaceName,
-                title = record.name.ifBlank {
-                    if (record.kind == InboxResultKind.Url) record.publicUrl else record.path
-                },
-                detail = resultStatusLabel(record),
-                sessionTitle = item.sessionTitle,
-                hint = resultHint(record),
-                unread = record.needsAction,
-                onClick = {
-                    if (record.sessionId.isNotBlank()) onOpenSession(record.sessionId)
-                },
-                onLongClick = { onDelete(record.id) },
+        groups.forEach { group ->
+            val expanded = group.sessionId in expandedIds
+            stickyHeader(key = "header-${group.sessionId}") {
+                ResultGroupHeader(
+                    sessionTitle = group.sessionTitle,
+                    workspaceName = group.workspaceName,
+                    count = group.items.size,
+                    expanded = expanded,
+                    onToggle = {
+                        expandedIds = if (expanded) {
+                            expandedIds - group.sessionId
+                        } else {
+                            expandedIds + group.sessionId
+                        }
+                    },
+                )
+            }
+            if (expanded) {
+                items(group.items, key = { it.record.id }) { item ->
+                    val record = item.record
+                    InboxCard(
+                        kindLabel = when (record.kind) {
+                            InboxResultKind.File -> stringResource(R.string.inbox_kind_file)
+                            InboxResultKind.Url -> stringResource(R.string.inbox_kind_url)
+                        },
+                        kindIcon = when (record.kind) {
+                            InboxResultKind.File -> Icons.Rounded.Description
+                            InboxResultKind.Url -> Icons.Rounded.Language
+                        },
+                        workspaceName = item.workspaceName,
+                        title = record.name.ifBlank {
+                            if (record.kind == InboxResultKind.Url) record.publicUrl else record.path
+                        },
+                        detail = resultStatusLabel(record),
+                        sessionTitle = null,
+                        hint = resultHint(record),
+                        unread = false,
+                        onClick = {
+                            if (record.sessionId.isNotBlank()) onOpenSession(record.sessionId)
+                        },
+                        onLongClick = { onDelete(record.id) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ResultGroupHeader(
+    sessionTitle: String?,
+    workspaceName: String?,
+    count: Int,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
+    val title = sessionTitle?.takeIf { it.isNotBlank() }
+        ?: stringResource(R.string.inbox_session_untitled)
+    val subtitle = buildList {
+        workspaceName?.takeIf { it.isNotBlank() }?.let { add(it) }
+        add(stringResource(R.string.inbox_group_count, count))
+    }.joinToString(" · ")
+    val haptics = rememberAnyaHaptics()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.background)
+            .clickable {
+                haptics.tick()
+                onToggle()
+            }
+            .padding(top = AnyaSpace.Sm, bottom = AnyaSpace.Xs),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Xs),
+    ) {
+        Icon(
+            imageVector = if (expanded) Icons.Rounded.ExpandMore else Icons.Rounded.ChevronRight,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
             )
         }
     }

@@ -41,8 +41,13 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -429,16 +434,32 @@ private fun SharedUrlCard(
     }
 }
 
+/** "以此图编辑" result: desktop path to reference, optional dimmed region preview, placement label. */
+internal data class ImageEditRequest(
+    val desktopPath: String,
+    val previewDataUrl: String?,
+    val regionPlacement: String?,
+)
+
 @Composable
 internal fun SharedImageFullscreenDialog(
     file: ChatSharedFile,
     onDismiss: () -> Unit,
     onExport: () -> Unit,
+    onEditFromImage: ((ImageEditRequest) -> Unit)? = null,
 ) {
     val haptic = rememberAnyaHaptics()
     val context = LocalContext.current
     val path = file.localPath ?: return
     val exported = !file.exportedUri.isNullOrBlank()
+    val canEdit = onEditFromImage != null && isDesktopAbsolutePath(file.path)
+    var painting by remember(file.offerId) { mutableStateOf(false) }
+    var brush by remember { mutableStateOf(BrushSize.Medium) }
+    val strokes = remember(file.offerId) { mutableStateListOf<NormalizedStroke>() }
+    val imageSize = remember(path) { imageSizeOf(path) }
+    var editError by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -448,15 +469,70 @@ internal fun SharedImageFullscreenDialog(
                 .fillMaxSize()
                 .background(Color.Black.copy(alpha = 0.92f)),
         ) {
-            SharedImagePreview(
-                path = path,
-                contentDescription = file.name,
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(16.dp)
+                    .padding(start = 16.dp, end = 16.dp, top = 72.dp, bottom = 96.dp)
                     .align(Alignment.Center),
-                contentScale = ContentScale.Fit,
-            )
+            ) {
+                SharedImagePreview(
+                    path = path,
+                    contentDescription = file.name,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit,
+                )
+                if (painting && imageSize != null) {
+                    ImagePaintOverlay(
+                        imageWidth = imageSize.first,
+                        imageHeight = imageSize.second,
+                        brush = brush,
+                        strokes = strokes,
+                    )
+                }
+            }
+            if (canEdit) {
+                ImageEditToolbar(
+                    painting = painting,
+                    brush = brush,
+                    hasStrokes = hasUsableStrokes(strokes),
+                    error = editError,
+                    onEditFull = {
+                        haptic.buttonPress()
+                        onEditFromImage!!(ImageEditRequest(file.path, previewDataUrl = null, regionPlacement = null))
+                        onDismiss()
+                    },
+                    onStartPaint = {
+                        haptic.tick()
+                        editError = null
+                        painting = true
+                    },
+                    onBrush = { brush = it },
+                    onClear = { strokes.clear() },
+                    onCancelPaint = {
+                        strokes.clear()
+                        painting = false
+                    },
+                    onUseRegion = {
+                        haptic.buttonPress()
+                        val snapshot = strokes.toList()
+                        scope.launch {
+                            val preview = withContext(Dispatchers.IO) {
+                                runCatching { buildStrokeSpotlightDataUrl(path, snapshot) }.getOrNull()
+                            }
+                            if (preview == null) {
+                                editError = "准备编辑图片失败"
+                                return@launch
+                            }
+                            val placement = strokeBounds(snapshot)?.let(::describeRegionPlacement) ?: "中间"
+                            onEditFromImage!!(ImageEditRequest(file.path, preview, placement))
+                            onDismiss()
+                        }
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 40.dp),
+                )
+            }
             Row(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -524,8 +600,84 @@ internal fun SharedImageFullscreenDialog(
     }
 }
 
+/** Desktop GeneratedImageCard actions: 以此图编辑 / 选区涂抹, then brush + 清除 / 取消 / 使用选区. */
 @Composable
-private fun SharedImagePreview(
+private fun ImageEditToolbar(
+    painting: Boolean,
+    brush: BrushSize,
+    hasStrokes: Boolean,
+    error: String?,
+    onEditFull: () -> Unit,
+    onStartPaint: () -> Unit,
+    onBrush: (BrushSize) -> Unit,
+    onClear: () -> Unit,
+    onCancelPaint: () -> Unit,
+    onUseRegion: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (painting) {
+            Text(
+                text = "在要修改的区域上涂抹",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White.copy(alpha = 0.75f),
+            )
+        }
+        if (error != null) {
+            Text(text = error, style = MaterialTheme.typography.labelSmall, color = Color(0xFFFF8A80))
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (!painting) {
+                DarkPill(text = "以此图编辑", onClick = onEditFull)
+                DarkPill(text = "选区涂抹", onClick = onStartPaint)
+            } else {
+                BrushSize.entries.forEach { size ->
+                    DarkPill(text = size.label, active = size == brush, onClick = { onBrush(size) })
+                }
+                DarkPill(text = "清除", enabled = hasStrokes, onClick = onClear)
+                DarkPill(text = "取消", onClick = onCancelPaint)
+                DarkPill(text = "使用选区", enabled = hasStrokes, primary = true, onClick = onUseRegion)
+            }
+        }
+    }
+}
+
+@Composable
+private fun DarkPill(
+    text: String,
+    onClick: () -> Unit,
+    active: Boolean = false,
+    enabled: Boolean = true,
+    primary: Boolean = false,
+) {
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        shape = CircleShape,
+        color = when {
+            primary -> MaterialTheme.colorScheme.primary
+            active -> Color.White.copy(alpha = 0.32f)
+            else -> Color.White.copy(alpha = 0.14f)
+        },
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (enabled) Color.White else Color.White.copy(alpha = 0.4f),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+        )
+    }
+}
+
+@Composable
+internal fun SharedImagePreview(
     path: String,
     contentDescription: String,
     modifier: Modifier = Modifier,

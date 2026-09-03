@@ -1,8 +1,8 @@
 {
-  "version": "0.1.3",
-  "versionCode": 4,
-  "notes": "v0.1.3\uFF1A\u6A21\u578B\u6309\u63D0\u4F9B\u5546\u5206\u7EC4\u5E76\u663E\u793A\u56FE\u6807\uFF1B\u652F\u6301\u6309\u6A21\u578B\u9009\u62E9\u601D\u8003\u5F3A\u5EA6\uFF0C\u65B0\u589E\u5B9E\u65F6\u4E0A\u4E0B\u6587\u5360\u7528\u4F30\u7B97\u3002",
-  "apkUrl": "https://github.com/rururunu/AnyaAndroid/releases/download/v0.1.3/Anya-v0.1.3.apk",
-  "sizeBytes": 2981023,
-  "sha256": "8b0e5e87613dcbab6e42a8669d0cb8531f195f4b15619a9ce8e3cc8e4f1035e5"
+  "version": "0.1.6",
+  "versionCode": 7,
+  "notes": "v0.1.6：Agent 运行中发消息会暂存并与桌面同步（引导=软注入，回合结束自动发送）；设置可切换跟随系统/浅色/深色；上下文占用显示本对话缓存命中率；点吉祥物有弹跳震动；修复对话变空与附加后输入框无法编辑。暂存队列需桌面 Anya ≥ 0.2.18。",
+  "apkUrl": "https://github.com/rururunu/AnyaAndroid/releases/download/v0.1.6/Anya-v0.1.6.apk",
+  "sizeBytes": 3052174,
+  "sha256": "d15ce067aac6897bc06721c02220901100e1ff7b4bd5feab0d682504469a6ede"
 }

@@ -43,6 +43,7 @@ import ai.anya.companion.core.designsystem.theme.AnyaSpace
 import ai.anya.companion.core.model.session.ChatMessage
 import ai.anya.companion.core.model.session.ChatRole
 import ai.anya.companion.core.model.session.ContextUsageSnapshot
+import ai.anya.companion.core.model.session.MessageCacheUsage
 import kotlin.math.roundToInt
 
 @Composable
@@ -213,6 +214,7 @@ internal fun ContextUsageSheet(
     usage: ContextUsageSnapshot,
     rounds: Int,
     steps: Int,
+    cacheHitPercent: Int? = null,
     onDismiss: () -> Unit,
 ) {
     val percent = usage.percent
@@ -275,7 +277,12 @@ internal fun ContextUsageSheet(
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
-                text = "$rounds 轮 · $steps 步",
+                text = buildString {
+                    append("$rounds 轮 · $steps 步")
+                    if (cacheHitPercent != null) {
+                        append(" · 缓存命中 $cacheHitPercent%")
+                    }
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 6.dp),
@@ -374,3 +381,16 @@ internal fun sessionRoundCount(messages: List<ChatMessage>): Int =
 
 internal fun sessionStepCount(messages: List<ChatMessage>): Int =
     messages.sumOf { it.toolActivities.size }
+
+/** Conversation-level DeepSeek prompt-cache hit rate (same formula as desktop). */
+internal fun sessionCacheHitPercent(usages: Collection<MessageCacheUsage>): Int? {
+    var input = 0L
+    var cached = 0L
+    for (usage in usages) {
+        input += maxOf(0L, usage.inputTokens)
+        cached += maxOf(0L, usage.cacheReadTokens)
+    }
+    val prompt = input + cached
+    if (prompt <= 0L) return null
+    return Math.round(cached * 100.0 / prompt).toInt()
+}

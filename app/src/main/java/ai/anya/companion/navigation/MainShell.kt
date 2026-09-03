@@ -1,6 +1,7 @@
 package ai.anya.companion.navigation
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,6 +13,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerDefaults
+import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -29,6 +32,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -36,9 +40,14 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import ai.anya.companion.R
 import androidx.compose.foundation.layout.padding as layoutPadding
@@ -77,6 +86,9 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlin.math.roundToInt
 
+/** Matches [SessionsSegmentHeader] / inbox segment: 16 + 44 + 12. Overlay so inbox isn't pushed down. */
+private val SegmentHeaderOccupied = AnyaSpace.Lg + 44.dp + AnyaSpace.Md
+
 /** Continuous pager pages: Ask → Workspace → Inbox → Settings. */
 private object MainPage {
     const val Ask = 0
@@ -106,6 +118,7 @@ fun MainRoute(
     onOpenConnectionSettings: () -> Unit,
     onOpenGeneralSettings: () -> Unit,
     onOpenAboutSettings: () -> Unit,
+    onOpenArchivedSessions: () -> Unit,
     onAddDevice: () -> Unit,
     onUnpairLast: () -> Unit,
     sessionsViewModel: SessionsViewModel = hiltViewModel(),
@@ -117,6 +130,14 @@ fun MainRoute(
         initialPage = MainPage.Ask,
         pageCount = { MainPage.Count },
     )
+    val inboxPagerState = rememberPagerState(pageCount = { 2 })
+    val defaultPagerNestedScroll = PagerDefaults.pageNestedScrollConnection(
+        state = pagerState,
+        orientation = Orientation.Horizontal,
+    )
+    val pagerNestedScroll = remember(pagerState, inboxPagerState, defaultPagerNestedScroll) {
+        inboxAwarePagerNestedScroll(pagerState, inboxPagerState, defaultPagerNestedScroll)
+    }
     var showConnectionPanel by rememberSaveable { mutableStateOf(false) }
     var showSearchPanel by rememberSaveable { mutableStateOf(false) }
     var showHostSwitcher by rememberSaveable { mutableStateOf(false) }
@@ -148,7 +169,7 @@ fun MainRoute(
         else -> (2f - absolutePage).coerceIn(0f, 1f)
     }
 
-    val inboxBadge = sessionsState.pendingApprovals.size + approvalState.unreadResultCount
+    val inboxBadge = sessionsState.pendingApprovals.size
     val tone = when (sessionsState.connectionState) {
         ConnectionState.Connected -> AnyaStatusTone.Success
         ConnectionState.Connecting, ConnectionState.Reconnecting -> AnyaStatusTone.Info
@@ -270,36 +291,27 @@ fun MainRoute(
         },
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            // Segment stays pinned; only the pager content below slides.
-            if (showSegmentHeader) {
-                SessionsSegmentHeader(
-                    selectedIndex = segmentProgress.roundToInt().coerceIn(0, 1),
-                    selectedProgress = segmentProgress,
-                    onSegmentSelect = ::selectPage,
-                    modifier = Modifier.graphicsLayer { alpha = segmentHeaderAlpha },
-                )
-            }
-
-            HorizontalPager(
-                state = pagerState,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                beyondViewportPageCount = 1,
-                key = { page ->
-                    when (page) {
-                        MainPage.Ask -> "ask"
-                        MainPage.Workspace -> "workspace"
-                        MainPage.Approvals -> "approvals"
-                        else -> "settings"
-                    }
-                },
-            ) { page ->
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier
+                .fillMaxSize()
+                .clipToBounds(),
+            beyondViewportPageCount = 1,
+            pageNestedScrollConnection = pagerNestedScroll,
+            key = { page ->
+                when (page) {
+                    MainPage.Ask -> "ask"
+                    MainPage.Workspace -> "workspace"
+                    MainPage.Approvals -> "approvals"
+                    else -> "settings"
+                }
+            },
+        ) { page ->
                 when (page) {
                     MainPage.Ask -> {
                         SessionsAskContent(
                             state = sessionsState,
+                            modifier = Modifier.padding(top = SegmentHeaderOccupied),
                             onOpenSession = { id ->
                                 haptics.linearTick()
                                 onOpenSession(id, null)
@@ -308,12 +320,14 @@ fun MainRoute(
                                 haptics.buttonPress()
                                 sessionsViewModel.refresh()
                             },
+                            onArchiveSession = sessionsViewModel::archiveSession,
                             onDeleteSession = sessionsViewModel::deleteSession,
                         )
                     }
                     MainPage.Workspace -> {
                         SessionsWorkspaceContent(
                             state = sessionsState,
+                            modifier = Modifier.padding(top = SegmentHeaderOccupied),
                             onToggleWorkspace = sessionsViewModel::toggleWorkspace,
                             onOpenSession = { id ->
                                 haptics.linearTick()
@@ -323,16 +337,19 @@ fun MainRoute(
                                 haptics.buttonPress()
                                 sessionsViewModel.refresh()
                             },
+                            onArchiveSession = sessionsViewModel::archiveSession,
                             onDeleteSession = sessionsViewModel::deleteSession,
                             onNewSessionInWorkspace = { workspaceId ->
                                 haptics.buttonPress()
                                 onNewSession(workspaceId)
                             },
+                            onArchiveWorkspace = sessionsViewModel::archiveWorkspace,
                         )
                     }
                     MainPage.Approvals -> {
                         ApprovalTabContent(
                             state = approvalState,
+                            pagerState = inboxPagerState,
                             onOpenSession = { id ->
                                 haptics.linearTick()
                                 onOpenSession(id, null)
@@ -351,6 +368,10 @@ fun MainRoute(
                                 haptics.linearTick()
                                 onOpenGeneralSettings()
                             },
+                            onOpenArchived = {
+                                haptics.linearTick()
+                                onOpenArchivedSessions()
+                            },
                             onOpenAbout = {
                                 haptics.linearTick()
                                 onOpenAboutSettings()
@@ -359,6 +380,16 @@ fun MainRoute(
                     }
                 }
             }
+
+        if (showSegmentHeader) {
+            SessionsSegmentHeader(
+                selectedIndex = segmentProgress.roundToInt().coerceIn(0, 1),
+                selectedProgress = segmentProgress,
+                onSegmentSelect = ::selectPage,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .graphicsLayer { alpha = segmentHeaderAlpha },
+            )
         }
 
         // Circular new-chat FAB: 随问 only — workspaces create sessions from the row +.
@@ -440,7 +471,7 @@ fun MainRoute(
     if (showHostSwitcher) {
         HostSwitcherSheet(
             devices = settingsState.pairedDevices,
-            activeDeviceId = settingsState.credential?.deviceId,
+            activeDeviceId = settingsState.credential?.rosterKey(),
             connectionState = sessionsState.connectionState,
             onSelect = { deviceId ->
                 settingsViewModel.switchDevice(deviceId)
@@ -540,5 +571,52 @@ private fun ConnectionPanel(
         }
         AnyaSecondaryButton(text = stringResource(R.string.connection_panel_close), onClick = onDismiss)
         Spacer(modifier = Modifier.height(AnyaSpace.Sm))
+    }
+}
+
+/**
+ * Let the inbox inner pager take horizontal drags until it hits an edge, then the
+ * main pager continues (workspace ← inbox → settings).
+ */
+private fun inboxAwarePagerNestedScroll(
+    pagerState: PagerState,
+    inboxPagerState: PagerState,
+    default: NestedScrollConnection,
+): NestedScrollConnection = object : NestedScrollConnection {
+    private fun inboxConsumes(deltaX: Float): Boolean {
+        if (pagerState.currentPage != MainPage.Approvals) return false
+        val atStart = inboxPagerState.currentPage == 0 &&
+            inboxPagerState.currentPageOffsetFraction <= 0.001f
+        val atEnd = inboxPagerState.currentPage >= inboxPagerState.pageCount - 1 &&
+            inboxPagerState.currentPageOffsetFraction >= -0.001f
+        return when {
+            deltaX > 0f -> !atStart
+            deltaX < 0f -> !atEnd
+            else -> false
+        }
+    }
+
+    override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+        return if (inboxConsumes(available.x)) Offset.Zero else default.onPreScroll(available, source)
+    }
+
+    override fun onPostScroll(
+        consumed: Offset,
+        available: Offset,
+        source: NestedScrollSource,
+    ): Offset {
+        return if (inboxConsumes(available.x)) Offset.Zero else default.onPostScroll(consumed, available, source)
+    }
+
+    override suspend fun onPreFling(available: Velocity): Velocity {
+        return if (inboxConsumes(available.x)) Velocity.Zero else default.onPreFling(available)
+    }
+
+    override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+        return if (inboxConsumes(available.x)) {
+            Velocity.Zero
+        } else {
+            default.onPostFling(consumed, available)
+        }
     }
 }

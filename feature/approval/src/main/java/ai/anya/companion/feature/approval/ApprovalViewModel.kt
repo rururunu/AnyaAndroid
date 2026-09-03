@@ -32,7 +32,15 @@ public data class InboxResultListItem(
 public data class ApprovalUiState(
     public val items: List<ApprovalListItem> = emptyList(),
     public val results: List<InboxResultListItem> = emptyList(),
-    public val unreadResultCount: Int = 0,
+    /** Grouped results for the Results tab (sessionId → items, newest group first). */
+    public val resultGroups: List<InboxResultGroup> = emptyList(),
+)
+
+public data class InboxResultGroup(
+    public val sessionId: String,
+    public val sessionTitle: String?,
+    public val workspaceName: String?,
+    public val items: List<InboxResultListItem>,
 )
 
 @HiltViewModel
@@ -45,27 +53,46 @@ public class ApprovalViewModel @Inject constructor(
     public val state: StateFlow<ApprovalUiState> = combine(
         observeApprovals(),
         sessionRepository.sessions,
+        sessionRepository.archivedSessions,
         sessionRepository.inboxResults,
-    ) { approvals, sessions, results ->
+    ) { approvals, sessions, archived, results ->
+        val sessionById = (sessions + archived).associateBy { it.id }
+        val resultItems = results.map { record ->
+            val session = sessionById[record.sessionId]
+            InboxResultListItem(
+                record = record,
+                sessionTitle = session?.title?.takeIf { it.isNotBlank() } ?: record.sessionTitle,
+                workspaceName = session?.workspaceName?.takeIf { it.isNotBlank() }
+                    ?: record.workspaceName,
+            )
+        }
+        val groups = resultItems
+            .groupBy { it.record.sessionId.ifBlank { "_unknown" } }
+            .entries
+            .map { (sessionId, items) ->
+                val sorted = items.sortedByDescending { it.record.createdAtEpochMs }
+                val head = sorted.first()
+                InboxResultGroup(
+                    sessionId = sessionId,
+                    sessionTitle = head.sessionTitle,
+                    workspaceName = head.workspaceName,
+                    items = sorted,
+                )
+            }
+            .sortedByDescending { group ->
+                group.items.maxOfOrNull { it.record.createdAtEpochMs } ?: 0L
+            }
         ApprovalUiState(
             items = approvals.map { approval ->
-                val session = sessions.firstOrNull { it.id == approval.sessionId }
+                val session = sessionById[approval.sessionId]
                 ApprovalListItem(
                     approval = approval,
                     sessionTitle = session?.title?.takeIf { it.isNotBlank() },
                     workspaceName = session?.workspaceName?.takeIf { it.isNotBlank() },
                 )
             },
-            results = results.map { record ->
-                val session = sessions.firstOrNull { it.id == record.sessionId }
-                InboxResultListItem(
-                    record = record,
-                    sessionTitle = session?.title?.takeIf { it.isNotBlank() } ?: record.sessionTitle,
-                    workspaceName = session?.workspaceName?.takeIf { it.isNotBlank() }
-                        ?: record.workspaceName,
-                )
-            },
-            unreadResultCount = results.count { it.needsAction },
+            results = resultItems,
+            resultGroups = groups,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ApprovalUiState())
 

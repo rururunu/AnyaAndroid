@@ -11,16 +11,22 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalView
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import ai.anya.companion.core.designsystem.theme.AnyaTheme
 import ai.anya.companion.core.domain.repository.AppUpdateMonitor
 import ai.anya.companion.core.domain.repository.ConnectionRepository
+import ai.anya.companion.core.domain.repository.ThemeRepository
 import ai.anya.companion.navigation.AnyaNavHost
 import ai.anya.companion.notify.CompanionNotifier
 import dagger.hilt.android.AndroidEntryPoint
@@ -36,6 +42,9 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var updateMonitor: AppUpdateMonitor
+
+    @Inject
+    lateinit var themeRepository: ThemeRepository
 
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -61,7 +70,15 @@ class MainActivity : ComponentActivity() {
             if (granted) maybeStartKeepAliveService()
         }
         setContent {
-            AnyaTheme {
+            val theme by themeRepository.theme.collectAsState()
+            val darkTheme = theme.resolvesDark(isSystemInDarkTheme())
+            val view = LocalView.current
+            SideEffect {
+                val insets = WindowCompat.getInsetsController(window, view)
+                insets.isAppearanceLightStatusBars = !darkTheme
+                insets.isAppearanceLightNavigationBars = !darkTheme
+            }
+            AnyaTheme(darkTheme = darkTheme) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     AnyaNavHost(
                         initialPairUri = pairUri,

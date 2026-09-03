@@ -31,8 +31,10 @@ import ai.anya.companion.core.model.session.ChatMessage
 import ai.anya.companion.core.model.session.ChatMode
 import ai.anya.companion.core.model.session.ChatModelInfo
 import ai.anya.companion.core.model.session.ChatRole
+import ai.anya.companion.core.model.session.MessageCacheUsage
 import ai.anya.companion.core.model.session.MessageStatus
 import ai.anya.companion.core.model.session.PlanTaskItem
+import ai.anya.companion.core.model.session.SessionCheckpoint
 import ai.anya.companion.core.model.session.SessionCompose
 import ai.anya.companion.core.model.session.ToolApprovalMode
 import ai.anya.companion.core.model.session.ChatSharedFile
@@ -97,7 +99,51 @@ public data class ChatUiState(
     public val historyLoading: Boolean = true,
     /** Gateway link state — drives the disconnect banner and blocks actions below. */
     public val connectionState: ConnectionState = ConnectionState.Disconnected,
+    /** Rewind points keyed by the user message that started the turn. */
+    public val checkpointsByUserMessage: Map<String, SessionCheckpoint> = emptyMap(),
+    /** DeepSeek prompt-cache usage per assistant message. */
+    public val cacheUsages: Map<String, MessageCacheUsage> = emptyMap(),
+    /** True while a rewind round-trips to the desktop. */
+    public val rewinding: Boolean = false,
+    /** Reference images attached via "以此图编辑", sent as markdown ahead of the draft. */
+    public val imageEditRefs: List<ImageEditRef> = emptyList(),
+    /** Phone-side image-mode toolbar (ratio / resolution / style / count). */
+    public val imageGenCompose: ai.anya.companion.core.model.image.ImageGenCompose =
+        ai.anya.companion.core.model.image.ImageGenCompose(),
+    /** Desktop image model / custom styles from `imageGen.options`. */
+    public val imageGenOptions: ai.anya.companion.core.model.image.ImageGenOptions =
+        ai.anya.companion.core.model.image.ImageGenOptions(),
+    /**
+     * Local thumbnails for desktop `path:` refs (album uploads / already-fetched images).
+     * Not shown as shared-file cards — only used by [findLocalSharedImage] / user thumbs.
+     */
+    public val imagePreviews: List<ChatSharedFile> = emptyList(),
+    /** Mid-turn staged queue shared with desktop. */
+    public val stagedMessages: List<String> = emptyList(),
 )
+
+/**
+ * A desktop image referenced from the composer (desktop `attachedImages` + `attachedEditSources`).
+ * [previewDataUrl] is the dimmed spotlight for region edits; the desktop skips its `edit-region`
+ * alt when collecting edit references, so only the full-brightness [desktopPath] reaches the API.
+ */
+public data class ImageEditRef(
+    public val desktopPath: String,
+    public val previewDataUrl: String? = null,
+    public val regionPlacement: String? = null,
+    /** Local content/file URI for album picks before/without a desktop cache. */
+    public val localPreviewUri: String? = null,
+) {
+    public fun toMarkdown(): String {
+        // Forward slashes keep markdown parsers happy on Windows absolute paths.
+        val normalized = desktopPath.replace('\\', '/')
+        val pathRef = if (normalized.startsWith("path:")) normalized else "path:$normalized"
+        return buildString {
+            if (previewDataUrl != null) append("![edit-region](").append(previewDataUrl).append(")\n")
+            append("![image](").append(pathRef).append(')')
+        }
+    }
+}
 
 /** Progress / outcome of a workspace file download triggered from chat UI. */
 public data class FileDownloadUiState(
@@ -123,6 +169,14 @@ public data class LocalUploadItem(
     public val name: String,
     public val path: String,
     public val size: Long,
+)
+
+/** Checkpoints + cache usage + rewind flag, folded into the state after the main combine. */
+private data class TurnExtras(
+    val checkpointsByUserMessage: Map<String, SessionCheckpoint> = emptyMap(),
+    val cacheUsages: Map<String, MessageCacheUsage> = emptyMap(),
+    val rewinding: Boolean = false,
+    val imageEditRefs: List<ImageEditRef> = emptyList(),
 )
 
 /** Intermediate tuple to work around [combine]'s five-flow arity limit. */
@@ -162,6 +216,7 @@ public class ChatViewModel @Inject constructor(
     private val fileDownloadManager: ai.anya.companion.core.domain.download.FileDownloadManager,
     private val exportCachedFile: ai.anya.companion.core.domain.usecase.ExportCachedFileUseCase,
     private val uploadLocalFile: ai.anya.companion.core.domain.usecase.UploadLocalFileUseCase,
+    private val downloadWorkspaceFile: ai.anya.companion.core.domain.usecase.DownloadWorkspaceFileUseCase,
     private val respondAsk: RespondAskUseCase,
     private val respondApproval: ai.anya.companion.core.domain.usecase.RespondApprovalUseCase,
     @ApplicationContext private val appContext: Context,
@@ -231,6 +286,37 @@ public class ChatViewModel @Inject constructor(
         if (sid == null) flowOf(emptyList()) else observePlanTasks(sid)
     }
 
+    private val rewinding = MutableStateFlow(false)
+    private val imageEditRefs = MutableStateFlow<List<ImageEditRef>>(emptyList())
+    /** Desktop absolute path → Ready local cache (album refs, no inbox card). */
+    private val imagePreviewCache = MutableStateFlow<Map<String, ChatSharedFile>>(emptyMap())
+    /** Paths already handed to [ensureImagePreview] so user thumbs don't spam fetches. */
+    private val autoFetchedImagePaths =
+        java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val turnExtras = activeSessionId.flatMapLatest { sid ->
+        if (sid == null) {
+            imageEditRefs.map { TurnExtras(imageEditRefs = it) }
+        } else {
+            combine(
+                sessionRepository.checkpoints(sid),
+                sessionRepository.cacheUsages(sid),
+                rewinding,
+                imageEditRefs,
+            ) { checkpoints, usages, busy, refs ->
+                TurnExtras(
+                    checkpointsByUserMessage = checkpoints
+                        .filter { !it.userMessageId.isNullOrBlank() }
+                        .associateBy { it.userMessageId!! },
+                    cacheUsages = usages,
+                    rewinding = busy,
+                    imageEditRefs = refs,
+                )
+            }
+        }
+    }
+
     private val core: StateFlow<ChatCoreState> = combine(
         sessionMessages,
         sessionRepository.sessions,
@@ -266,7 +352,7 @@ public class ChatViewModel @Inject constructor(
         ChatCoreState(emptyList(), emptyList(), "", false, null),
     )
 
-    public val state: StateFlow<ChatUiState> = combine(
+    private val baseState: StateFlow<ChatUiState> = combine(
         coreWithApprovals,
         composeFlow,
         observeModels(),
@@ -316,6 +402,143 @@ public class ChatViewModel @Inject constructor(
         ),
     )
 
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val stagedFlow = activeSessionId.flatMapLatest { sid ->
+        if (sid == null) flowOf(emptyList()) else sessionRepository.stagedMessages(sid)
+    }
+
+    public val state: StateFlow<ChatUiState> = combine(
+        baseState,
+        turnExtras,
+        sessionRepository.imageGenCompose,
+        sessionRepository.imageGenOptions,
+        imagePreviewCache,
+    ) { base, extras, imageCompose, imageOptions, previews ->
+        base.copy(
+            checkpointsByUserMessage = extras.checkpointsByUserMessage,
+            cacheUsages = extras.cacheUsages,
+            rewinding = extras.rewinding,
+            imageEditRefs = extras.imageEditRefs,
+            imageGenCompose = imageCompose,
+            imageGenOptions = imageOptions,
+            imagePreviews = previews.values.toList(),
+        )
+    }.let { coreFlow ->
+        combine(coreFlow, stagedFlow) { base, staged ->
+            base.copy(stagedMessages = staged)
+        }
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        ChatUiState(
+            sessionId = activeSessionId.value.orEmpty(),
+            focusMessageId = focusMessageId,
+            historyLoading = activeSessionId.value != null,
+        ),
+    )
+
+    /**
+     * Roll the desktop session back to the checkpoint before [userMessageId] (code + conversation),
+     * then leave that prompt in the composer so it can be edited and re-sent — same as the desktop.
+     */
+    public fun rewindToUserMessage(userMessageId: String) {
+        val sid = activeSessionId.value ?: return
+        if (!requireConnectedOrWarn()) return
+        val checkpoint = state.value.checkpointsByUserMessage[userMessageId] ?: return
+        val promptText = state.value.messages.firstOrNull { it.id == userMessageId }?.content.orEmpty()
+        rewinding.value = true
+        viewModelScope.launch {
+            when (val result = sessionRepository.rewindSession(sid, checkpoint.turn)) {
+                is AnyaResult.Success -> if (promptText.isNotBlank()) draft.value = promptText
+                is AnyaResult.Failure -> error.value = result.error.toString()
+            }
+            rewinding.value = false
+        }
+    }
+
+    /**
+     * "以此图编辑": reference a desktop image (by its PC path) in Image mode. [previewDataUrl]
+     * is the dimmed spotlight for region edits; the desktop skips `edit-region` alts when it
+     * collects edit references, so only the full-brightness original reaches the Images API.
+     */
+    public fun startImageEdit(
+        desktopPath: String,
+        previewDataUrl: String?,
+        regionPlacement: String?,
+    ) {
+        if (state.value.compose.chatMode != ChatMode.Image) setChatMode(ChatMode.Image)
+        imageEditRefs.value = listOf(
+            ImageEditRef(
+                desktopPath = desktopPath,
+                previewDataUrl = previewDataUrl,
+                regionPlacement = regionPlacement,
+            ),
+        )
+        // Same draft prompts as the desktop; the user completes the sentence.
+        draft.value = if (regionPlacement != null) {
+            "保持参考图原有亮度、色彩和未提及区域不变。只改我涂抹标出的${regionPlacement}区域："
+        } else {
+            "保持参考图原有亮度和整体构图。修改："
+        }
+    }
+
+    public fun clearImageEditRefs() {
+        imageEditRefs.value = emptyList()
+    }
+
+    public fun removeImageEditRef(ref: ImageEditRef) {
+        imageEditRefs.update { list -> list.filterNot { it == ref } }
+    }
+
+    public fun updateImageGenCompose(
+        ratio: String? = null,
+        resolution: String? = null,
+        styleId: String? = null,
+        count: Int? = null,
+    ) {
+        viewModelScope.launch {
+            val current = state.value.imageGenCompose
+            sessionRepository.saveImageGenCompose(
+                current.copy(
+                    ratio = ratio ?: current.ratio,
+                    resolution = resolution ?: current.resolution,
+                    styleId = styleId ?: current.styleId,
+                    count = count ?: current.count,
+                ),
+            )
+        }
+    }
+
+    public fun refreshImageGenOptions() {
+        if (connectionRepository.connectionState.value != ConnectionState.Connected) return
+        viewModelScope.launch { sessionRepository.refreshImageGenOptions() }
+    }
+
+    public fun setImageGenModel(provider: String, model: String) {
+        if (!requireConnectedOrWarn()) return
+        viewModelScope.launch {
+            when (val result = sessionRepository.setImageGenModel(provider, model)) {
+                is AnyaResult.Success -> Unit
+                is AnyaResult.Failure -> error.value = result.error.toString()
+            }
+        }
+    }
+
+    /**
+     * Upload album images to the desktop and attach them as `path:` references
+     * (same markdown shape as "以此图编辑").
+     */
+    public fun uploadAlbumAsRefs(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        if (!requireConnectedOrWarn()) return
+        if (state.value.compose.chatMode != ChatMode.Image) setChatMode(ChatMode.Image)
+        viewModelScope.launch {
+            for (uri in uris) {
+                uploadOneUriAsRef(uri)
+            }
+        }
+    }
+
     init {
         viewModelScope.launch {
             val cached = loadCachedAttachCatalog()
@@ -348,11 +571,13 @@ public class ChatViewModel @Inject constructor(
                             historyLoading.value = false
                         }
                         refreshCompose(sid)
+                        sessionRepository.refreshStaged(sid)
                     } else {
                         historyLoading.value = false
                     }
                     refreshModels()
                     refreshAttachCatalog()
+                    sessionRepository.refreshImageGenOptions()
                 }
         }
         // Opening a chat is a strong signal the user wants to be online *now* —
@@ -496,22 +721,46 @@ public class ChatViewModel @Inject constructor(
         if (!requireConnectedOrWarn()) return
         val compose = state.value.compose
         val target = activeSessionId.value
+        // Desktop `formatAttachedImagesForMessage`: reference images lead, prompt follows.
+        val refs = imageEditRefs.value
+        val message = if (refs.isEmpty()) text else refs.joinToString("\n") { it.toMarkdown() } + "\n" + text
+        // Mid-turn: stage into the shared queue (synced with desktop), don't soft-inject.
+        if (state.value.busy && target != null) {
+            viewModelScope.launch {
+                error.value = null
+                when (val result = sessionRepository.pushStaged(target, message)) {
+                    is AnyaResult.Success -> {
+                        draft.value = ""
+                        imageEditRefs.value = emptyList()
+                    }
+                    is AnyaResult.Failure -> error.value = result.error.toString()
+                }
+            }
+            return
+        }
         viewModelScope.launch {
             sending.value = true
             error.value = null
+            val imageGen = if (compose.chatMode == ChatMode.Image) {
+                state.value.imageGenCompose.toWire(state.value.imageGenOptions.styles)
+            } else {
+                null
+            }
             when (
                 val result = sendChatMessage(
                     target,
-                    text,
+                    message,
                     compose.chatMode,
                     compose.toolApprovalMode,
                     compose.chatModel.ifBlank { null },
                     compose.chatModelProvider.ifBlank { null },
                     workspaceId = routeWorkspaceId,
+                    imageGen = imageGen,
                 )
             ) {
                 is AnyaResult.Success -> {
                     draft.value = ""
+                    imageEditRefs.value = emptyList()
                     if (target == null) {
                         adoptNewSession(result.data)
                     }
@@ -519,6 +768,28 @@ public class ChatViewModel @Inject constructor(
                 is AnyaResult.Failure -> error.value = result.error.toString()
             }
             sending.value = false
+        }
+    }
+
+    public fun guideStaged(index: Int) {
+        val sid = activeSessionId.value ?: return
+        if (!requireConnectedOrWarn()) return
+        viewModelScope.launch {
+            when (val result = sessionRepository.guideStaged(sid, index)) {
+                is AnyaResult.Success -> Unit
+                is AnyaResult.Failure -> error.value = result.error.toString()
+            }
+        }
+    }
+
+    public fun removeStaged(index: Int) {
+        val sid = activeSessionId.value ?: return
+        if (!requireConnectedOrWarn()) return
+        viewModelScope.launch {
+            when (val result = sessionRepository.removeStaged(sid, index)) {
+                is AnyaResult.Success -> Unit
+                is AnyaResult.Failure -> error.value = result.error.toString()
+            }
         }
     }
 
@@ -533,6 +804,7 @@ public class ChatViewModel @Inject constructor(
             historyLoading.value = false
         }
         refreshCompose(newSessionId)
+        sessionRepository.refreshStaged(newSessionId)
         sessionRepository.refreshSessions()
         refreshAttachCatalog()
     }
@@ -647,12 +919,16 @@ public class ChatViewModel @Inject constructor(
         if (!requireConnectedOrWarn()) return
         viewModelScope.launch {
             for (uri in uris) {
-                uploadOneUri(uri)
+                uploadOneUri(uri, asImageRef = false)
             }
         }
     }
 
-    private suspend fun uploadOneUri(uri: Uri) {
+    private suspend fun uploadOneUriAsRef(uri: Uri) {
+        uploadOneUri(uri, asImageRef = true)
+    }
+
+    private suspend fun uploadOneUri(uri: Uri, asImageRef: Boolean) {
         val name = queryDisplayName(uri)
         val mime = appContext.contentResolver.getType(uri)
         _download.value = FileDownloadUiState(
@@ -733,14 +1009,38 @@ public class ChatViewModel @Inject constructor(
                 if (activeSessionId.value == null && file.sessionId.isNotBlank()) {
                     adoptNewSession(file.sessionId)
                 }
-                attachInsert("@${file.path} ")
-                _localUploads.update { current ->
-                    current + LocalUploadItem(name = file.name, path = file.path, size = file.size)
+                val abs = file.absolutePath?.takeIf { it.isNotBlank() }
+                val treatAsRef = asImageRef || (
+                    state.value.compose.chatMode == ChatMode.Image &&
+                        mime?.startsWith("image/") == true &&
+                        abs != null
+                    )
+                if (treatAsRef && abs != null) {
+                    imageEditRefs.update { current ->
+                        current + ImageEditRef(
+                            desktopPath = abs,
+                            localPreviewUri = uri.toString(),
+                        )
+                    }
+                    seedImagePreviewFromUri(abs, uri, file.name, mime)
+                    _download.value = FileDownloadUiState(
+                        fileName = file.name,
+                        message = "已添加参考图 ${file.name}",
+                    )
+                } else {
+                    attachInsert("@${file.path} ")
+                    _localUploads.update { current ->
+                        current + LocalUploadItem(name = file.name, path = file.path, size = file.size)
+                    }
+                    _download.value = FileDownloadUiState(
+                        fileName = file.name,
+                        message = if (asImageRef && abs == null) {
+                            "已上传 ${file.name}（桌面端需 ≥ 0.2.18 才能用作参考图）"
+                        } else {
+                            "Uploaded ${file.name}"
+                        },
+                    )
                 }
-                _download.value = FileDownloadUiState(
-                    fileName = file.name,
-                    message = "Uploaded ${file.name}",
-                )
             }
             is AnyaResult.Failure -> {
                 _download.value = FileDownloadUiState(
@@ -841,6 +1141,107 @@ public class ChatViewModel @Inject constructor(
             )
         }
     }
+
+    /**
+     * Auto-fetch a desktop `path:` image for user-message thumbs when nothing is cached yet.
+     * Writes into [imagePreviewCache] (no shared-file inbox card).
+     */
+    public fun ensureImagePreview(path: String) {
+        val trimmed = path.trim().removePrefix("path:")
+        if (trimmed.isBlank()) return
+        val key = trimmed.replace('\\', '/')
+        if (autoFetchedImagePaths.contains(key)) return
+        if (findCachedImagePreview(trimmed) != null) return
+        val sid = activeSessionId.value ?: return
+        if (connectionRepository.connectionState.value != ConnectionState.Connected) return
+        autoFetchedImagePaths += key
+        viewModelScope.launch {
+            when (
+                val result = downloadWorkspaceFile(
+                    path = trimmed,
+                    sessionId = sid,
+                    workspaceId = routeWorkspaceId,
+                )
+            ) {
+                is AnyaResult.Success -> {
+                    val file = result.data
+                    imagePreviewCache.update {
+                        it + (
+                            key to ChatSharedFile(
+                                offerId = "preview-$key",
+                                path = trimmed,
+                                name = file.name,
+                                mime = file.mime,
+                                size = file.size,
+                                localPath = file.localPath,
+                                status = SharedFileStatus.Ready,
+                            )
+                            )
+                    }
+                }
+                is AnyaResult.Failure -> {
+                    autoFetchedImagePaths.remove(key)
+                }
+            }
+        }
+    }
+
+    private fun findCachedImagePreview(path: String): ChatSharedFile? {
+        val ready = imagePreviewCache.value.values.firstOrNull {
+            it.status == SharedFileStatus.Ready && sameDesktopPath(it.path, path)
+        }
+        if (ready != null) return ready
+        return findLocalSharedImage(
+            state.value.messages.asSequence().flatMap { it.sharedFiles.asSequence() },
+            path,
+        )?.takeIf { it.status == SharedFileStatus.Ready && !it.localPath.isNullOrBlank() }
+    }
+
+    /** Copy an album content URI into the shared cache so history can show the ref immediately. */
+    private fun seedImagePreviewFromUri(
+        desktopPath: String,
+        uri: Uri,
+        name: String,
+        mime: String?,
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val dir = java.io.File(appContext.filesDir, "shared").apply { mkdirs() }
+                val safeName = name.replace(Regex("""[\\/:*?"<>|]"""), "_").ifBlank { "ref.jpg" }
+                var target = java.io.File(dir, "ref-$safeName")
+                if (target.exists()) {
+                    val stem = safeName.substringBeforeLast('.', safeName)
+                    val ext = safeName.substringAfterLast('.', "")
+                    var i = 1
+                    while (target.exists()) {
+                        target = java.io.File(
+                            dir,
+                            if (ext.isEmpty()) "ref-$stem-$i" else "ref-$stem-$i.$ext",
+                        )
+                        i++
+                    }
+                }
+                appContext.contentResolver.openInputStream(uri)?.use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                } ?: return@runCatching
+                val key = desktopPath.replace('\\', '/')
+                val cached = ChatSharedFile(
+                    offerId = "preview-$key",
+                    path = desktopPath,
+                    name = name,
+                    mime = mime?.takeIf { it.isNotBlank() } ?: guessMime(name),
+                    size = target.length(),
+                    localPath = target.absolutePath,
+                    status = SharedFileStatus.Ready,
+                )
+                imagePreviewCache.update { it + (key to cached) }
+                autoFetchedImagePaths += key
+            }
+        }
+    }
+
+    private fun sameDesktopPath(a: String, b: String): Boolean =
+        a.replace('\\', '/').trimEnd('/').equals(b.replace('\\', '/').trimEnd('/'), ignoreCase = true)
 
     public fun exportSharedFile(offerId: String) {
         val sid = activeSessionId.value ?: return

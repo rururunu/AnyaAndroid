@@ -2,6 +2,69 @@
 
 All notable Companion releases. Desktop Anya has its own changelog in [rururunu/Anya](https://github.com/rururunu/Anya).
 
+## [0.1.6] - 2026-09-03
+
+Staged queue, in-app theme, and a fix for chats that went blank after the agent stopped.
+
+### Added
+
+- While the agent is running, sending a message stages it (same queue as the desktop). **引导** soft-injects now; when the turn ends the next staged message is sent automatically
+- Theme in **Settings → General**: follow system, light, or dark
+- Conversation cache hit rate in the context-usage sheet (DeepSeek prompt cache, same formula as desktop)
+- A jelly-bounce haptic when you tap the mascot
+
+### Fixed
+
+- Chat history going empty after the agent finished, or after sitting in a thread: staged-queue RPCs return `{ messages: [] }` and were applied as session history
+- Composer becoming a dead zone after attaching chips: the draft field is editable and scrollable again
+
+### Notes
+
+The staged queue needs desktop Anya ≥ 0.2.18 (`session.staged.*`). Theme and the empty-chat fix are phone-only.
+
+## [0.1.5] - 2026-09-03
+
+Image-mode toolbar, album reference images, and archive / inbox parity with desktop 0.2.18.
+
+### Added
+
+- Image mode: ratio, resolution, style, count, and switching the desktop image model (`imageGen.options` / `imageGen.setModel`)
+- Gallery photos upload via `file.upload` and attach as `path:` references
+- Inbox results grouped by conversation, with collapsible headers
+- Archive a workspace (long-press the workspace row); the archive page matches the chat list (Ask / Workspace) and supports search
+
+### Notes
+
+Album references, image-gen params, and workspace archive need desktop Anya ≥ 0.2.18.
+
+## [0.1.4] - 2026-09-02
+
+New mascot everywhere, plus parity with desktop Anya 0.2.13–0.2.17: image mode, generated-image cards and Mermaid diagrams.
+
+### Added
+
+- Blob mascot ported from desktop: launcher / splash icon, connect and About pages, loading states and the empty conversation. It blinks, glances around, follows your finger, turns around when the agent state changes and beams when tapped; the empty chat shows it holding the current mode's prop (phone / wrench / clipboard / brush)
+- **Image** chat mode (desktop `generate_image`). Selecting it no longer breaks compose sync with a desktop running 0.2.13+
+- Generated-image tool cards: parse the desktop result, fetch the workspace copy through the gateway on tap and preview it fullscreen. `![alt](path:…)` images inside the reply become the same fetchable tiles instead of broken links
+- ```` ```mermaid ```` fences render as pan / pinch / zoom diagrams themed to light and dark mode, with a source toggle
+
+- Desktop parity for the remaining agent surfaces: ANSI-coloured terminal cards on a dark body, inline diff hunks with line numbers on file-edit cards (fullscreen viewer still one tap away), a sub-agent inspector sheet built from the parent tool's child activities, per-message DeepSeek cache hit rate, and turn rewind ("回退到此处" on user messages / "撤销本轮更改" under code changes) via the new `session.rewind` RPC
+- "以此图编辑" and "选区涂抹" on cached images: paint a region, the phone builds the same dimmed spotlight preview as the desktop and attaches `![image](path:…)` so the desktop Images API edits the original
+
+### Changed
+
+- Agent turns are rendered like the desktop work timeline: reasoning, tool calls and narration interleave in the order they happened while streaming; once done, the preamble folds under "已完成" (tools · searches · thinking) while generated images and the final reply stay open. Non-showcase tools show as "变体 · 摘要" rows with expandable detail / result; sub-agent rows nest their child work; `update_tasks` / `todo_write` render as embedded task lists
+- Turn footer mirrors the desktop: a small mascot narrating the current state (思考中 / 执行工具中 / 回复中 / 等待你的输入), "已处理 N s" live and after completion, "≈ N tokens" and the copy button. Transient statuses (compressing context, stream retry n/m, analyzing images) show as an activity line
+
+### Fixed
+
+- `hello.appVersion` now reports the installed version instead of a hard-coded `0.1.2`
+- `chat.finished` no longer overrides a pending plan-gate / tool-approval state with Idle
+
+### Notes
+
+Pairs with desktop Anya ≥ 0.2.18: the gateway now sends `workTimeline`, `completedAtEpochMs`, `estimatedTokens`, `chat.status` and `chat.userContent`, and serves generated images from app-data / `peek-public` as well as workspaces. Against older desktops the timeline is reconstructed from live events only and quick-ask images cannot be fetched. Mermaid rendering loads the library from jsDelivr and needs network access.
+
 ## [0.1.3] - 2026-08-21
 
 Chat now follows desktop model metadata more closely, with provider branding, per-model reasoning controls, and a live context estimate.
@@ -71,6 +134,9 @@ First public Android remote.
 
 Requires desktop Anya with Remote Gateway. Companion does not call model providers itself.
 
+[0.1.6]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.6
+[0.1.5]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.5
+[0.1.4]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.4
 [0.1.3]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.3
 [0.1.2]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.2
 [0.1.1]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.1

@@ -15,6 +15,7 @@ import ai.anya.companion.core.model.session.SessionCompose
 import ai.anya.companion.core.model.session.SessionSearchHit
 import ai.anya.companion.core.model.session.ToolApprovalMode
 import ai.anya.companion.core.model.settings.AppLanguage
+import ai.anya.companion.core.model.settings.AppTheme
 import ai.anya.companion.core.model.update.AppUpdateInfo
 import ai.anya.companion.core.model.update.UpdateCheckResult
 import ai.anya.companion.core.model.update.UpdateDownloadState
@@ -72,7 +73,16 @@ public interface ConnectionRepository {
 
 public interface SessionRepository {
     public val sessions: StateFlow<List<ChatSessionSummary>>
+    /** Archived chats (desktop `session.listArchived`); not shown in the main list. */
+    public val archivedSessions: StateFlow<List<ChatSessionSummary>>
     public val workspaces: StateFlow<List<WorkspaceSummary>>
+    /** Archived workspaces (desktop `workspace.listArchived`). */
+    public val archivedWorkspaces: StateFlow<List<WorkspaceSummary>>
+    /** Desktop image-mode configuration (model / provider / custom styles); refreshed on demand. */
+    public val imageGenOptions: StateFlow<ai.anya.companion.core.model.image.ImageGenOptions>
+    /** Phone-side image toolbar (ratio / resolution / style / count), persisted on device. */
+    public val imageGenCompose: Flow<ai.anya.companion.core.model.image.ImageGenCompose>
+    public suspend fun saveImageGenCompose(compose: ai.anya.companion.core.model.image.ImageGenCompose)
     /** Agent-shared files pushed from desktop for download on this device. */
     public val fileOffers: SharedFlow<CompanionFileOffer>
     /** Agent-shared preview URLs (already proxied through the desktop gateway). */
@@ -82,12 +92,33 @@ public interface SessionRepository {
 
     public fun messages(sessionId: String): Flow<List<ChatMessage>>
     public fun compose(sessionId: String): Flow<SessionCompose>
+    /** Mid-turn staged messages (shared with desktop). */
+    public fun stagedMessages(sessionId: String): Flow<List<String>>
+    public suspend fun refreshStaged(sessionId: String): AnyaResult<List<String>>
+    public suspend fun pushStaged(sessionId: String, message: String): AnyaResult<List<String>>
+    public suspend fun removeStaged(sessionId: String, index: Int): AnyaResult<List<String>>
+    public suspend fun guideStaged(sessionId: String, index: Int): AnyaResult<Unit>
+    public suspend fun popStaged(sessionId: String): AnyaResult<String?>
     public fun models(): StateFlow<List<ChatModelInfo>>
     public fun planTasks(sessionId: String): Flow<List<PlanTaskItem>>
+    /** Rewind points from the last `session.history` (desktop ≥ 0.2.18). */
+    public fun checkpoints(sessionId: String): Flow<List<ai.anya.companion.core.model.session.SessionCheckpoint>>
+    /** Prompt-cache usage per assistant message, from history and live `chat.tokenUsage`. */
+    public fun cacheUsages(sessionId: String): Flow<Map<String, ai.anya.companion.core.model.session.MessageCacheUsage>>
 
     public suspend fun refreshSessions(): AnyaResult<List<ChatSessionSummary>>
+    public suspend fun refreshArchivedSessions(): AnyaResult<List<ChatSessionSummary>>
     public suspend fun loadHistory(sessionId: String): AnyaResult<List<ChatMessage>>
     public suspend fun deleteSession(sessionId: String): AnyaResult<Unit>
+    /** Archive (`true`) or restore (`false`) a session on desktop. */
+    public suspend fun archiveSession(sessionId: String, archived: Boolean): AnyaResult<Unit>
+    /** Archive / restore a workspace and every session bound to it. */
+    public suspend fun archiveWorkspace(workspaceId: String, archived: Boolean): AnyaResult<Unit>
+    public suspend fun refreshArchivedWorkspaces(): AnyaResult<List<WorkspaceSummary>>
+    /** Roll back to the checkpoint before user turn [turn]; history is reloaded on success. */
+    public suspend fun rewindSession(sessionId: String, turn: Int): AnyaResult<Unit>
+    public suspend fun refreshImageGenOptions(): AnyaResult<ai.anya.companion.core.model.image.ImageGenOptions>
+    public suspend fun setImageGenModel(provider: String, model: String): AnyaResult<ai.anya.companion.core.model.image.ImageGenOptions>
 
     /**
      * Search message bodies (and reasoning) across sessions.
@@ -107,6 +138,8 @@ public interface SessionRepository {
         chatModelProvider: String? = null,
         /** Binds a brand-new session to this workspace; ignored for existing sessions. */
         workspaceId: String? = null,
+        /** Image-mode toolbar choices; only sent when the mode is Image. */
+        imageGen: ai.anya.companion.core.model.protocol.ImageGenWire? = null,
     ): AnyaResult<String>
     public suspend fun cancel(messageId: String): AnyaResult<Unit>
     public suspend fun refreshCompose(sessionId: String): AnyaResult<SessionCompose>
@@ -211,6 +244,12 @@ public interface LocaleRepository {
     public val language: StateFlow<AppLanguage>
     public fun current(): AppLanguage
     public fun setLanguage(language: AppLanguage)
+}
+
+public interface ThemeRepository {
+    public val theme: StateFlow<AppTheme>
+    public fun current(): AppTheme
+    public fun setTheme(theme: AppTheme)
 }
 
 /**

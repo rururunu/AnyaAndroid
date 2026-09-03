@@ -21,7 +21,7 @@
 
 <p align="center">
   <img alt="platform" src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=flat-square" />
-  <img alt="release" src="https://img.shields.io/badge/version-v0.1.2-4D6BFE?style=flat-square" />
+  <img alt="release" src="https://img.shields.io/badge/version-v0.1.6-4D6BFE?style=flat-square" />
   <img alt="stack" src="https://img.shields.io/badge/Compose%20%2B%20Hilt%20%2B%20OkHttp-black?style=flat-square" />
 </p>
 
@@ -38,7 +38,7 @@
 |                    |                                                                                          |
 | ------------------ | ---------------------------------------------------------------------------------------- |
 | **Pair**           | Scan the desktop “Connect phone” QR, or paste host / token. Deep link: `anya://pair`.    |
-| **Chat**           | Same sessions as the PC: send, stream replies, cancel, switch Ask / Agent / Plan.        |
+| **Chat**           | Same sessions as the PC: send, stream replies, cancel, switch Ask / Agent / Plan / Image. |
 | **Approvals**      | Tool allow-once / session / deny, plus `ask_user` and plan cards.                        |
 | **Files**          | Attach from the phone (chunked upload, up to 500MB). Tap a desktop offer to download.    |
 | **Reachability**   | Same Wi-Fi uses LAN `ws://`. Away from home, Cloudflare Tunnel `wss://`.                 |
@@ -113,7 +113,7 @@ Files the Agent finds on the PC are not dumped onto the phone. **Inbox → Resul
   <img src="./docs/img/inbox_result.png" alt="Inbox results — files the desktop Agent offered, pulled on demand" width="280" />
 </p>
 
-**Settings** picks which Anya.exe you are talking to: host list, reconnect, re-pair when a Quick Tunnel hostname rotated, unpair, language, and in-app updates. Model API keys never leave the PC.
+**Settings** picks which Anya.exe you are talking to: host list, reconnect, re-pair when a Quick Tunnel hostname rotated, unpair, language, theme, and in-app updates. Model API keys never leave the PC.
 
 ---
 

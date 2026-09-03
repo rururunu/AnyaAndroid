@@ -7,6 +7,8 @@ public data class WorkspaceSummary(
     public val id: String,
     public val name: String,
     public val pinned: Boolean = false,
+    public val archived: Boolean = false,
+    public val rootPath: String? = null,
 )
 
 @Serializable
@@ -68,6 +70,8 @@ public data class UploadedCompanionFile(
     public val path: String,
     public val name: String,
     public val size: Long,
+    /** Where the desktop stored it (desktop ≥ 0.2.18); usable as a `path:` image reference. */
+    public val absolutePath: String? = null,
 )
 
 /** Desktop Agent offered a workspace file for Companion download/preview. */

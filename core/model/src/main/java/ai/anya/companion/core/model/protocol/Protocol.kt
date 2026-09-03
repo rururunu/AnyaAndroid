@@ -40,9 +40,17 @@ public data class DeviceCredential(
     public val lastGoodScheme: String? = null,
     /** User-chosen host label. Empty falls back to [HostDisplayName.DEFAULT]. */
     public val displayName: String = "",
+    /**
+     * Local roster slot id (one per paired desktop). Distinct from [deviceId], which is the
+     * stable phone identity sent in `hello`. Empty → legacy rows use [deviceId] as the key.
+     */
+    public val desktopKey: String = "",
 ) {
     public fun resolvedDisplayName(): String =
         HostDisplayName.orFallback(displayName)
+
+    /** Key for phone-side multi-desktop roster operations. */
+    public fun rosterKey(): String = desktopKey.trim().ifEmpty { deviceId }
 
     public fun endpointKey(): String = "$scheme://$host:$port"
 
@@ -155,6 +163,8 @@ public sealed class ClientMessage {
         public val deviceId: String,
         public val credential: String,
         public val appVersion: String,
+        /** Phone label for the desktop paired-device list (`Build.MODEL` / system name). */
+        public val deviceName: String? = null,
     ) : ClientMessage()
 
     @Serializable
@@ -168,6 +178,40 @@ public sealed class ClientMessage {
         public val toolApprovalMode: String? = null,
         public val chatModel: String? = null,
         public val chatModelProvider: String? = null,
+        /** Image-mode toolbar choices (desktop ≥ 0.2.18); ignored in other modes. */
+        public val imageGen: ImageGenWire? = null,
+    ) : ClientMessage()
+
+    /** List archived workspaces (desktop `list_archived_workspaces`). */
+    @Serializable
+    @SerialName("workspace.listArchived")
+    public data class WorkspaceListArchived(
+        public val requestId: String,
+    ) : ClientMessage()
+
+    /** Archive / restore a workspace together with its sessions. */
+    @Serializable
+    @SerialName("workspace.archive")
+    public data class WorkspaceArchive(
+        public val requestId: String,
+        public val workspaceId: String,
+        public val archived: Boolean,
+    ) : ClientMessage()
+
+    /** Image-mode choices configured on the desktop (model / provider / styles). */
+    @Serializable
+    @SerialName("imageGen.options")
+    public data class ImageGenOptions(
+        public val requestId: String,
+    ) : ClientMessage()
+
+    /** Switch the desktop image model (Settings → Image). */
+    @Serializable
+    @SerialName("imageGen.setModel")
+    public data class ImageGenSetModel(
+        public val requestId: String,
+        public val provider: String,
+        public val model: String,
     ) : ClientMessage()
 
     @Serializable
@@ -197,6 +241,33 @@ public sealed class ClientMessage {
         public val sessionId: String,
     ) : ClientMessage()
 
+    /** Archive or restore a chat session (`archived` true/false). */
+    @Serializable
+    @SerialName("session.archive")
+    public data class SessionArchive(
+        public val requestId: String,
+        public val sessionId: String,
+        public val archived: Boolean,
+    ) : ClientMessage()
+
+    /** List archived chat sessions. */
+    @Serializable
+    @SerialName("session.listArchived")
+    public data class SessionListArchived(
+        public val requestId: String,
+    ) : ClientMessage()
+
+    /** Roll a session back to the checkpoint taken before user turn [turn] (desktop ≥ 0.2.18). */
+    @Serializable
+    @SerialName("session.rewind")
+    public data class SessionRewind(
+        public val requestId: String,
+        public val sessionId: String,
+        public val turn: Int,
+        /** `code` | `conversation` | `both`. */
+        public val restore: String = "both",
+    ) : ClientMessage()
+
     @Serializable
     @SerialName("session.compose.get")
     public data class SessionComposeGet(
@@ -215,6 +286,51 @@ public sealed class ClientMessage {
         public val chatModelProvider: String? = null,
         public val chatModelLabel: String? = null,
         public val reasoningEffort: String? = null,
+    ) : ClientMessage()
+
+    @Serializable
+    @SerialName("session.staged.get")
+    public data class SessionStagedGet(
+        public val requestId: String,
+        public val sessionId: String,
+    ) : ClientMessage()
+
+    @Serializable
+    @SerialName("session.staged.push")
+    public data class SessionStagedPush(
+        public val requestId: String,
+        public val sessionId: String,
+        public val message: String,
+    ) : ClientMessage()
+
+    @Serializable
+    @SerialName("session.staged.remove")
+    public data class SessionStagedRemove(
+        public val requestId: String,
+        public val sessionId: String,
+        public val index: Int,
+    ) : ClientMessage()
+
+    @Serializable
+    @SerialName("session.staged.guide")
+    public data class SessionStagedGuide(
+        public val requestId: String,
+        public val sessionId: String,
+        public val index: Int,
+    ) : ClientMessage()
+
+    @Serializable
+    @SerialName("session.staged.pop")
+    public data class SessionStagedPop(
+        public val requestId: String,
+        public val sessionId: String,
+    ) : ClientMessage()
+
+    @Serializable
+    @SerialName("session.staged.clear")
+    public data class SessionStagedClear(
+        public val requestId: String,
+        public val sessionId: String,
     ) : ClientMessage()
 
     @Serializable
@@ -352,6 +468,16 @@ public sealed class ClientMessage {
         public const val PROTOCOL_VERSION: Int = 1
     }
 }
+
+/** Mirrors desktop `ImageGenSendOptions`; `styleId` lets the desktop resolve custom templates. */
+@Serializable
+public data class ImageGenWire(
+    public val size: String? = null,
+    public val quality: String? = null,
+    public val n: Int? = null,
+    public val stylePrompt: String? = null,
+    public val styleId: String? = null,
+)
 
 @Serializable
 public enum class ApprovalDecisionWire {

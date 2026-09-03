@@ -129,11 +129,12 @@ public fun AnyaMarkdown(
                     )
                 }
                 is MarkdownPart.Code -> {
-                    if (part.language == "chart") {
+                    when (part.language) {
                         // Chart fences are handled by AnyaChatContent; fall back to JSON block.
-                        AnyaCodeFenceBlock(language = "json", code = part.code)
-                    } else {
-                        AnyaCodeFenceBlock(language = part.language, code = part.code)
+                        "chart" -> AnyaCodeFenceBlock(language = "json", code = part.code)
+                        // Markdown rendered outside AnyaChatContent (docs, previews) still gets diagrams.
+                        "mermaid" -> AnyaMermaidBlock(source = part.code.trim())
+                        else -> AnyaCodeFenceBlock(language = part.language, code = part.code)
                     }
                 }
             }
