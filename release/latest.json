@@ -1,8 +1,8 @@
 {
-  "version": "0.1.6",
-  "versionCode": 7,
-  "notes": "v0.1.6：Agent 运行中发消息会暂存并与桌面同步（引导=软注入，回合结束自动发送）；设置可切换跟随系统/浅色/深色；上下文占用显示本对话缓存命中率；点吉祥物有弹跳震动；修复对话变空与附加后输入框无法编辑。暂存队列需桌面 Anya ≥ 0.2.18。",
-  "apkUrl": "https://github.com/rururunu/AnyaAndroid/releases/download/v0.1.6/Anya-v0.1.6.apk",
-  "sizeBytes": 3052174,
-  "sha256": "d15ce067aac6897bc06721c02220901100e1ff7b4bd5feab0d682504469a6ede"
+  "version": "0.1.7",
+  "versionCode": 8,
+  "notes": "v0.1.7：修复生图模式下生成的图片点击下载无反应的问题——此前此类图片只存在于本地预览缓存、不在消息文件列表，导出时找不到文件而静默失败；现在会从缓存真正导出到系统 Download，成功后按钮变为「打开」。",
+  "apkUrl": "https://github.com/rururunu/AnyaAndroid/releases/download/v0.1.7/Anya-v0.1.7.apk",
+  "sizeBytes": 3052178,
+  "sha256": "2b160092c6be9871da8aee51c3e725968dd4dc11ffef89bf3009085ff87f2642"
 }

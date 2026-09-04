@@ -1245,11 +1245,18 @@ public class ChatViewModel @Inject constructor(
 
     public fun exportSharedFile(offerId: String) {
         val sid = activeSessionId.value ?: return
-        val file = state.value.messages
+        val messageFile = state.value.messages
             .asSequence()
             .flatMap { it.sharedFiles.asSequence() }
             .firstOrNull { it.offerId == offerId && it.status == SharedFileStatus.Ready }
-            ?: return
+        // Generated images and reply `![…](path:…)` thumbnails live only in imagePreviewCache
+        // (offerId "preview-…"), never in message.sharedFiles — resolve them too or "下载" no-ops.
+        val cachedFile = if (messageFile != null) null else {
+            imagePreviewCache.value.values.firstOrNull {
+                it.offerId == offerId && it.status == SharedFileStatus.Ready
+            }
+        }
+        val file = messageFile ?: cachedFile ?: return
         val localPath = file.localPath ?: return
         if (!file.exportedUri.isNullOrBlank()) return
         _download.value = FileDownloadUiState(
@@ -1260,8 +1267,16 @@ public class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = exportCachedFile(localPath, file.name, file.mime)) {
                 is AnyaResult.Success -> {
-                    sessionRepository.patchLocalSharedFile(sid, offerId) { current ->
-                        current.copy(exportedUri = result.data)
+                    if (messageFile != null) {
+                        sessionRepository.patchLocalSharedFile(sid, offerId) { current ->
+                            current.copy(exportedUri = result.data)
+                        }
+                    } else {
+                        imagePreviewCache.update { current ->
+                            current.mapValues { (_, v) ->
+                                if (v.offerId == offerId) v.copy(exportedUri = result.data) else v
+                            }
+                        }
                     }
                     _download.value = FileDownloadUiState(
                         fileName = file.name,
