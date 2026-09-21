@@ -27,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -36,7 +37,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import ai.anya.companion.core.designsystem.component.AnyaSecondaryButton
+import ai.anya.companion.core.designsystem.component.AnyaSheetActionRow
+import ai.anya.companion.core.designsystem.component.AnyaSheetCard
 import ai.anya.companion.core.designsystem.theme.AnyaColors
 import ai.anya.companion.core.designsystem.theme.AnyaSpace
 
@@ -117,8 +119,7 @@ private fun rememberDiffAnnotatedString(lines: List<String>): AnnotatedString {
 }
 
 /**
- * Full-screen unified diff viewer, colored like the desktop diff panel:
- * green added rows, red removed rows, muted hunk headers.
+ * Full-screen diff viewer with unified / split toggle.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -182,7 +183,7 @@ public fun DiffViewerSheet(
                 IconButton(onClick = onDismiss) {
                     Icon(
                         imageVector = Icons.Rounded.Close,
-                        contentDescription = "关闭",
+                        contentDescription = stringResource(R.string.chat_diff_close),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(20.dp),
                     )
@@ -216,7 +217,7 @@ public fun DiffViewerSheet(
                     )
                     if (parsed.truncated) {
                         Text(
-                            text = "…diff 过长，仅显示前 $MAX_DIFF_LINES 行",
+                            text = stringResource(R.string.chat_diff_truncated, MAX_DIFF_LINES),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = AnyaSpace.Sm),
@@ -225,9 +226,19 @@ public fun DiffViewerSheet(
                 }
             }
             if (onDownload != null) {
-                AnyaSecondaryButton(
-                    text = "下载此文件",
-                    onClick = onDownload,
+                AnyaSheetCard {
+                    AnyaSheetActionRow(
+                        label = stringResource(R.string.chat_diff_download),
+                        color = MaterialTheme.colorScheme.primary,
+                        onClick = onDownload,
+                    )
+                }
+            }
+            AnyaSheetCard {
+                AnyaSheetActionRow(
+                    label = stringResource(R.string.chat_diff_close),
+                    emphasized = true,
+                    onClick = onDismiss,
                 )
             }
         }

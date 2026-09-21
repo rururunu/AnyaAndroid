@@ -1,5 +1,6 @@
 package ai.anya.companion.navigation
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.layout.Arrangement
@@ -10,13 +11,17 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Inbox
 import androidx.compose.material.icons.rounded.Add
@@ -25,54 +30,56 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import ai.anya.companion.R
 import androidx.compose.foundation.layout.padding as layoutPadding
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import ai.anya.companion.core.designsystem.component.AnyaBottomNavBar
 import ai.anya.companion.core.designsystem.component.AnyaBottomNavItem
+import ai.anya.companion.core.designsystem.component.AnyaBrandRow
 import ai.anya.companion.core.designsystem.component.AnyaConnectionChip
-import ai.anya.companion.core.designsystem.component.AnyaFloatingActionButton
+import ai.anya.companion.core.designsystem.component.AnyaGlassFloatingActionButton
+import ai.anya.companion.core.designsystem.component.AnyaGlassBottomNavBar
+import ai.anya.companion.core.designsystem.component.AnyaGlassBottomSheet
+import ai.anya.companion.core.designsystem.component.AnyaGlassConnectionChip
+import ai.anya.companion.core.designsystem.component.AnyaGlassIconChip
 import ai.anya.companion.core.designsystem.component.AnyaMetaRow
-import ai.anya.companion.core.designsystem.component.AnyaPrimaryButton
-import ai.anya.companion.core.designsystem.component.AnyaScreen
-import ai.anya.companion.core.designsystem.component.AnyaSecondaryButton
+import ai.anya.companion.core.designsystem.component.AnyaSheetActionRow
+import ai.anya.companion.core.designsystem.component.AnyaSheetCard
+import ai.anya.companion.core.designsystem.component.AnyaSheetHeader
+import ai.anya.companion.core.designsystem.component.AnyaSheetInfoRow
 import ai.anya.companion.core.designsystem.component.AnyaStatusTone
 import ai.anya.companion.core.designsystem.component.AnyaSurfaceCard
-import ai.anya.companion.core.designsystem.component.AnyaTopBar
-import ai.anya.companion.core.designsystem.component.AnyaTopBarIconChip
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import ai.anya.companion.core.designsystem.haptic.rememberAnyaHaptics
 import ai.anya.companion.core.designsystem.icon.AnyaIcons
+import ai.anya.companion.core.designsystem.theme.AnyaColors
 import ai.anya.companion.core.designsystem.theme.AnyaSpace
 import ai.anya.companion.core.domain.repository.ConnectionState
 import ai.anya.companion.core.model.protocol.DeviceCredential
 import ai.anya.companion.feature.approval.ApprovalTabContent
 import ai.anya.companion.feature.approval.ApprovalViewModel
-import ai.anya.companion.feature.sessions.SessionSearchPanel
 import ai.anya.companion.feature.sessions.SessionsAskContent
 import ai.anya.companion.feature.sessions.SessionsSegmentHeader
 import ai.anya.companion.feature.sessions.SessionsViewModel
@@ -86,8 +93,19 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlin.math.roundToInt
 
-/** Matches [SessionsSegmentHeader] / inbox segment: 16 + 44 + 12. Overlay so inbox isn't pushed down. */
-private val SegmentHeaderOccupied = AnyaSpace.Lg + 44.dp + AnyaSpace.Md
+/** Height of the segment control row (44) with its vertical padding (16 top + 12 bottom). */
+private val SegmentRowHeight = AnyaSpace.Lg + 44.dp + AnyaSpace.Md
+
+/**
+ * At-rest top inset for the Ask / Workspace lists, so the first card sits *below* the
+ * segment capsule instead of under it. The lists themselves are bounded from just under
+ * the brand row rather than from `segmentTop` — that is what lets cards scroll up behind
+ * the capsule and give the glass something to refract instead of flat page background.
+ */
+private val SegmentContentInset = SegmentRowHeight
+
+/** Height of the floating brand row (status-bar padding is applied separately). */
+private val TopChromeHeight = 48.dp
 
 /** Continuous pager pages: Ask → Workspace → Inbox → Settings. */
 private object MainPage {
@@ -108,6 +126,9 @@ private object MainPage {
         "approvals" -> Approvals
         else -> Settings
     }
+
+    /** Bottom-nav item order, matching the `items` list handed to the nav bar. */
+    val BottomNavIds = listOf("conversations", "approvals", "settings")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -115,6 +136,7 @@ private object MainPage {
 fun MainRoute(
     onOpenSession: (sessionId: String, messageId: String?) -> Unit,
     onNewSession: (workspaceId: String?) -> Unit,
+    onOpenSearch: () -> Unit,
     onOpenConnectionSettings: () -> Unit,
     onOpenGeneralSettings: () -> Unit,
     onOpenAboutSettings: () -> Unit,
@@ -139,15 +161,11 @@ fun MainRoute(
         inboxAwarePagerNestedScroll(pagerState, inboxPagerState, defaultPagerNestedScroll)
     }
     var showConnectionPanel by rememberSaveable { mutableStateOf(false) }
-    var showSearchPanel by rememberSaveable { mutableStateOf(false) }
     var showHostSwitcher by rememberSaveable { mutableStateOf(false) }
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val searchSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
     var suppressNextSettleHaptic by rememberSaveable { mutableStateOf(false) }
 
     val sessionsState by sessionsViewModel.state.collectAsStateWithLifecycle()
-    val searchState by sessionsViewModel.searchState.collectAsStateWithLifecycle()
     val approvalState by approvalViewModel.state.collectAsStateWithLifecycle()
     val settingsState by settingsViewModel.state.collectAsStateWithLifecycle()
 
@@ -161,6 +179,10 @@ fun MainRoute(
         MainPage.Settings -> stringResource(R.string.nav_subtitle_settings)
         else -> stringResource(R.string.nav_subtitle_chats)
     }
+    // Pill position in bottom-nav *item* units: Ask(0) and Workspace(1) share the
+    // first item, so the pill only travels once the pager leaves Workspace.
+    val navProgress = (absolutePage - MainPage.Workspace)
+        .coerceIn(0f, (MainPage.BottomNavIds.size - 1).toFloat())
     val segmentProgress = absolutePage.coerceIn(0f, 1f)
     val showSegmentHeader = absolutePage < 2f
     val segmentHeaderAlpha = when {
@@ -191,6 +213,21 @@ fun MainRoute(
         ConnectionState.Disconnected -> stringResource(R.string.status_disconnected)
     }
 
+    // Liquid glass backdrop: the scrolling content below is rendered into this
+    // layer so the floating top chips / bottom bar can refract it.
+    //
+    // The draw lambda runs in DrawScope, not in a @Composable scope, so the background
+    // colour is read here and kept current via rememberUpdatedState instead of reading
+    // MaterialTheme inside the lambda (which is a compile error).
+    val backdropBackground by rememberUpdatedState(MaterialTheme.colorScheme.background)
+    val glassBackdrop = rememberLayerBackdrop {
+        drawRect(backdropBackground)
+        drawContent()
+    }
+
+    val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val segmentTop = statusBarTop + TopChromeHeight + SegmentRowHeight
+
     LaunchedEffect(pagerState) {
         snapshotFlow { pagerState.settledPage }
             .distinctUntilChanged()
@@ -200,7 +237,7 @@ fun MainRoute(
                 if (suppressNextSettleHaptic) {
                     suppressNextSettleHaptic = false
                 } else {
-                    haptics.linearTick()
+                    haptics.selection()
                 }
             }
     }
@@ -216,81 +253,29 @@ fun MainRoute(
         selectPage(MainPage.fromBottomNavId(navId, currentPage))
     }
 
-    fun dismissConnectionPanel(after: (() -> Unit)? = null) {
-        scope.launch {
-            sheetState.hide()
-            showConnectionPanel = false
-            after?.invoke()
-        }
+    fun selectTabStep(step: Int) {
+        val currentIndex = MainPage.BottomNavIds.indexOf(selectedNavId).coerceAtLeast(0)
+        val targetIndex = (currentIndex + step).coerceIn(0, MainPage.BottomNavIds.lastIndex)
+        if (targetIndex == currentIndex) return
+        haptics.selection()
+        selectTab(MainPage.BottomNavIds[targetIndex])
     }
 
-    AnyaScreen(
-        topBar = {
-            AnyaTopBar(
-                title = "Anya",
-                showBrand = true,
-                brandTitle = settingsState.credential?.resolvedDisplayName() ?: "Anya",
-                onBrandLongClick = {
-                    haptics.confirm()
-                    showHostSwitcher = true
-                },
-                subtitle = topSubtitle,
-                actions = {
-                    Row(
-                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
-                        modifier = Modifier.layoutPadding(end = AnyaSpace.Sm),
-                    ) {
-                        AnyaTopBarIconChip(
-                            icon = Icons.Rounded.Search,
-                            contentDescription = stringResource(R.string.nav_search_chats),
-                            onClick = {
-                                haptics.buttonPress()
-                                showSearchPanel = true
-                            },
-                        )
-                        AnyaConnectionChip(
-                            label = statusLabel,
-                            tone = tone,
-                            onClick = {
-                                haptics.buttonPress()
-                                showConnectionPanel = true
-                            },
-                        )
-                    }
-                },
-            )
-        },
-        bottomBar = {
-            AnyaBottomNavBar(
-                items = listOf(
-                    AnyaBottomNavItem(
-                        id = "conversations",
-                        label = stringResource(R.string.nav_conversations),
-                        icon = AnyaIcons.ChatCircleOutline,
-                        selectedIcon = AnyaIcons.ChatCircle,
-                    ),
-                    AnyaBottomNavItem(
-                        id = "approvals",
-                        label = stringResource(R.string.nav_inbox),
-                        icon = Icons.Outlined.Inbox,
-                        selectedIcon = Icons.Rounded.Inbox,
-                        badge = inboxBadge,
-                    ),
-                    AnyaBottomNavItem(
-                        id = "settings",
-                        label = stringResource(R.string.nav_settings),
-                        icon = Icons.Rounded.Settings,
-                        selectedIcon = Icons.Rounded.Settings,
-                        badge = if (settingsState.availableUpdateVersion != null) 1 else 0,
-                    ),
-                ),
-                selectedId = selectedNavId,
-                onSelect = ::selectTab,
-            )
-        },
-    ) {
-        Box(modifier = Modifier.fillMaxSize()) {
+    // The panel is an in-composition overlay now (not a ModalBottomSheet), so dismissal is
+    // a plain state flip and the overlay animates itself out.
+    fun dismissConnectionPanel(after: (() -> Unit)? = null) {
+        showConnectionPanel = false
+        after?.invoke()
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Content layer: rendered into the glass backdrop so the floating
+        // chrome (top chips / bottom bar) can refract it.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .layerBackdrop(glassBackdrop),
+        ) {
         HorizontalPager(
             state = pagerState,
             modifier = Modifier
@@ -311,7 +296,8 @@ fun MainRoute(
                     MainPage.Ask -> {
                         SessionsAskContent(
                             state = sessionsState,
-                            modifier = Modifier.padding(top = SegmentHeaderOccupied),
+                            modifier = Modifier.padding(top = statusBarTop + TopChromeHeight),
+                            contentPaddingTop = SegmentContentInset,
                             onOpenSession = { id ->
                                 haptics.linearTick()
                                 onOpenSession(id, null)
@@ -322,12 +308,15 @@ fun MainRoute(
                             },
                             onArchiveSession = sessionsViewModel::archiveSession,
                             onDeleteSession = sessionsViewModel::deleteSession,
+                            onRenameSession = sessionsViewModel::renameSession,
+                            onDismissActionError = sessionsViewModel::clearActionError,
                         )
                     }
                     MainPage.Workspace -> {
                         SessionsWorkspaceContent(
                             state = sessionsState,
-                            modifier = Modifier.padding(top = SegmentHeaderOccupied),
+                            modifier = Modifier.padding(top = statusBarTop + TopChromeHeight),
+                            contentPaddingTop = SegmentContentInset,
                             onToggleWorkspace = sessionsViewModel::toggleWorkspace,
                             onOpenSession = { id ->
                                 haptics.linearTick()
@@ -344,9 +333,14 @@ fun MainRoute(
                                 onNewSession(workspaceId)
                             },
                             onArchiveWorkspace = sessionsViewModel::archiveWorkspace,
+                            onRenameSession = sessionsViewModel::renameSession,
+                            onPinWorkspace = sessionsViewModel::pinWorkspace,
+                            onRenameWorkspace = sessionsViewModel::renameWorkspace,
+                            onDismissActionError = sessionsViewModel::clearActionError,
                         )
                     }
                     MainPage.Approvals -> {
+                        Box(modifier = Modifier.padding(top = statusBarTop + TopChromeHeight)) {
                         ApprovalTabContent(
                             state = approvalState,
                             pagerState = inboxPagerState,
@@ -356,8 +350,10 @@ fun MainRoute(
                             },
                             onDeleteResult = approvalViewModel::deleteResult,
                         )
+                        }
                     }
                     else -> {
+                        Box(modifier = Modifier.padding(top = statusBarTop + TopChromeHeight)) {
                         SettingsTabContent(
                             state = settingsState,
                             onOpenConnection = {
@@ -377,68 +373,138 @@ fun MainRoute(
                                 onOpenAboutSettings()
                             },
                         )
+                        }
                     }
                 }
             }
+        }
+
+        // Floating top chrome: brand row + liquid-glass action chips.
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                // Solid down to the segment capsule's top edge. The list is bounded at
+                // statusBarTop + TopChromeHeight, but the capsule sits AnyaSpace.Lg
+                // lower, so scrolled rows used to show through that 16dp strip and read
+                // as a seam between the brand row and the capsule. The bottom padding
+                // must keep matching SessionsSegmentHeader's top padding.
+                // `surface`, not `background`: the whole app is wrapped in a Material3
+                // `Surface` (see MainActivity), so every unpainted area below is
+                // colorScheme.surface (#FFFFFF). Painting this band with `background`
+                // shaded it #F8F8F8 and the seam returned as a colour step.
+                .background(MaterialTheme.colorScheme.surface)
+                .padding(bottom = AnyaSpace.Lg)
+                .statusBarsPadding()
+                .layoutPadding(horizontal = AnyaSpace.Screen)
+                .padding(top = AnyaSpace.Sm),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            AnyaBrandRow(
+                title = settingsState.credential?.resolvedDisplayName() ?: "Anya",
+                subtitle = topSubtitle,
+                onBrandLongClick = {
+                    haptics.longPress()
+                    showHostSwitcher = true
+                },
+            )
+            Spacer(modifier = Modifier.weight(1f))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
+            ) {
+                AnyaGlassIconChip(
+                    backdrop = glassBackdrop,
+                    icon = Icons.Rounded.Search,
+                    contentDescription = stringResource(R.string.nav_search_chats),
+                    onClick = {
+                        haptics.buttonPress()
+                        onOpenSearch()
+                    },
+                )
+                AnyaGlassConnectionChip(
+                    backdrop = glassBackdrop,
+                    label = statusLabel,
+                    tone = tone,
+                    onClick = {
+                        haptics.buttonPress()
+                        showConnectionPanel = true
+                    },
+                )
+            }
+        }
 
         if (showSegmentHeader) {
             SessionsSegmentHeader(
                 selectedIndex = segmentProgress.roundToInt().coerceIn(0, 1),
                 selectedProgress = segmentProgress,
+                backdrop = glassBackdrop,
                 onSegmentSelect = ::selectPage,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
+                    .layoutPadding(top = statusBarTop + TopChromeHeight)
                     .graphicsLayer { alpha = segmentHeaderAlpha },
             )
         }
 
+        // Floating liquid-glass bottom navigation.
+        AnyaGlassBottomNavBar(
+            items = listOf(
+                AnyaBottomNavItem(
+                    id = "conversations",
+                    label = stringResource(R.string.nav_conversations),
+                    icon = AnyaIcons.ChatCircleOutline,
+                    selectedIcon = AnyaIcons.ChatCircle,
+                ),
+                AnyaBottomNavItem(
+                    id = "approvals",
+                    label = stringResource(R.string.nav_inbox),
+                    icon = Icons.Outlined.Inbox,
+                    selectedIcon = Icons.Rounded.Inbox,
+                    badge = inboxBadge,
+                ),
+                AnyaBottomNavItem(
+                    id = "settings",
+                    label = stringResource(R.string.nav_settings),
+                    icon = Icons.Rounded.Settings,
+                    selectedIcon = Icons.Rounded.Settings,
+                    badge = if (settingsState.availableUpdateVersion != null) 1 else 0,
+                ),
+            ),
+            selectedId = selectedNavId,
+            onSelect = ::selectTab,
+            backdrop = glassBackdrop,
+            pillProgress = navProgress,
+            onSwipeStep = ::selectTabStep,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = AnyaSpace.Md),
+        )
+
         // Circular new-chat FAB: 随问 only — workspaces create sessions from the row +.
         if (absolutePage < 1f) {
-            AnyaFloatingActionButton(
+            AnyaGlassFloatingActionButton(
+                backdrop = glassBackdrop,
                 onClick = { onNewSession(null) },
                 icon = Icons.Rounded.Add,
                 contentDescription = stringResource(R.string.nav_new_chat),
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .layoutPadding(end = AnyaSpace.Screen, bottom = AnyaSpace.Xl)
+                    .layoutPadding(end = AnyaSpace.Screen, bottom = 96.dp)
                     .graphicsLayer { alpha = (1f - absolutePage).coerceIn(0f, 1f) },
             )
         }
-        }
-    }
 
-    if (showSearchPanel) {
-        ModalBottomSheet(
-            onDismissRequest = {
-                showSearchPanel = false
-                sessionsViewModel.clearSearch()
-            },
-            sheetState = searchSheetState,
-            containerColor = MaterialTheme.colorScheme.background,
-            tonalElevation = 0.dp,
-            dragHandle = { AnyaSheetDragHandle() },
-        ) {
-            SessionSearchPanel(
-                state = searchState,
-                onQueryChange = sessionsViewModel::onSearchQueryChange,
-                onOpenSession = { sessionId, messageId ->
-                    haptics.linearTick()
-                    // Navigate immediately; do not wait for sheet hide (can stall).
-                    showSearchPanel = false
-                    sessionsViewModel.clearSearch()
-                    onOpenSession(sessionId, messageId)
-                },
-            )
-        }
-    }
-
-    if (showConnectionPanel) {
-        ModalBottomSheet(
-            onDismissRequest = { showConnectionPanel = false },
-            sheetState = sheetState,
-            containerColor = MaterialTheme.colorScheme.background,
-            tonalElevation = 0.dp,
-            dragHandle = { AnyaSheetDragHandle() },
+        // Connection panel as a same-window glass overlay. It has to live inside this Box
+        // - a sibling of the recorded content, exactly like the nav bar and FAB above.
+        // A ModalBottomSheet runs in its own window, where `drawBackdrop` cannot sample
+        // this page's layer at all, so the panel used to render as a flat tint.
+        BackHandler(enabled = showConnectionPanel) { dismissConnectionPanel() }
+        AnyaGlassBottomSheet(
+            visible = showConnectionPanel,
+            onDismissRequest = { dismissConnectionPanel() },
+            backdrop = glassBackdrop,
         ) {
             ConnectionPanel(
                 connectionState = sessionsState.connectionState,
@@ -485,17 +551,13 @@ fun MainRoute(
     }
 }
 
-@Composable
-private fun AnyaSheetDragHandle() {
-    Box(
-        modifier = Modifier
-            .padding(top = 10.dp, bottom = 6.dp)
-            .size(width = 36.dp, height = 4.dp)
-            .clip(RoundedCornerShape(999.dp))
-            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.18f)),
-    )
-}
-
+/**
+ * Connection sheet content, structured the way Apple's HIG lays out an action sheet:
+ * a centered title block, an opaque grouped list for the connection details, one grouped
+ * card of text actions (destructive ones in red), and a separate emphasized Close card
+ * below. The sheet itself is already glass, so every control inside sits on a solid
+ * surface — layering glass rows over glass is what made the old buttons read muddy.
+ */
 @Composable
 private fun ConnectionPanel(
     connectionState: ConnectionState,
@@ -518,59 +580,88 @@ private fun ConnectionPanel(
         connectionState == ConnectionState.Connecting ||
         connectionState == ConnectionState.Reconnecting
 
+    val accent = MaterialTheme.colorScheme.primary
+    val inboxLabel = stringResource(R.string.connection_panel_view_inbox, pendingCount)
+    val reconnectLabel = stringResource(R.string.connection_panel_reconnect)
+    val disconnectLabel = stringResource(R.string.connection_panel_disconnect)
+    val goPairLabel = stringResource(R.string.connection_panel_go_pair)
+    val unpairLabel = stringResource(R.string.connection_panel_unpair)
+
+    // iOS action order: neutral actions first, destructive ones last.
+    val actions = buildList {
+        if (pendingCount > 0) add(Triple(inboxLabel, accent, onOpenInbox))
+        when {
+            canConnect -> add(Triple(reconnectLabel, accent, onConnect))
+            canDisconnect -> add(Triple(disconnectLabel, AnyaColors.Danger, onDisconnect))
+            credential == null -> add(Triple(goPairLabel, accent, onGoPair))
+        }
+        if (credential != null) add(Triple(unpairLabel, AnyaColors.Danger, onUnpair))
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = AnyaSpace.Screen)
-            .padding(bottom = AnyaSpace.Xxl),
-        verticalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
+            .padding(horizontal = AnyaSpace.Lg)
+            .padding(bottom = AnyaSpace.Xl),
+        verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(
-            text = stringResource(R.string.connection_panel_title),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
+        AnyaSheetHeader(
+            title = stringResource(R.string.connection_panel_title),
+            subtitle = stringResource(R.string.connection_panel_subtitle),
         )
-        Text(
-            text = stringResource(R.string.connection_panel_subtitle),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        AnyaSurfaceCard {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+        Spacer(modifier = Modifier.height(AnyaSpace.Xs))
+        AnyaSheetCard {
+            AnyaSheetInfoRow(
+                label = stringResource(R.string.connection_panel_status),
+                showDivider = credential != null,
             ) {
-                Text(text = stringResource(R.string.connection_panel_status), style = MaterialTheme.typography.bodyMedium)
                 AnyaConnectionChip(label = statusLabel, tone = tone)
             }
-            if (credential == null) {
-                Text(
-                    text = stringResource(R.string.connection_panel_not_paired),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+            if (credential != null) {
+                AnyaSheetInfoRow(
+                    label = stringResource(R.string.connection_panel_host),
+                    value = credential.resolvedDisplayName(),
                 )
-            } else {
-                AnyaMetaRow(label = stringResource(R.string.connection_panel_host), value = credential.resolvedDisplayName())
-                AnyaMetaRow(label = stringResource(R.string.connection_panel_address), value = credential.host)
-                AnyaMetaRow(label = stringResource(R.string.connection_panel_port), value = credential.port.toString())
+                AnyaSheetInfoRow(
+                    label = stringResource(R.string.connection_panel_address),
+                    value = credential.host,
+                )
+                AnyaSheetInfoRow(
+                    label = stringResource(R.string.connection_panel_port),
+                    value = credential.port.toString(),
+                    showDivider = false,
+                )
             }
         }
-        if (pendingCount > 0) {
-            AnyaSecondaryButton(
-                text = stringResource(R.string.connection_panel_view_inbox, pendingCount),
-                onClick = onOpenInbox,
+        if (credential == null) {
+            Text(
+                text = stringResource(R.string.connection_panel_not_paired),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        when {
-            canConnect -> AnyaPrimaryButton(text = stringResource(R.string.connection_panel_reconnect), onClick = onConnect)
-            canDisconnect -> AnyaPrimaryButton(text = stringResource(R.string.connection_panel_disconnect), onClick = onDisconnect)
-            credential == null -> AnyaPrimaryButton(text = stringResource(R.string.connection_panel_go_pair), onClick = onGoPair)
+        AnyaSheetCard {
+            actions.forEachIndexed { index, (label, color, action) ->
+                AnyaSheetActionRow(
+                    label = label,
+                    color = color,
+                    onClick = action,
+                    showDivider = index < actions.lastIndex,
+                )
+            }
         }
-        if (credential != null) {
-            AnyaSecondaryButton(text = stringResource(R.string.connection_panel_unpair), onClick = onUnpair)
+        // Close lives on its own card, separated from the action group — the
+        // action-sheet cancel pattern.
+        AnyaSheetCard {
+            AnyaSheetActionRow(
+                label = stringResource(R.string.connection_panel_close),
+                color = MaterialTheme.colorScheme.onSurface,
+                onClick = onDismiss,
+                showDivider = false,
+                emphasized = true,
+            )
         }
-        AnyaSecondaryButton(text = stringResource(R.string.connection_panel_close), onClick = onDismiss)
-        Spacer(modifier = Modifier.height(AnyaSpace.Sm))
     }
 }
 

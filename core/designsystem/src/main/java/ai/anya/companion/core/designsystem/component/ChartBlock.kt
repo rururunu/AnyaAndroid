@@ -1,20 +1,40 @@
 package ai.anya.companion.core.designsystem.component
 
 import android.annotation.SuppressLint
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color as AndroidColor
+import android.net.Uri
 import android.util.Base64
 import android.view.View
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import ai.anya.companion.core.designsystem.theme.LocalDarkTheme
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.FileProvider
+import ai.anya.companion.core.designsystem.theme.LocalDarkTheme
+import java.io.File
+import java.io.FileOutputStream
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -23,74 +43,122 @@ public fun AnyaChartBlock(
     modifier: Modifier = Modifier,
 ) {
     val dark = LocalDarkTheme.current
+    val context = LocalContext.current
     val html = remember(specJson, dark) { buildChartHtml(specJson, dark) }
-    AndroidView(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(280.dp),
-        factory = { context ->
-            WebView(context).apply {
-                setBackgroundColor(AndroidColor.TRANSPARENT)
-                setLayerType(View.LAYER_TYPE_HARDWARE, null)
-                background = null
-                settings.javaScriptEnabled = true
-                settings.domStorageEnabled = true
-                settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                settings.cacheMode = WebSettings.LOAD_DEFAULT
-                isVerticalScrollBarEnabled = false
-                isHorizontalScrollBarEnabled = false
-                webViewClient = object : WebViewClient() {
-                    override fun onPageFinished(view: WebView?, url: String?) {
-                        view?.setBackgroundColor(AndroidColor.TRANSPARENT)
-                        view?.evaluateJavascript(
-                            """
-                            (function(){
-                              document.documentElement.style.background='transparent';
-                              document.body.style.background='transparent';
-                              var c=document.getElementById('chart');
-                              if(c) c.style.background='transparent';
-                              var svg=document.querySelector('#chart svg');
-                              if(svg){
-                                svg.style.background='transparent';
-                                svg.removeAttribute('style');
-                                var rects=svg.querySelectorAll('rect');
-                                if(rects.length){
-                                  var bg=rects[0];
-                                  var w=bg.getAttribute('width');
-                                  var h=bg.getAttribute('height');
-                                  if(w && h && Number(w)>100 && Number(h)>100){
-                                    bg.setAttribute('fill','none');
-                                    bg.setAttribute('fill-opacity','0');
-                                  }
-                                }
-                              }
-                            })();
-                            """.trimIndent(),
+    var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    Column(modifier = modifier.fillMaxWidth()) {
+        Box {
+            AndroidView(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(280.dp),
+                factory = { ctx ->
+                    WebView(ctx).apply {
+                        setBackgroundColor(AndroidColor.TRANSPARENT)
+                        setLayerType(View.LAYER_TYPE_HARDWARE, null)
+                        background = null
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                        settings.cacheMode = WebSettings.LOAD_DEFAULT
+                        isVerticalScrollBarEnabled = false
+                        isHorizontalScrollBarEnabled = false
+                        webViewClient = object : WebViewClient() {
+                            override fun onPageFinished(view: WebView?, url: String?) {
+                                view?.setBackgroundColor(AndroidColor.TRANSPARENT)
+                                view?.evaluateJavascript(TRANSPARENT_JS, null)
+                            }
+                        }
+                        loadDataWithBaseURL(
+                            "https://cdn.jsdelivr.net/",
+                            html,
+                            "text/html",
+                            "UTF-8",
                             null,
                         )
+                        webViewRef = this
                     }
-                }
-                loadDataWithBaseURL(
-                    "https://cdn.jsdelivr.net/",
-                    html,
-                    "text/html",
-                    "UTF-8",
-                    null,
+                },
+                update = { webView ->
+                    webViewRef = webView
+                    webView.setBackgroundColor(AndroidColor.TRANSPARENT)
+                    webView.loadDataWithBaseURL(
+                        "https://cdn.jsdelivr.net/",
+                        html,
+                        "text/html",
+                        "UTF-8",
+                        null,
+                    )
+                },
+            )
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(
+                onClick = {
+                    val view = webViewRef ?: return@TextButton
+                    if (view.width <= 0 || view.height <= 0) return@TextButton
+                    val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+                    val canvas = Canvas(bitmap)
+                    view.draw(canvas)
+                    runCatching {
+                        val dir = File(context.cacheDir, "charts").apply { mkdirs() }
+                        val file = File(dir, "anya-chart-${System.currentTimeMillis()}.png")
+                        FileOutputStream(file).use { out ->
+                            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                        }
+                        val uri: Uri = FileProvider.getUriForFile(
+                            context,
+                            "${context.packageName}.fileprovider",
+                            file,
+                        )
+                        val intent = Intent(Intent.ACTION_SEND).apply {
+                            type = "image/png"
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        context.startActivity(Intent.createChooser(intent, "导出图表"))
+                    }
+                    bitmap.recycle()
+                },
+            ) {
+                Text(
+                    text = "导出 PNG",
+                    style = MaterialTheme.typography.labelMedium,
                 )
             }
-        },
-        update = { webView ->
-            webView.setBackgroundColor(AndroidColor.TRANSPARENT)
-            webView.loadDataWithBaseURL(
-                "https://cdn.jsdelivr.net/",
-                html,
-                "text/html",
-                "UTF-8",
-                null,
-            )
-        },
-    )
+        }
+    }
 }
+
+private const val TRANSPARENT_JS = """
+(function(){
+  document.documentElement.style.background='transparent';
+  document.body.style.background='transparent';
+  var c=document.getElementById('chart');
+  if(c) c.style.background='transparent';
+  var svg=document.querySelector('#chart svg');
+  if(svg){
+    svg.style.background='transparent';
+    svg.removeAttribute('style');
+    var rects=svg.querySelectorAll('rect');
+    if(rects.length){
+      var bg=rects[0];
+      var w=bg.getAttribute('width');
+      var h=bg.getAttribute('height');
+      if(w && h && Number(w)>100 && Number(h)>100){
+        bg.setAttribute('fill','none');
+        bg.setAttribute('fill-opacity','0');
+      }
+    }
+  }
+})();
+"""
 
 private fun buildChartHtml(specJson: String, dark: Boolean): String {
     val b64 = Base64.encodeToString(specJson.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
@@ -98,7 +166,6 @@ private fun buildChartHtml(specJson: String, dark: Boolean): String {
     val splitLineColor = if (dark) "rgba(255,255,255,0.12)" else "rgba(0,0,0,0.08)"
     val labelColor = if (dark) "#e5e7eb" else "#344054"
     val errColor = if (dark) "#9aa0a8" else "#666666"
-    // Keep page + echarts fully transparent so the chat surface shows through.
     return """
         <!DOCTYPE html>
         <html style="background:transparent!important">
@@ -223,12 +290,10 @@ private fun buildChartHtml(specJson: String, dark: Boolean): String {
             }
             try {
               const el = document.getElementById('chart');
-              // SVG renderer + no built-in dark theme (dark theme paints an opaque bg).
               const chart = echarts.init(el, null, { renderer: 'svg' });
               const option = buildOption(spec);
               option.backgroundColor = 'transparent';
               chart.setOption(option, { notMerge: true });
-              // Strip any full-size background rect ECharts may still insert.
               requestAnimationFrame(function() {
                 var svg = el.querySelector('svg');
                 if (!svg) return;

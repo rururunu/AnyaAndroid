@@ -1,8 +1,8 @@
 {
-  "version": "0.1.7",
-  "versionCode": 8,
-  "notes": "v0.1.7：修复生图模式下生成的图片点击下载无反应的问题——此前此类图片只存在于本地预览缓存、不在消息文件列表，导出时找不到文件而静默失败；现在会从缓存真正导出到系统 Download，成功后按钮变为「打开」。",
-  "apkUrl": "https://github.com/rururunu/AnyaAndroid/releases/download/v0.1.7/Anya-v0.1.7.apk",
-  "sizeBytes": 3052178,
-  "sha256": "2b160092c6be9871da8aee51c3e725968dd4dc11ffef89bf3009085ff87f2642"
+  "version": "0.1.8",
+  "versionCode": 9,
+  "notes": "v0.1.8：对齐桌面 Anya 0.2.23——新增「审查更改」（Diff 查看器）、会话重命名与工作区置顶/改名、`/` Slash 命令、`/context` 环境上下文卡片与图表导出 PNG；液态玻璃统一为一套。相关 RPC 需桌面 Anya ≥ 0.2.23。",
+  "apkUrl": "https://github.com/rururunu/AnyaAndroid/releases/download/v0.1.8/Anya-v0.1.8.apk",
+  "sizeBytes": 3329822,
+  "sha256": "0e96d4ce1639d91db9ff2b5e246b9839b8aab213c6ce19a4c0c83671b9de3478"
 }

@@ -54,6 +54,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import com.kyant.backdrop.Backdrop
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshState
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
@@ -68,6 +69,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -253,6 +255,8 @@ public fun AnyaPullToRefreshBox(
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
     state: PullToRefreshState = rememberPullToRefreshState(),
+    /** Pushes the indicator below whatever floating chrome sits above the list. */
+    indicatorTopInset: androidx.compose.ui.unit.Dp = 0.dp,
     content: @Composable () -> Unit,
 ) {
     PullToRefreshBox(
@@ -264,6 +268,7 @@ public fun AnyaPullToRefreshBox(
             AnyaPullRefreshIndicator(
                 state = state,
                 isRefreshing = isRefreshing,
+                topInset = indicatorTopInset,
                 modifier = Modifier.align(Alignment.TopCenter),
             )
         },
@@ -276,6 +281,7 @@ public fun AnyaPullToRefreshBox(
 private fun AnyaPullRefreshIndicator(
     state: PullToRefreshState,
     isRefreshing: Boolean,
+    topInset: androidx.compose.ui.unit.Dp = 0.dp,
     modifier: Modifier = Modifier,
 ) {
     if (!isRefreshing && state.distanceFraction <= 0.02f) return
@@ -295,13 +301,21 @@ private fun AnyaPullRefreshIndicator(
     val rotation = if (isRefreshing) spinAngle else (state.distanceFraction * 180f).coerceIn(0f, 180f)
     Surface(
         modifier = modifier
-            .padding(top = 10.dp)
+            // The list now starts under the floating chrome, so the pill has to be
+            // pushed past the segment capsule or that chrome covers it.
+            .padding(top = 10.dp + topInset)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
             },
         shape = RoundedCornerShape(999.dp),
-        color = MaterialTheme.colorScheme.surface,
+        // Glass family: same translucent fill + hairline rim as the rest of the
+        // chrome, but kept fairly opaque since the pill floats over live text.
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+        border = BorderStroke(
+            width = 0.75.dp,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
+        ),
         shadowElevation = 4.dp,
         tonalElevation = 0.dp,
     ) {
@@ -909,19 +923,52 @@ public fun AnyaSecondaryButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    /**
+     * Non-null turns this into a glass pane over [backdrop] instead of an outlined box, for
+     * secondary actions that sit on a glass surface (the connection sheet). The M3 button
+     * stays underneath — transparent container, no border — so ripple and semantics keep
+     * working; only the fill changes.
+     */
+    backdrop: Backdrop? = null,
 ) {
     val haptics = rememberAnyaHaptics()
+    val shape = RoundedCornerShape(AnyaSpace.ControlRadius)
+    val sized = modifier
+        .fillMaxWidth()
+        .height(48.dp)
+    val fill = if (backdrop == null) {
+        sized
+    } else {
+        val lifted = lerp(
+            MaterialTheme.colorScheme.surface,
+            MaterialTheme.colorScheme.onBackground,
+            AnyaGlassTokens.SheetTintLift,
+        )
+        sized
+            .clip(shape)
+            .anyaGlassSurface(
+                backdrop = backdrop,
+                shape = shape,
+                surfaceTint = lifted.copy(alpha = AnyaGlassTokens.SheetControlTintAlpha),
+                blurRadius = AnyaGlassTokens.SheetBlur,
+                refractionHeight = AnyaGlassTokens.SheetRefractionHeight,
+                refractionAmount = AnyaGlassTokens.SheetRefractionAmount,
+                chromaticAberration = true,
+            )
+    }
     OutlinedButton(
         onClick = {
             haptics.buttonPress()
             onClick()
         },
         enabled = enabled,
-        modifier = modifier
-            .fillMaxWidth()
-            .height(48.dp),
-        shape = RoundedCornerShape(AnyaSpace.ControlRadius),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        modifier = fill,
+        shape = shape,
+        border = if (backdrop == null) {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+        } else {
+            null
+        },
     ) {
         Text(text = text, style = MaterialTheme.typography.labelLarge)
     }

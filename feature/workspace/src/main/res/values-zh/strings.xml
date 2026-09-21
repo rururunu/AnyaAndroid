@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="workspace_title">工作区</string>
+    <string name="workspace_subtitle">Agent 上下文</string>
+    <string name="workspace_unbound_title">未绑定工作区</string>
+    <string name="workspace_unbound_subtitle">连接后可查看 Agent 工作区与变更。</string>
+    <string name="workspace_run_state">Run 状态</string>
+    <string name="workspace_changed_files">变更文件</string>
+    <string name="workspace_no_changes">暂无变更</string>
+</resources>

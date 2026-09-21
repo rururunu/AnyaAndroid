@@ -2,6 +2,26 @@
 
 Companion 的版本记录。桌面 Anya 的变更见 [rururunu/Anya](https://github.com/rururunu/Anya)。
 
+## [0.1.8] - 2026-09-20
+
+对齐桌面 Anya 0.2.23：Diff 审查、会话/工作区管理、Slash、环境上下文与图表导出。
+
+### 新增
+
+- **审查更改**：顶栏入口，支持本轮 / 未提交 / 整会话；Diff 查看器为统一视图（手机端不做分栏）
+- 长按会话可 **重命名**；长按工作区可 **置顶 / 改名**
+- 输入 `/` 打开 Slash 命令（`/model` `/thinking` `/history` `/work` `/context` `/settings` `/clear` `/exit`）
+- `/context` 拉取桌面环境上下文；消息内渲染图片分析卡、选区卡与 SoftInject 折叠
+- 图表卡片可 **导出 PNG** 分享
+
+### 变更
+
+- 液态玻璃统一为一套：`backdrop` 1.0.2 → 1.0.6，底部导航选中胶囊改为随选项滑动的真实玻璃层；聊天顶栏与子页面（设置、归档）改用同一套折射，不再保留第二套模糊库
+
+### 说明
+
+新 RPC（`session.rename`、`workspace.pin`、`workspace.update`、`workspace.workingTreeDiff`、`context.environment`）需要桌面 Anya ≥ **0.2.23**。旧桌面连接时相关功能会失败提示，其它能力不受影响。
+
 ## [0.1.6] - 2026-09-03
 
 暂存队列、应用内主题，以及 agent 结束后对话变空的修复。
@@ -134,6 +154,7 @@ Companion 的版本记录。桌面 Anya 的变更见 [rururunu/Anya](https://git
 
 需要已开启 Remote Gateway 的桌面 Anya。Companion 不会自己调用模型服务商。
 
+[0.1.8]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.8
 [0.1.6]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.6
 [0.1.5]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.5
 [0.1.4]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.4

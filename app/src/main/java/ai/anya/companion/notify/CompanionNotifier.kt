@@ -11,14 +11,12 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.os.VibrationEffect
-import android.os.Vibrator
-import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import ai.anya.companion.MainActivity
 import ai.anya.companion.R
 import ai.anya.companion.core.common.di.ApplicationScope
+import ai.anya.companion.core.designsystem.haptic.AnyaHaptics
 import ai.anya.companion.core.domain.repository.AppUpdateMonitor
 import ai.anya.companion.core.model.protocol.ServerMessage
 import ai.anya.companion.core.model.update.AppUpdateInfo
@@ -171,14 +169,8 @@ class CompanionNotifier @Inject constructor(
     }
 
     private fun vibrate(context: Context) {
-        val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val manager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
-            manager?.defaultVibrator
-        } else {
-            @Suppress("DEPRECATION")
-            context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
-        } ?: return
-        vibrator.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 40, 60, 40), -1))
+        // Foreground alerts go through the same Pulsar-backed engine as in-app feedback.
+        AnyaHaptics(context.applicationContext).notification()
     }
 
     private fun postNotification(

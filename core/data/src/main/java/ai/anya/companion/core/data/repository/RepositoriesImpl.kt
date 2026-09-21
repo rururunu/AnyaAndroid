@@ -1,6 +1,7 @@
 package ai.anya.companion.core.data.repository
 
 import ai.anya.companion.core.common.di.ApplicationScope
+import ai.anya.companion.core.common.di.IoDispatcher
 import ai.anya.companion.core.common.result.AnyaError
 import ai.anya.companion.core.common.result.AnyaResult
 import ai.anya.companion.core.domain.repository.ApprovalRepository
@@ -11,6 +12,7 @@ import ai.anya.companion.core.domain.repository.WorkspaceRepository
 import ai.anya.companion.core.data.local.AttachCatalogStore
 import ai.anya.companion.core.data.local.ImageGenComposeStore
 import ai.anya.companion.core.data.local.InboxResultStore
+import ai.anya.companion.core.data.local.SessionHistoryStore
 import ai.anya.companion.core.model.inbox.InboxResultKind
 import ai.anya.companion.core.model.inbox.InboxResultRecord
 import ai.anya.companion.core.data.local.CredentialStore
@@ -56,6 +58,7 @@ import ai.anya.companion.core.model.session.wireValue
 import ai.anya.companion.core.model.workspace.CompanionFileOffer
 import ai.anya.companion.core.model.workspace.CompanionUrlOffer
 import ai.anya.companion.core.model.workspace.DownloadedWorkspaceFile
+import ai.anya.companion.core.model.workspace.EnvironmentContext
 import ai.anya.companion.core.model.workspace.UploadedCompanionFile
 import ai.anya.companion.core.model.workspace.FileContent
 import ai.anya.companion.core.model.workspace.McpServerSummary
@@ -85,6 +88,7 @@ import java.nio.ByteBuffer
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import timber.log.Timber
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -305,7 +309,7 @@ public class DefaultConnectionRepository @Inject constructor(
                         delay(15_000)
                         if (_connectionState.value != current) return@launch
                         if (!wantConnected.value) return@launch
-                        // Handshake / LAN→public fallback can take >15s. Only recycle a
+                        // Handshake / LAN?public fallback can take >15s. Only recycle a
                         // socket that opened but never finished hello.
                         if (gateway.state.value != GatewaySocketState.Open) return@launch
                         Timber.w("Connection stuck in %s for 15s with socket open; forcing a clean reconnect", current)
@@ -322,7 +326,7 @@ public class DefaultConnectionRepository @Inject constructor(
         }
     }
 
-    /** Phone-initiated keep-alive: proxies that only forward client→server traffic stay warm. */
+    /** Phone-initiated keep-alive: proxies that only forward client?server traffic stay warm. */
     private fun startClientHeartbeat() {
         appScope.launch {
             while (isActive) {
@@ -870,6 +874,8 @@ public class DefaultSessionRepository @Inject constructor(
     @ApplicationScope private val appScope: CoroutineScope,
     private val inboxResultStore: InboxResultStore,
     private val imageGenComposeStore: ImageGenComposeStore,
+    @IoDispatcher private val ioDispatcher: CoroutineDispatcher,
+    private val sessionHistoryStore: SessionHistoryStore,
 ) : SessionRepository {
 
     private val _sessions = MutableStateFlow<List<ChatSessionSummary>>(emptyList())
@@ -914,6 +920,12 @@ public class DefaultSessionRepository @Inject constructor(
     }.stateIn(appScope, SharingStarted.Eagerly, emptyList())
 
     private val messagesBySession = MutableStateFlow<Map<String, List<ChatMessage>>>(emptyMap())
+    /**
+     * Set once a paged `session.history` fails. A desktop that does not know the paged frame never
+     * answers it, so this keeps the probe timeout off every later scroll-to-top.
+     */
+    @Volatile
+    private var historyPagingUnavailable: Boolean = false
     /** Companion-only shared-file cards; survive desktop history reloads. */
     private val localSharedBySession = MutableStateFlow<Map<String, List<ChatMessage>>>(emptyMap())
     private val composeBySession = MutableStateFlow<Map<String, SessionCompose>>(emptyMap())
@@ -935,6 +947,8 @@ public class DefaultSessionRepository @Inject constructor(
                 .collect { id ->
                     if (seen && lastId != id) {
                         resetLocalProjection()
+                        // Cached history belongs to the previous desktop; drop it with the projection.
+                        sessionHistoryStore.clear()
                     }
                     seen = true
                     lastId = id
@@ -1177,9 +1191,25 @@ public class DefaultSessionRepository @Inject constructor(
     }
 
     override suspend fun loadHistory(sessionId: String): AnyaResult<List<ChatMessage>> {
+        // Cache-first: show the last known history immediately, then refresh from the desktop.
+        sessionHistoryStore.load(sessionId)?.let { cached ->
+            val runState = _sessions.value.find { it.id == sessionId }?.runState
+            messagesBySession.update { map ->
+                val local = map[sessionId].orEmpty()
+                map + (sessionId to mergeHistory(local, cached, runState))
+            }
+        }
         val requestId = UUID.randomUUID().toString()
+        val requestStartedAt = System.currentTimeMillis()
         return when (
-            val result = gateway.request(ClientMessage.SessionHistory(requestId, sessionId), requestId)
+            val result = gateway.request(
+                ClientMessage.SessionHistory(
+                    requestId = requestId,
+                    sessionId = sessionId,
+                    detail = HISTORY_DETAIL_LIGHT,
+                ),
+                requestId,
+            )
         ) {
             is AnyaResult.Failure -> result
             is AnyaResult.Success -> {
@@ -1187,41 +1217,199 @@ public class DefaultSessionRepository @Inject constructor(
                 if (!rpc.ok) {
                     AnyaResult.Failure(AnyaError.Network(rpc.error ?: "session.history failed"))
                 } else {
-                    val payload = rpc.data as? JsonObject
-                    val messages = payload?.get("messages")?.let { element ->
-                        runCatching {
-                            json.decodeFromJsonElement<List<ChatMessage>>(element)
-                        }.onFailure { error ->
-                            Timber.w(error, "session.history decode failed for %s", sessionId)
-                        }.getOrNull()
-                    }
-                    if (messages != null) {
-                        val runState = _sessions.value.find { it.id == sessionId }?.runState
-                        messagesBySession.update { map ->
-                            val local = map[sessionId].orEmpty()
-                            map + (sessionId to mergeHistory(local, messages, runState))
-                        }
-                        hydrateSharedCardsFromHistory(sessionId, messages)
-                        payload["checkpoints"]?.let { element ->
-                            runCatching { json.decodeFromJsonElement<List<SessionCheckpoint>>(element) }
-                                .getOrNull()
-                                ?.let { list -> checkpointsBySession.update { it + (sessionId to list) } }
-                        }
-                        payload["messageCacheUsages"]?.let { element ->
-                            runCatching { json.decodeFromJsonElement<List<MessageCacheUsage>>(element) }
-                                .getOrNull()
-                                ?.let { list ->
-                                    cacheUsageBySession.update { map ->
-                                        map + (sessionId to list.associateBy { it.messageId })
-                                    }
-                                }
-                        }
-                        AnyaResult.Success(messagesBySession.value[sessionId].orEmpty())
-                    } else {
-                        AnyaResult.Success(messagesBySession.value[sessionId].orEmpty())
-                    }
+                    applyHistoryPayload(
+                        sessionId = sessionId,
+                        payload = rpc.data as? JsonObject,
+                        requestStartedAt = requestStartedAt,
+                    )
                 }
             }
+        }
+    }
+
+    /**
+     * Decodes and applies a `session.history` payload off the main thread.
+     *
+     * A long session arrives as several MB of JSON; decoding it, merging it against the in-memory
+     * projection and hydrating shared cards used to run on the caller's dispatcher (usually
+     * `Dispatchers.Main.immediate` via `viewModelScope`), which stalled the first frame.
+     */
+    private suspend fun applyHistoryPayload(
+        sessionId: String,
+        payload: JsonObject?,
+        requestStartedAt: Long,
+    ): AnyaResult<List<ChatMessage>> = withContext(ioDispatcher) {
+        val messages = payload?.get("messages")?.let { element ->
+            runCatching {
+                json.decodeFromJsonElement<List<ChatMessage>>(element)
+            }.onFailure { error ->
+                Timber.w(error, "session.history decode failed for %s", sessionId)
+            }.getOrNull()
+        }
+        if (messages != null) {
+            val mergeStartedAt = System.currentTimeMillis()
+            val runState = _sessions.value.find { it.id == sessionId }?.runState
+            messagesBySession.update { map ->
+                val local = map[sessionId].orEmpty()
+                map + (sessionId to mergeHistory(local, messages, runState))
+            }
+            hydrateSharedCardsFromHistory(sessionId, messages)
+            payload["checkpoints"]?.let { element ->
+                runCatching { json.decodeFromJsonElement<List<SessionCheckpoint>>(element) }
+                    .getOrNull()
+                    ?.let { list -> checkpointsBySession.update { it + (sessionId to list) } }
+            }
+            payload["messageCacheUsages"]?.let { element ->
+                runCatching { json.decodeFromJsonElement<List<MessageCacheUsage>>(element) }
+                    .getOrNull()
+                    ?.let { list ->
+                        cacheUsageBySession.update { map ->
+                            map + (sessionId to list.associateBy { it.messageId })
+                        }
+                    }
+            }
+            // Only settled messages are worth caching: a snapshot taken mid-stream would come
+            // back on the next cold start as a reply that never finishes.
+            sessionHistoryStore.save(
+                sessionId,
+                messagesBySession.value[sessionId].orEmpty().filterNot {
+                    it.status == MessageStatus.Streaming || it.status == MessageStatus.Pending
+                },
+            )
+            Timber.d(
+                "session.history %s: %d messages, rpc %d ms, decode+merge %d ms",
+                sessionId,
+                messages.size,
+                mergeStartedAt - requestStartedAt,
+                System.currentTimeMillis() - mergeStartedAt,
+            )
+        }
+        AnyaResult.Success(messagesBySession.value[sessionId].orEmpty())
+    }
+
+    /**
+     * Fetches the full detail of [messageIds] and merges it into the in-memory projection.
+     *
+     * Light history strips each turn's execution process, so this is what the companion calls when
+     * the user expands a turn.
+     */
+    override suspend fun loadMessageDetail(
+        sessionId: String,
+        messageIds: List<String>,
+    ): AnyaResult<List<ChatMessage>> {
+        val requestId = UUID.randomUUID().toString()
+        return when (
+            val result = gateway.request(
+                ClientMessage.SessionMessageDetail(
+                    requestId = requestId,
+                    sessionId = sessionId,
+                    messageIds = messageIds,
+                ),
+                requestId,
+            )
+        ) {
+            is AnyaResult.Failure -> result
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                if (!rpc.ok) {
+                    AnyaResult.Failure(AnyaError.Network(rpc.error ?: "session.messageDetail failed"))
+                } else {
+                    val detailed = withContext(ioDispatcher) {
+                        (rpc.data as? JsonObject)?.get("messages")?.let { element ->
+                            runCatching { json.decodeFromJsonElement<List<ChatMessage>>(element) }
+                                .onFailure { error ->
+                                    Timber.w(error, "session.messageDetail decode failed for %s", sessionId)
+                                }
+                                .getOrNull()
+                        }
+                    }.orEmpty()
+                    if (detailed.isNotEmpty()) {
+                        val byId = detailed.associateBy { it.id }
+                        messagesBySession.update { map ->
+                            val local = map[sessionId].orEmpty()
+                            map + (sessionId to local.map { message -> byId[message.id] ?: message })
+                        }
+                        // Keep the expanded detail across later light refreshes and cold starts.
+                        sessionHistoryStore.saveDetail(sessionId, detailed)
+                    }
+                    AnyaResult.Success(detailed)
+                }
+            }
+        }
+    }
+
+    /**
+     * Pulls the page of history that precedes [beforeMessageId].
+     *
+     * The extra request fields are a client-side extension: a desktop that predates paging ignores
+     * them and answers with the whole session. Only a paged reply carries `hasMore`, so its absence
+     * flips [historyPagingUnavailable] and paging stays off for the rest of the process.
+     */
+    override suspend fun loadOlderHistory(
+        sessionId: String,
+        beforeMessageId: String,
+        limit: Int,
+    ): AnyaResult<Boolean>? {
+        if (historyPagingUnavailable) return null
+        val requestId = UUID.randomUUID().toString()
+        return when (
+            val result = gateway.request(
+                ClientMessage.SessionHistory(
+                    requestId = requestId,
+                    sessionId = sessionId,
+                    limit = limit,
+                    beforeMessageId = beforeMessageId,
+                ),
+                requestId,
+            )
+        ) {
+            is AnyaResult.Failure -> {
+                historyPagingUnavailable = true
+                Timber.i("session.history paging failed; falling back to full loads")
+                null
+            }
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                val payload = rpc.data as? JsonObject
+                if (!rpc.ok || payload?.get("hasMore") == null) {
+                    historyPagingUnavailable = true
+                    Timber.i("session.history paging unsupported; falling back to full loads")
+                    null
+                } else {
+                    val page = withContext(ioDispatcher) {
+                        payload["messages"]?.let { element ->
+                            runCatching { json.decodeFromJsonElement<List<ChatMessage>>(element) }
+                                .onFailure { error ->
+                                    Timber.w(error, "session.history page decode failed for %s", sessionId)
+                                }
+                                .getOrNull()
+                        }
+                    }.orEmpty()
+                    applyHistoryPage(sessionId, page)
+                    // `hasMore` is authoritative; the size heuristic only covers a missing flag.
+                    AnyaResult.Success(
+                        payload["hasMore"]?.jsonPrimitive?.booleanOrNull ?: (page.size >= limit),
+                    )
+                }
+            }
+        }
+    }
+
+    /** Merges older messages into the projection and refreshes the on-disk cache. */
+    private suspend fun applyHistoryPage(sessionId: String, page: List<ChatMessage>) {
+        if (page.isEmpty()) return
+        withContext(ioDispatcher) {
+            val runState = _sessions.value.find { it.id == sessionId }?.runState
+            messagesBySession.update { map ->
+                val local = map[sessionId].orEmpty()
+                map + (sessionId to mergeHistory(local, page, runState))
+            }
+            sessionHistoryStore.save(
+                sessionId,
+                messagesBySession.value[sessionId].orEmpty().filterNot {
+                    it.status == MessageStatus.Streaming || it.status == MessageStatus.Pending
+                },
+            )
         }
     }
 
@@ -1284,6 +1472,43 @@ public class DefaultSessionRepository @Inject constructor(
         }
     }
 
+    override suspend fun renameSession(sessionId: String, title: String): AnyaResult<String> {
+        val requestId = UUID.randomUUID().toString()
+        return when (
+            val result = gateway.request(
+                ClientMessage.SessionRename(requestId, sessionId, title.trim()),
+                requestId,
+                timeoutMs = 8_000,
+            )
+        ) {
+            is AnyaResult.Failure -> AnyaResult.Failure(
+                mapDesktopMinVersionError("session.rename", result.error),
+            )
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                if (!rpc.ok) {
+                    AnyaResult.Failure(
+                        mapDesktopMinVersionError(
+                            "session.rename",
+                            AnyaError.Network(rpc.error ?: "session.rename failed"),
+                        ),
+                    )
+                } else {
+                    val saved = (rpc.data as? JsonObject)
+                        ?.get("title")
+                        ?.let { runCatching { json.decodeFromJsonElement<String>(it) }.getOrNull() }
+                        ?: title.trim()
+                    val apply: (ChatSessionSummary) -> ChatSessionSummary = { session ->
+                        if (session.id == sessionId) session.copy(title = saved) else session
+                    }
+                    _sessions.update { list -> list.map(apply) }
+                    _archivedSessions.update { list -> list.map(apply) }
+                    AnyaResult.Success(saved)
+                }
+            }
+        }
+    }
+
     override suspend fun refreshArchivedWorkspaces(): AnyaResult<List<WorkspaceSummary>> {
         val requestId = UUID.randomUUID().toString()
         archivedWorkspaceRequests += requestId
@@ -1311,6 +1536,25 @@ public class DefaultSessionRepository @Inject constructor(
         runCatching { json.decodeFromJsonElement<List<WorkspaceSummary>>(element) }
             .onSuccess { list -> _archivedWorkspaces.value = list.map { it.copy(archived = true) } }
             .onFailure { Timber.w(it, "Failed to decode archived workspaces") }
+    }
+
+    /** Old desktops drop unknown RPC frames; timeout — ask user to upgrade. */
+    private fun mapDesktopMinVersionError(rpc: String, error: AnyaError): AnyaError {
+        val raw = when (error) {
+            is AnyaError.Network -> error.message
+            is AnyaError.Unauthorized -> error.message
+            is AnyaError.Protocol -> error.message
+            is AnyaError.NotPaired -> error.message
+            is AnyaError.Unknown -> error.message
+        }
+        val unsupported = raw.contains("timed out", ignoreCase = true) ||
+            raw.contains("unsupported", ignoreCase = true) ||
+            raw.contains("unknown", ignoreCase = true)
+        return if (unsupported) {
+            AnyaError.Network("桌面端需 Anya ≥ 0.2.23（$rpc）")
+        } else {
+            error
+        }
     }
 
     override suspend fun archiveWorkspace(workspaceId: String, archived: Boolean): AnyaResult<Unit> {
@@ -1348,6 +1592,146 @@ public class DefaultSessionRepository @Inject constructor(
                         launch { refreshArchivedSessions() }
                     }
                     AnyaResult.Success(Unit)
+                }
+            }
+        }
+    }
+
+    override suspend fun pinWorkspace(workspaceId: String, pinned: Boolean): AnyaResult<Unit> {
+        val requestId = UUID.randomUUID().toString()
+        return when (
+            val result = gateway.request(
+                ClientMessage.WorkspacePin(requestId, workspaceId, pinned),
+                requestId,
+                timeoutMs = 8_000,
+            )
+        ) {
+            is AnyaResult.Failure -> AnyaResult.Failure(
+                mapDesktopMinVersionError("workspace.pin", result.error),
+            )
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                if (!rpc.ok) {
+                    AnyaResult.Failure(
+                        mapDesktopMinVersionError(
+                            "workspace.pin",
+                            AnyaError.Network(rpc.error ?: "workspace.pin failed"),
+                        ),
+                    )
+                } else {
+                    val apply: (WorkspaceSummary) -> WorkspaceSummary = { workspace ->
+                        if (workspace.id == workspaceId) workspace.copy(pinned = pinned) else workspace
+                    }
+                    _workspaces.update { list -> list.map(apply) }
+                    _archivedWorkspaces.update { list -> list.map(apply) }
+                    AnyaResult.Success(Unit)
+                }
+            }
+        }
+    }
+
+    override suspend fun updateWorkspace(workspaceId: String, name: String): AnyaResult<Unit> {
+        val requestId = UUID.randomUUID().toString()
+        return when (
+            val result = gateway.request(
+                ClientMessage.WorkspaceUpdate(requestId, workspaceId, name.trim()),
+                requestId,
+                timeoutMs = 8_000,
+            )
+        ) {
+            is AnyaResult.Failure -> AnyaResult.Failure(
+                mapDesktopMinVersionError("workspace.update", result.error),
+            )
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                if (!rpc.ok) {
+                    AnyaResult.Failure(
+                        mapDesktopMinVersionError(
+                            "workspace.update",
+                            AnyaError.Network(rpc.error ?: "workspace.update failed"),
+                        ),
+                    )
+                } else {
+                    val saved = (rpc.data as? JsonObject)
+                        ?.get("name")
+                        ?.let { runCatching { json.decodeFromJsonElement<String>(it) }.getOrNull() }
+                        ?: name.trim()
+                    val apply: (WorkspaceSummary) -> WorkspaceSummary = { workspace ->
+                        if (workspace.id == workspaceId) workspace.copy(name = saved) else workspace
+                    }
+                    _workspaces.update { list -> list.map(apply) }
+                    _archivedWorkspaces.update { list -> list.map(apply) }
+                    AnyaResult.Success(Unit)
+                }
+            }
+        }
+    }
+
+    override suspend fun workingTreeDiff(workspaceId: String?): AnyaResult<String> {
+        val requestId = UUID.randomUUID().toString()
+        return when (
+            val result = gateway.request(
+                ClientMessage.WorkspaceWorkingTreeDiff(requestId, workspaceId),
+                requestId,
+                timeoutMs = 12_000,
+            )
+        ) {
+            is AnyaResult.Failure -> AnyaResult.Failure(
+                mapDesktopMinVersionError("workspace.workingTreeDiff", result.error),
+            )
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                if (!rpc.ok) {
+                    AnyaResult.Failure(
+                        mapDesktopMinVersionError(
+                            "workspace.workingTreeDiff",
+                            AnyaError.Network(rpc.error ?: "workspace.workingTreeDiff failed"),
+                        ),
+                    )
+                } else {
+                    val diff = (rpc.data as? JsonObject)
+                        ?.get("diff")
+                        ?.let { runCatching { json.decodeFromJsonElement<String>(it) }.getOrNull() }
+                        .orEmpty()
+                    AnyaResult.Success(diff)
+                }
+            }
+        }
+    }
+
+    override suspend fun environmentContext(): AnyaResult<EnvironmentContext> {
+        val requestId = UUID.randomUUID().toString()
+        return when (
+            val result = gateway.request(
+                ClientMessage.ContextEnvironment(requestId),
+                requestId,
+                timeoutMs = 8_000,
+            )
+        ) {
+            is AnyaResult.Failure -> AnyaResult.Failure(
+                mapDesktopMinVersionError("context.environment", result.error),
+            )
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                if (!rpc.ok) {
+                    AnyaResult.Failure(
+                        mapDesktopMinVersionError(
+                            "context.environment",
+                            AnyaError.Network(rpc.error ?: "context.environment failed"),
+                        ),
+                    )
+                } else {
+                    val element = rpc.data
+                        ?: return AnyaResult.Failure(AnyaError.Protocol("context.environment returned no payload"))
+                    runCatching { json.decodeFromJsonElement<EnvironmentContext>(element) }
+                        .fold(
+                            onSuccess = { AnyaResult.Success(it) },
+                            onFailure = {
+                                AnyaResult.Failure(
+                                    AnyaError.Protocol("context.environment decode failed: ${it.message}"),
+                                )
+                            },
+                        )
                 }
             }
         }
@@ -1409,6 +1793,9 @@ public class DefaultSessionRepository @Inject constructor(
                 } else {
                     // Truncated on the desktop: drop what we have and reload from the gateway.
                     messagesBySession.update { it - sessionId }
+                    // The cached copy still holds the pre-rewind history; drop it before reloading
+                    // or the cache-first read would put the truncated turns straight back.
+                    sessionHistoryStore.remove(sessionId)
                     when (val reload = loadHistory(sessionId)) {
                         is AnyaResult.Failure -> reload
                         is AnyaResult.Success -> AnyaResult.Success(Unit)
@@ -1433,6 +1820,7 @@ public class DefaultSessionRepository @Inject constructor(
                     // so the row disappears without waiting for the round trip.
                     _sessions.update { list -> list.filterNot { it.id == sessionId } }
                     messagesBySession.update { it - sessionId }
+                    sessionHistoryStore.remove(sessionId)
                     localSharedBySession.update { it - sessionId }
                     composeBySession.update { it - sessionId }
                     tasksBySession.update { it - sessionId }
@@ -1458,11 +1846,14 @@ public class DefaultSessionRepository @Inject constructor(
             targets.map { session ->
                 async {
                     gate.withPermit {
-                        val cached = messagesBySession.value[session.id]
-                        val messages = cached ?: when (val loaded = loadHistory(session.id)) {
-                            is AnyaResult.Success -> loaded.data
-                            is AnyaResult.Failure -> emptyList()
-                        }
+                        // Search every cached session locally so a sweep does not fan out into a
+                        // full RPC per session.
+                        val messages = messagesBySession.value[session.id]
+                            ?: sessionHistoryStore.load(session.id)
+                            ?: when (val loaded = loadHistory(session.id)) {
+                                is AnyaResult.Success -> loaded.data
+                                is AnyaResult.Failure -> emptyList()
+                            }
                         val match = messages.firstOrNull { message ->
                             message.content.contains(needle, ignoreCase = true) ||
                                 message.reasoning.orEmpty().contains(needle, ignoreCase = true)
@@ -2799,6 +3190,8 @@ public class DefaultSessionRepository @Inject constructor(
         this[key]?.jsonPrimitive?.contentOrNull
 
     private companion object {
+        /** `session.history` detail level that skips each turn's execution process. */
+        const val HISTORY_DETAIL_LIGHT = "light"
         val SHARE_OFFER_ID_RE = Regex("""offerId=([A-Za-z0-9-]+)""")
         val SHARE_MIME_RE = Regex("""mime=([^,\s)]+)""")
         val SHARE_SIZE_RE = Regex("""size=(\d+)""")

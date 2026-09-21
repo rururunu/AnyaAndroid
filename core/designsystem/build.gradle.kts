@@ -22,6 +22,7 @@ dependencies {
     api(libs.mikepenz.markdown)
     api(libs.mikepenz.markdown.m3)
     implementation(libs.kotlinx.serialization.json)
-    implementation(libs.haze)
+    api(libs.backdrop)
+    implementation(libs.pulsar)
     debugApi(libs.androidx.compose.ui.tooling)
 }

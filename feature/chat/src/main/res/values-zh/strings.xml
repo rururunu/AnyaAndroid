@@ -24,4 +24,15 @@
     <string name="chat_reconnect">重连</string>
     <string name="chat_copy">复制</string>
     <string name="chat_copied">已复制</string>
+    <string name="chat_diff_download">下载此文件</string>
+    <string name="chat_diff_close">关闭</string>
+    <string name="chat_diff_truncated">…diff 过长，仅显示前 %1$d 行</string>
+    <string name="chat_review_title">审查更改</string>
+    <string name="chat_review_load_failed">无法加载未提交变更</string>
+    <string name="chat_review_scope_round">本轮</string>
+    <string name="chat_review_scope_uncommitted">未提交</string>
+    <string name="chat_review_scope_session">整会话</string>
+    <string name="chat_review_empty_uncommitted">当前工作区没有未提交的变更</string>
+    <string name="chat_review_empty_round">本轮暂无文件编辑</string>
+    <string name="chat_review_empty_session">本会话暂无文件编辑</string>
 </resources>

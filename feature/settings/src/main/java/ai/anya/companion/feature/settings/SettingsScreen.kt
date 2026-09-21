@@ -24,14 +24,12 @@ import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Computer
-import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.LinkOff
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.PhonelinkErase
-import androidx.compose.material.icons.rounded.QrCode2
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.runtime.LaunchedEffect
@@ -45,6 +43,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -66,8 +65,10 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ai.anya.companion.core.designsystem.component.AnyaOverlayScaffold
-import ai.anya.companion.core.designsystem.component.AnyaPrimaryButton
-import ai.anya.companion.core.designsystem.component.AnyaSecondaryButton
+import ai.anya.companion.core.designsystem.component.AnyaSheetActionRow
+import ai.anya.companion.core.designsystem.component.AnyaSheetCard
+import ai.anya.companion.core.designsystem.component.AnyaSheetHeader
+import ai.anya.companion.core.designsystem.component.AnyaSheetInfoRow
 import ai.anya.companion.core.designsystem.haptic.rememberAnyaHaptics
 import ai.anya.companion.core.designsystem.theme.AnyaColors
 import ai.anya.companion.core.designsystem.theme.AnyaSpace
@@ -141,11 +142,13 @@ public fun GeneralSettingsRoute(
         GeneralSettingsPage(
             language = state.language,
             theme = state.theme,
+            showThinking = state.showThinking,
             onLanguageChange = { language ->
                 viewModel.setLanguage(language)
                 (context as? Activity)?.recreate()
             },
             onThemeChange = viewModel::setTheme,
+            onShowThinkingChange = viewModel::setShowThinking,
             modifier = Modifier.padding(padding),
         )
     }
@@ -202,7 +205,8 @@ private fun SettingsHub(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = AnyaSpace.Screen, vertical = AnyaSpace.Sm),
+            .padding(horizontal = AnyaSpace.Screen)
+            .padding(top = AnyaSpace.Sm, bottom = 96.dp),
     ) {
         SettingsMenuRow(
             icon = Icons.Rounded.Link,
@@ -522,7 +526,6 @@ private fun DeviceActionsSheet(
     onUnpair: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val haptic = rememberAnyaHaptics()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -530,51 +533,47 @@ private fun DeviceActionsSheet(
         containerColor = MaterialTheme.colorScheme.background,
         tonalElevation = 0.dp,
     ) {
+        // Apple HIG action sheet: centered title block, an opaque action card, then the
+        // emphasized cancel on its own card.
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = AnyaSpace.Screen)
-                .padding(bottom = AnyaSpace.Xxl),
-            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Xs),
+                .padding(horizontal = AnyaSpace.Lg)
+                .padding(bottom = AnyaSpace.Xl),
+            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text(
-                text = device.resolvedDisplayName(),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
+            AnyaSheetHeader(
+                title = device.resolvedDisplayName(),
+                subtitle = device.host,
             )
-            Text(
-                text = device.host,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(modifier = Modifier.height(AnyaSpace.Sm))
-            SettingsActionRow(
-                icon = Icons.Rounded.Edit,
-                title = stringResource(R.string.settings_rename_device),
-                onClick = {
-                    haptic.tick()
-                    onRename()
-                },
-            )
-            SettingsActionRow(
-                icon = Icons.Rounded.QrCode2,
-                title = stringResource(R.string.settings_repair_device),
-                onClick = {
-                    haptic.buttonPress()
-                    onRepair()
-                },
-            )
-            SettingsActionRow(
-                icon = Icons.Rounded.PhonelinkErase,
-                title = stringResource(R.string.settings_unpair),
-                destructive = true,
-                onClick = {
-                    haptic.tick()
-                    onUnpair()
-                },
-            )
+            Spacer(modifier = Modifier.height(AnyaSpace.Xs))
+            AnyaSheetCard {
+                AnyaSheetActionRow(
+                    label = stringResource(R.string.settings_rename_device),
+                    color = MaterialTheme.colorScheme.primary,
+                    showDivider = true,
+                    onClick = onRename,
+                )
+                AnyaSheetActionRow(
+                    label = stringResource(R.string.settings_repair_device),
+                    color = MaterialTheme.colorScheme.primary,
+                    showDivider = true,
+                    onClick = onRepair,
+                )
+                AnyaSheetActionRow(
+                    label = stringResource(R.string.settings_unpair),
+                    color = AnyaColors.Danger,
+                    onClick = onUnpair,
+                )
+            }
+            AnyaSheetCard {
+                AnyaSheetActionRow(
+                    label = stringResource(R.string.settings_cancel),
+                    emphasized = true,
+                    onClick = onDismiss,
+                )
+            }
         }
     }
 }
@@ -586,7 +585,6 @@ private fun RenameDeviceSheet(
     onConfirm: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val haptic = rememberAnyaHaptics()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var name by remember { mutableStateOf(device.resolvedDisplayName()) }
     ModalBottomSheet(
@@ -595,55 +593,58 @@ private fun RenameDeviceSheet(
         containerColor = MaterialTheme.colorScheme.background,
         tonalElevation = 0.dp,
     ) {
+        // Apple HIG action sheet: centered title, an input card, then save/cancel rows.
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = AnyaSpace.Screen)
-                .padding(bottom = AnyaSpace.Xxl),
-            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
+                .padding(horizontal = AnyaSpace.Lg)
+                .padding(bottom = AnyaSpace.Xl),
+            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text(
-                text = stringResource(R.string.settings_rename_device),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = HostDisplayName.sanitize(it) },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text(stringResource(R.string.settings_device_name)) },
-                supportingText = {
-                    Text(
-                        stringResource(
-                            R.string.settings_device_name_hint,
-                            name.length,
-                            HostDisplayName.MAX_LENGTH,
-                        ),
-                    )
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(AnyaSpace.ControlRadius),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                    focusedContainerColor = MaterialTheme.colorScheme.background,
-                    unfocusedContainerColor = MaterialTheme.colorScheme.background,
-                ),
-            )
-            AnyaPrimaryButton(
-                text = stringResource(R.string.settings_save_name),
-                onClick = {
-                    haptic.confirm()
-                    onConfirm(name)
-                },
-            )
-            AnyaSecondaryButton(
-                text = stringResource(R.string.settings_cancel),
-                onClick = {
-                    haptic.tick()
-                    onDismiss()
-                },
-            )
+            AnyaSheetHeader(title = stringResource(R.string.settings_rename_device))
+            Spacer(modifier = Modifier.height(AnyaSpace.Xs))
+            AnyaSheetCard {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = HostDisplayName.sanitize(it) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(AnyaSpace.Md),
+                    label = { Text(stringResource(R.string.settings_device_name)) },
+                    supportingText = {
+                        Text(
+                            stringResource(
+                                R.string.settings_device_name_hint,
+                                name.length,
+                                HostDisplayName.MAX_LENGTH,
+                            ),
+                        )
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(AnyaSpace.ControlRadius),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                        focusedContainerColor = MaterialTheme.colorScheme.surface,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                    ),
+                )
+            }
+            AnyaSheetCard {
+                AnyaSheetActionRow(
+                    label = stringResource(R.string.settings_save_name),
+                    color = MaterialTheme.colorScheme.primary,
+                    onClick = { onConfirm(name) },
+                )
+            }
+            AnyaSheetCard {
+                AnyaSheetActionRow(
+                    label = stringResource(R.string.settings_cancel),
+                    emphasized = true,
+                    onClick = onDismiss,
+                )
+            }
         }
     }
 }
@@ -658,7 +659,6 @@ public fun HostSwitcherSheet(
     onAdd: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val haptic = rememberAnyaHaptics()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -666,50 +666,68 @@ public fun HostSwitcherSheet(
         containerColor = MaterialTheme.colorScheme.background,
         tonalElevation = 0.dp,
     ) {
+        // Apple HIG action-sheet layout: centered title block, an opaque grouped list
+        // of hosts, then separate cards for the add action and the emphasized cancel.
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = AnyaSpace.Screen)
-                .padding(bottom = AnyaSpace.Xxl),
-            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Xs),
+                .padding(horizontal = AnyaSpace.Lg)
+                .padding(bottom = AnyaSpace.Xl),
+            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text(
-                text = stringResource(R.string.settings_switch_host),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
+            AnyaSheetHeader(
+                title = stringResource(R.string.settings_switch_host),
+                subtitle = stringResource(R.string.settings_switch_host_hint),
             )
-            Text(
-                text = stringResource(R.string.settings_switch_host_hint),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(modifier = Modifier.height(AnyaSpace.Sm))
-            devices.forEach { device ->
-                val active = device.rosterKey() == activeDeviceId
-                SettingsSelectRow(
-                    title = device.resolvedDisplayName(),
-                    subtitle = if (active && connectionState == ConnectionState.Connected) {
-                        stringResource(R.string.settings_device_connected)
-                    } else {
-                        device.host
-                    },
-                    selected = active,
-                    onSelect = {
-                        haptic.linearTick()
-                        if (!active) onSelect(device.rosterKey())
-                        onDismiss()
-                    },
+            Spacer(modifier = Modifier.height(AnyaSpace.Xs))
+            AnyaSheetCard {
+                devices.forEachIndexed { index, device ->
+                    val active = device.rosterKey() == activeDeviceId
+                    val connected = active && connectionState == ConnectionState.Connected
+                    AnyaSheetInfoRow(
+                        label = device.resolvedDisplayName(),
+                        subtitle = if (connected) {
+                            stringResource(R.string.settings_device_connected)
+                        } else {
+                            device.host
+                        },
+                        emphasized = active,
+                        showDivider = index < devices.lastIndex,
+                        onClick = {
+                            if (!active) onSelect(device.rosterKey())
+                            onDismiss()
+                        },
+                        trailing = {
+                            if (active) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Check,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                        },
+                    )
+                }
+            }
+            AnyaSheetCard {
+                AnyaSheetActionRow(
+                    label = stringResource(R.string.settings_add_device),
+                    color = MaterialTheme.colorScheme.primary,
+                    onClick = onAdd,
                 )
             }
-            Spacer(modifier = Modifier.height(AnyaSpace.Sm))
-            SettingsActionRow(
-                icon = Icons.Rounded.Add,
-                title = stringResource(R.string.settings_add_device),
-                onClick = {
-                    haptic.buttonPress()
-                    onAdd()
-                },
-            )
+            // Cancel lives on its own card, separated from the actions — the
+            // action-sheet cancel pattern.
+            AnyaSheetCard {
+                AnyaSheetActionRow(
+                    label = stringResource(R.string.settings_cancel),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    emphasized = true,
+                    onClick = onDismiss,
+                )
+            }
         }
     }
 }
@@ -718,8 +736,10 @@ public fun HostSwitcherSheet(
 private fun GeneralSettingsPage(
     language: AppLanguage,
     theme: AppTheme,
+    showThinking: Boolean,
     onLanguageChange: (AppLanguage) -> Unit,
     onThemeChange: (AppTheme) -> Unit,
+    onShowThinkingChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val haptic = rememberAnyaHaptics()
@@ -778,6 +798,17 @@ private fun GeneralSettingsPage(
             onSelect = {
                 haptic.tick()
                 if (language != AppLanguage.English) onLanguageChange(AppLanguage.English)
+            },
+        )
+        Spacer(modifier = Modifier.height(AnyaSpace.Md))
+        SettingsSectionLabel(stringResource(R.string.settings_chat_display))
+        SettingsSwitchRow(
+            title = stringResource(R.string.settings_thinking_title),
+            subtitle = stringResource(R.string.settings_thinking_subtitle),
+            checked = showThinking,
+            onCheckedChange = { enabled ->
+                haptic.tick()
+                onShowThinkingChange(enabled)
             },
         )
     }
@@ -1142,6 +1173,44 @@ private fun SettingsSelectRow(
 }
 
 @Composable
+private fun SettingsSwitchRow(
+    title: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    subtitle: String? = null,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(AnyaSpace.ControlRadius))
+            .clickable { onCheckedChange(!checked) }
+            .padding(horizontal = AnyaSpace.Sm, vertical = AnyaSpace.Md),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
+    ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = if (checked) FontWeight.SemiBold else FontWeight.Normal,
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            if (!subtitle.isNullOrBlank()) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+        )
+    }
+}
+
+@Composable
 private fun SettingsActionRow(
     icon: ImageVector,
     title: String,
@@ -1190,7 +1259,6 @@ private fun UnpairConfirmSheet(
     onDismiss: () -> Unit,
     hostName: String? = null,
 ) {
-    val haptics = rememberAnyaHaptics()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -1198,53 +1266,38 @@ private fun UnpairConfirmSheet(
         containerColor = MaterialTheme.colorScheme.background,
         tonalElevation = 0.dp,
     ) {
+        // Apple HIG action sheet: centered title block, destructive row, cancel card.
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = AnyaSpace.Screen)
-                .padding(bottom = AnyaSpace.Xxl),
-            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
+                .padding(horizontal = AnyaSpace.Lg)
+                .padding(bottom = AnyaSpace.Xl),
+            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.PhonelinkErase,
-                    contentDescription = null,
-                    tint = AnyaColors.Danger,
-                    modifier = Modifier.size(22.dp),
-                )
-                Text(
-                    text = stringResource(R.string.settings_unpair_title),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-            Text(
-                text = if (hostName.isNullOrBlank()) {
+            AnyaSheetHeader(
+                title = stringResource(R.string.settings_unpair_title),
+                subtitle = if (hostName.isNullOrBlank()) {
                     stringResource(R.string.settings_unpair_body)
                 } else {
                     stringResource(R.string.settings_unpair_body_named, hostName)
                 },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            AnyaPrimaryButton(
-                text = stringResource(R.string.settings_unpair_confirm),
-                onClick = {
-                    haptics.confirm()
-                    onConfirm()
-                },
-            )
-            AnyaSecondaryButton(
-                text = stringResource(R.string.settings_cancel),
-                onClick = {
-                    haptics.tick()
-                    onDismiss()
-                },
-            )
-            Spacer(modifier = Modifier.height(AnyaSpace.Sm))
+            Spacer(modifier = Modifier.height(AnyaSpace.Xs))
+            AnyaSheetCard {
+                AnyaSheetActionRow(
+                    label = stringResource(R.string.settings_unpair_confirm),
+                    color = AnyaColors.Danger,
+                    onClick = onConfirm,
+                )
+            }
+            AnyaSheetCard {
+                AnyaSheetActionRow(
+                    label = stringResource(R.string.settings_cancel),
+                    emphasized = true,
+                    onClick = onDismiss,
+                )
+            }
         }
     }
 }

@@ -174,7 +174,7 @@ internal fun ImagePaintOverlay(
         val shortEdge = min(rect.width, rect.height)
         fun drawStroke(stroke: NormalizedStroke, alpha: Float) {
             val radiusPx = max(2f, stroke.radius * shortEdge)
-            val color = Color(0xFFFFD166).copy(alpha = alpha)
+            val color = ai.anya.companion.core.designsystem.theme.AnyaColors.MarkerYellow.copy(alpha = alpha)
             if (stroke.points.size == 1) {
                 val p = stroke.points.first()
                 drawCircle(color, radiusPx, Offset(rect.left + p.x * rect.width, rect.top + p.y * rect.height))

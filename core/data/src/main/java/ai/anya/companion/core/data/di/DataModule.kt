@@ -5,12 +5,15 @@ import ai.anya.companion.core.common.di.DefaultDispatcher
 import ai.anya.companion.core.common.di.IoDispatcher
 import ai.anya.companion.core.common.di.MainDispatcher
 import ai.anya.companion.core.data.repository.DefaultApprovalRepository
+import ai.anya.companion.core.data.repository.DefaultChatDisplayRepository
 import ai.anya.companion.core.data.repository.DefaultConnectionRepository
 import ai.anya.companion.core.data.repository.DefaultLocaleRepository
 import ai.anya.companion.core.data.repository.DefaultThemeRepository
 import ai.anya.companion.core.data.repository.DefaultSessionRepository
+import ai.anya.companion.core.data.repository.DefaultWorkspaceExpansionRepository
 import ai.anya.companion.core.data.repository.DefaultWorkspaceRepository
 import ai.anya.companion.core.domain.repository.ApprovalRepository
+import ai.anya.companion.core.domain.repository.ChatDisplayRepository
 import ai.anya.companion.core.domain.repository.ConnectionRepository
 import ai.anya.companion.core.domain.repository.LocaleRepository
 import ai.anya.companion.core.domain.repository.ThemeRepository
@@ -19,6 +22,7 @@ import ai.anya.companion.core.domain.repository.UpdateRepository
 import ai.anya.companion.core.data.repository.DefaultAppUpdateMonitor
 import ai.anya.companion.core.data.repository.DefaultUpdateRepository
 import ai.anya.companion.core.domain.repository.SessionRepository
+import ai.anya.companion.core.domain.repository.WorkspaceExpansionRepository
 import ai.anya.companion.core.domain.repository.WorkspaceRepository
 import dagger.Binds
 import dagger.Module
@@ -52,11 +56,23 @@ public abstract class DataBindModule {
 
     @Binds
     @Singleton
+    public abstract fun bindWorkspaceExpansionRepository(
+        impl: DefaultWorkspaceExpansionRepository,
+    ): WorkspaceExpansionRepository
+
+    @Binds
+    @Singleton
     public abstract fun bindLocaleRepository(impl: DefaultLocaleRepository): LocaleRepository
 
     @Binds
     @Singleton
     public abstract fun bindThemeRepository(impl: DefaultThemeRepository): ThemeRepository
+
+    @Binds
+    @Singleton
+    public abstract fun bindChatDisplayRepository(
+        impl: DefaultChatDisplayRepository,
+    ): ChatDisplayRepository
 
     @Binds
     @Singleton

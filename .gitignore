@@ -20,6 +20,18 @@ local.properties
 Thumbs.db
 *.swp
 *~
+.vscode/
+.fleet/
+
+# Local agent scratch
+.claude/
+.cursor/
+
+# Patch / scratch leftovers
+*.orig
+*.rej
+*.bak
+*.tmp
 
 # Kotlin / Gradle
 .kotlin/

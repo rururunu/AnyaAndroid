@@ -24,4 +24,15 @@
     <string name="chat_reconnect">Reconnect</string>
     <string name="chat_copy">Copy</string>
     <string name="chat_copied">Copied</string>
+    <string name="chat_diff_download">Download this file</string>
+    <string name="chat_diff_close">Close</string>
+    <string name="chat_diff_truncated">…diff is too long, showing the first %1$d lines</string>
+    <string name="chat_review_title">Review changes</string>
+    <string name="chat_review_load_failed">Couldn’t load uncommitted changes</string>
+    <string name="chat_review_scope_round">This round</string>
+    <string name="chat_review_scope_uncommitted">Uncommitted</string>
+    <string name="chat_review_scope_session">Whole session</string>
+    <string name="chat_review_empty_uncommitted">No uncommitted changes in the workspace</string>
+    <string name="chat_review_empty_round">No file edits this round</string>
+    <string name="chat_review_empty_session">No file edits in this session</string>
 </resources>

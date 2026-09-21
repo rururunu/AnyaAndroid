@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="workspace_title">Workspace</string>
+    <string name="workspace_subtitle">Agent context</string>
+    <string name="workspace_unbound_title">No workspace bound</string>
+    <string name="workspace_unbound_subtitle">Connect to view the agent workspace and its changes.</string>
+    <string name="workspace_run_state">Run state</string>
+    <string name="workspace_changed_files">Changed files</string>
+    <string name="workspace_no_changes">No changes yet</string>
+</resources>

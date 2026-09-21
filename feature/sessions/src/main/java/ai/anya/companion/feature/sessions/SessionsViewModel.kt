@@ -2,10 +2,13 @@ package ai.anya.companion.feature.sessions
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import ai.anya.companion.core.common.result.AnyaResult
+import ai.anya.companion.core.common.result.userMessage
 import ai.anya.companion.core.domain.repository.ApprovalRepository
 import ai.anya.companion.core.domain.repository.ConnectionRepository
 import ai.anya.companion.core.domain.repository.ConnectionState
 import ai.anya.companion.core.domain.repository.SessionRepository
+import ai.anya.companion.core.domain.repository.WorkspaceExpansionRepository
 import ai.anya.companion.core.domain.usecase.ArchiveSessionUseCase
 import ai.anya.companion.core.domain.usecase.ArchiveWorkspaceUseCase
 import ai.anya.companion.core.domain.usecase.DeleteSessionUseCase
@@ -44,6 +47,7 @@ public data class SessionsUiState(
     public val pendingApprovals: List<PendingApproval> = emptyList(),
     public val expandedWorkspaceIds: Set<String> = emptySet(),
     public val isRefreshing: Boolean = false,
+    public val actionError: String? = null,
 )
 
 public data class SessionSearchUiState(
@@ -51,6 +55,16 @@ public data class SessionSearchUiState(
     public val results: List<SessionSearchHit> = emptyList(),
     public val isSearchingMessages: Boolean = false,
 )
+
+/** Running or waiting-on-user sessions sort above idle ones. */
+private val ChatSessionSummary.isActive: Boolean
+    get() = runState == AgentRunState.Streaming ||
+        runState == AgentRunState.WaitingApproval ||
+        runState == AgentRunState.WaitingAskUser
+
+/** Most recent activity inside a workspace group; groups without sessions sink to the bottom. */
+private val WorkspaceGroup.activityAtEpochMs: Long
+    get() = sessions.maxOfOrNull { it.updatedAtEpochMs } ?: Long.MIN_VALUE
 
 @HiltViewModel
 public class SessionsViewModel @Inject constructor(
@@ -62,11 +76,11 @@ public class SessionsViewModel @Inject constructor(
     private val deleteSessionUseCase: DeleteSessionUseCase,
     private val archiveSessionUseCase: ArchiveSessionUseCase,
     private val archiveWorkspaceUseCase: ArchiveWorkspaceUseCase,
+    private val workspaceExpansionRepository: WorkspaceExpansionRepository,
 ) : ViewModel() {
 
-    private val expanded = MutableStateFlow<Set<String>>(emptySet())
     private val refreshing = MutableStateFlow(false)
-    private var didSeedExpanded = false
+    private val actionError = MutableStateFlow<String?>(null)
 
     private val _search = MutableStateFlow(SessionSearchUiState())
     public val searchState: StateFlow<SessionSearchUiState> = _search.asStateFlow()
@@ -83,9 +97,10 @@ public class SessionsViewModel @Inject constructor(
 
     public val state: StateFlow<SessionsUiState> = combine(
         catalog,
-        expanded,
+        workspaceExpansionRepository.expandedWorkspaceIds,
         refreshing,
-    ) { cat, expandedIds, isRefreshing ->
+        actionError,
+    ) { cat, expandedIds, isRefreshing, error ->
         val pendingBySession = cat.pending.groupBy { it.sessionId }
         val enriched = cat.sessions.map { session ->
             val items = pendingBySession[session.id].orEmpty()
@@ -98,7 +113,10 @@ public class SessionsViewModel @Inject constructor(
         }
         val quickAsk = enriched
             .filter { it.workspaceId.isNullOrBlank() }
-            .sortedByDescending { it.updatedAtEpochMs }
+            .sortedWith(
+                compareByDescending<ChatSessionSummary> { it.isActive }
+                    .thenByDescending { it.updatedAtEpochMs },
+            )
         val byWorkspace = enriched
             .filter { !it.workspaceId.isNullOrBlank() }
             .groupBy { it.workspaceId!! }
@@ -129,6 +147,7 @@ public class SessionsViewModel @Inject constructor(
             }
         }.sortedWith(
             compareByDescending<WorkspaceGroup> { it.workspace.pinned }
+                .thenByDescending { it.activityAtEpochMs }
                 .thenBy { it.workspace.name.lowercase() },
         )
         SessionsUiState(
@@ -138,6 +157,7 @@ public class SessionsViewModel @Inject constructor(
             pendingApprovals = cat.pending,
             expandedWorkspaceIds = expandedIds,
             isRefreshing = isRefreshing,
+            actionError = error,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SessionsUiState())
 
@@ -147,14 +167,6 @@ public class SessionsViewModel @Inject constructor(
             connectionRepository.connectionState.collect { state ->
                 if (state == ConnectionState.Connected) {
                     refresh(showIndicator = false)
-                }
-            }
-        }
-        viewModelScope.launch {
-            sessionRepository.workspaces.collect { workspaces ->
-                if (!didSeedExpanded && workspaces.isNotEmpty()) {
-                    didSeedExpanded = true
-                    expanded.value = workspaces.take(3).map { it.id }.toSet()
                 }
             }
         }
@@ -169,9 +181,8 @@ public class SessionsViewModel @Inject constructor(
     }
 
     public fun toggleWorkspace(id: String) {
-        expanded.update { current ->
-            if (id in current) current - id else current + id
-        }
+        val isExpanded = id in workspaceExpansionRepository.currentExpandedWorkspaceIds()
+        workspaceExpansionRepository.setExpanded(id, expanded = !isExpanded)
     }
 
     public fun refresh(showIndicator: Boolean = true) {
@@ -200,6 +211,37 @@ public class SessionsViewModel @Inject constructor(
     public fun archiveWorkspace(workspaceId: String) {
         viewModelScope.launch {
             archiveWorkspaceUseCase(workspaceId, archived = true)
+        }
+    }
+
+    public fun clearActionError() {
+        actionError.value = null
+    }
+
+    public fun renameSession(sessionId: String, title: String) {
+        viewModelScope.launch {
+            when (val result = sessionRepository.renameSession(sessionId, title)) {
+                is AnyaResult.Success -> actionError.value = null
+                is AnyaResult.Failure -> actionError.value = result.error.userMessage
+            }
+        }
+    }
+
+    public fun pinWorkspace(workspaceId: String, pinned: Boolean) {
+        viewModelScope.launch {
+            when (val result = sessionRepository.pinWorkspace(workspaceId, pinned)) {
+                is AnyaResult.Success -> actionError.value = null
+                is AnyaResult.Failure -> actionError.value = result.error.userMessage
+            }
+        }
+    }
+
+    public fun renameWorkspace(workspaceId: String, name: String) {
+        viewModelScope.launch {
+            when (val result = sessionRepository.updateWorkspace(workspaceId, name)) {
+                is AnyaResult.Success -> actionError.value = null
+                is AnyaResult.Failure -> actionError.value = result.error.userMessage
+            }
         }
     }
 

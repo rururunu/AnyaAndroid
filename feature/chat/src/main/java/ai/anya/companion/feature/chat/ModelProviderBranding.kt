@@ -223,23 +223,43 @@ internal fun VendorBadge(
     )
 }
 
+/** Brand accents are vendor-mandated values; they are never themed. */
+private object VendorAccents {
+    val OpenAi = Color(0xFF10A37F)
+    val Anthropic = Color(0xFFD97757)
+    val Gemini = Color(0xFF4285F4)
+    val DeepSeek = Color(0xFF4D6BFE)
+    val Qwen = Color(0xFF615CED)
+    val Glm = Color(0xFF0C38F2)
+    val Mimo = Color(0xFFFF6900)
+    val Meta = Color(0xFF0668E1)
+    val Mistral = Color(0xFFFF7000)
+    val Xai = Color(0xFF1D9BF0)
+    val Cohere = Color(0xFFD18EE2)
+    val Doubao = Color(0xFF1664FF)
+    val Microsoft = Color(0xFF00A4EF)
+    val Kimi = Color(0xFF111111)
+    val MiniMax = Color(0xFF111111)
+    val Unknown = Color(0xFF3B82F6)
+}
+
 private fun vendorAccent(brand: ModelVendor): Color = when (brand) {
-    ModelVendor.OpenAi -> Color(0xFF10A37F)
-    ModelVendor.Anthropic -> Color(0xFFD97757)
-    ModelVendor.Gemini -> Color(0xFF4285F4)
-    ModelVendor.DeepSeek -> Color(0xFF4D6BFE)
-    ModelVendor.Qwen -> Color(0xFF615CED)
-    ModelVendor.Glm -> Color(0xFF0C38F2)
-    ModelVendor.Mimo -> Color(0xFFFF6900)
-    ModelVendor.Meta -> Color(0xFF0668E1)
-    ModelVendor.Mistral -> Color(0xFFFF7000)
-    ModelVendor.Xai -> Color(0xFF1D9BF0)
-    ModelVendor.Cohere -> Color(0xFFD18EE2)
-    ModelVendor.Doubao -> Color(0xFF1664FF)
-    ModelVendor.Microsoft -> Color(0xFF00A4EF)
-    ModelVendor.Kimi -> Color(0xFF111111)
-    ModelVendor.MiniMax -> Color(0xFF111111)
-    ModelVendor.Unknown -> Color(0xFF3B82F6)
+    ModelVendor.OpenAi -> VendorAccents.OpenAi
+    ModelVendor.Anthropic -> VendorAccents.Anthropic
+    ModelVendor.Gemini -> VendorAccents.Gemini
+    ModelVendor.DeepSeek -> VendorAccents.DeepSeek
+    ModelVendor.Qwen -> VendorAccents.Qwen
+    ModelVendor.Glm -> VendorAccents.Glm
+    ModelVendor.Mimo -> VendorAccents.Mimo
+    ModelVendor.Meta -> VendorAccents.Meta
+    ModelVendor.Mistral -> VendorAccents.Mistral
+    ModelVendor.Xai -> VendorAccents.Xai
+    ModelVendor.Cohere -> VendorAccents.Cohere
+    ModelVendor.Doubao -> VendorAccents.Doubao
+    ModelVendor.Microsoft -> VendorAccents.Microsoft
+    ModelVendor.Kimi -> VendorAccents.Kimi
+    ModelVendor.MiniMax -> VendorAccents.MiniMax
+    ModelVendor.Unknown -> VendorAccents.Unknown
 }
 
 private fun branding(

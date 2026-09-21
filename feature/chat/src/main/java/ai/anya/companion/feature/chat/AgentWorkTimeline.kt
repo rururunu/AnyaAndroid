@@ -36,6 +36,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -448,6 +449,13 @@ internal data class TurnActions(
 
 internal val LocalTurnActions = staticCompositionLocalOf { TurnActions() }
 
+/**
+ * Whether the model's reasoning is rendered in the transcript (Settings → Chat display).
+ * Off by default on phones. Only [WorkSegment.Reasoning] honours it — mid-turn narration stays
+ * visible because it is the agent talking to the user, not hidden chain-of-thought.
+ */
+internal val LocalShowThinking = staticCompositionLocalOf { false }
+
 /** Per-message UI state for the process toggles (desktop `processOpen` / `userToggledProcess`). */
 private class ProcessOpenState {
     val open = mutableStateMapOf<String, Boolean>()
@@ -464,6 +472,10 @@ internal fun AgentWorkDetails(
     foldExpanded: Boolean,
     onFoldExpandedChange: (Boolean) -> Unit,
     onOpenDiff: (DiffViewRequest) -> Unit,
+    /** True when the desktop left this turn's execution process out of the history payload. */
+    detailOmitted: Boolean = false,
+    /** Called once, the first time the user expands something, to fetch that detail. */
+    onNeedDetail: () -> Unit = {},
 ) {
     val streaming = message.status == MessageStatus.Streaming || message.status == MessageStatus.Pending
     val segments = remember(message, streaming) { buildWorkSegments(message, streaming) }
@@ -472,6 +484,15 @@ internal fun AgentWorkDetails(
     val imageRefs = remember(message.toolActivities) { collectGeneratedImageRefs(message.toolActivities) }
     val processState = remember(message.id) { ProcessOpenState() }
     val waitingForAskUser = visible.any { it.toolName == "ask_user" && it.status == "running" }
+
+    // A light payload ships only the final answer; the process is fetched the first time the user
+    // opens it, instead of being pulled in for every turn on session open.
+    val anyProcessOpen = remember(processState) {
+        derivedStateOf { processState.open.values.any { it } }
+    }
+    LaunchedEffect(detailOmitted, anyProcessOpen.value) {
+        if (detailOmitted && anyProcessOpen.value) onNeedDetail()
+    }
 
     // Collapsed by default; only auto-expand while showcase work is actively running.
     val statusKey = segments.joinToString("|") { s ->
@@ -509,7 +530,13 @@ internal fun AgentWorkDetails(
             val preamble = segments.filterNot(::isReplySegment)
             val reply = segments.filter(::isReplySegment)
             if (preamble.isNotEmpty()) {
-                val meta = remember(message) { summarizeWorkFoldMeta(visible, countReasoningSegments(message)) }
+                val showThinking = LocalShowThinking.current
+                val meta = remember(message, showThinking) {
+                    summarizeWorkFoldMeta(
+                        visible,
+                        if (showThinking) countReasoningSegments(message) else 0,
+                    )
+                }
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Row(
                         modifier = Modifier
@@ -594,6 +621,7 @@ private fun WorkSegmentView(
             reasoning = segment.content,
             streaming = streaming,
             showSummary = showReasoningSummary,
+            visible = LocalShowThinking.current,
         )
         is WorkSegment.Narration -> ReasoningSection(
             reasoning = segment.content,

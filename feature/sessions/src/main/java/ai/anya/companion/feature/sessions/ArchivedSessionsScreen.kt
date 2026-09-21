@@ -22,6 +22,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -31,9 +32,10 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ai.anya.companion.core.designsystem.component.AnyaEmptyState
 import ai.anya.companion.core.designsystem.component.AnyaOverlayScaffold
-import ai.anya.companion.core.designsystem.component.AnyaPrimaryButton
 import ai.anya.companion.core.designsystem.component.AnyaPullToRefreshBox
-import ai.anya.companion.core.designsystem.component.AnyaSecondaryButton
+import ai.anya.companion.core.designsystem.component.AnyaSheetActionRow
+import ai.anya.companion.core.designsystem.component.AnyaSheetCard
+import ai.anya.companion.core.designsystem.component.AnyaSheetHeader
 import ai.anya.companion.core.designsystem.component.AnyaTopBarIconChip
 import ai.anya.companion.core.designsystem.haptic.rememberAnyaHaptics
 import ai.anya.companion.core.designsystem.theme.AnyaSpace
@@ -211,7 +213,6 @@ private fun RestoreSessionSheet(
     onRestore: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val haptics = rememberAnyaHaptics()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val title = session.title.ifBlank { stringResource(R.string.sessions_delete_untitled) }
     ModalBottomSheet(
@@ -220,40 +221,36 @@ private fun RestoreSessionSheet(
         containerColor = MaterialTheme.colorScheme.background,
         tonalElevation = 0.dp,
     ) {
+        // Apple HIG action sheet: centered title block, opaque action card, cancel card.
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = AnyaSpace.Screen)
-                .padding(bottom = AnyaSpace.Xxl),
-            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
+                .padding(horizontal = AnyaSpace.Lg)
+                .padding(bottom = AnyaSpace.Xl),
+            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text(
-                text = stringResource(R.string.sessions_actions_title),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
+            AnyaSheetHeader(
+                title = stringResource(R.string.sessions_actions_title),
+                subtitle = title,
             )
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            AnyaPrimaryButton(
-                text = stringResource(R.string.sessions_restore),
-                onClick = {
-                    haptics.confirm()
-                    onRestore()
-                },
-            )
-            AnyaSecondaryButton(
-                text = stringResource(R.string.sessions_delete_cancel),
-                onClick = {
-                    haptics.tick()
-                    onDismiss()
-                },
-            )
-            Spacer(modifier = Modifier.height(AnyaSpace.Sm))
+            Spacer(modifier = Modifier.height(AnyaSpace.Xs))
+            AnyaSheetCard {
+                AnyaSheetActionRow(
+                    label = stringResource(R.string.sessions_restore),
+                    color = MaterialTheme.colorScheme.primary,
+                    onClick = onRestore,
+                )
+            }
+            // Cancel lives on its own card, separated from the actions — the
+            // action-sheet cancel pattern.
+            AnyaSheetCard {
+                AnyaSheetActionRow(
+                    label = stringResource(R.string.sessions_delete_cancel),
+                    emphasized = true,
+                    onClick = onDismiss,
+                )
+            }
         }
     }
 }
@@ -266,7 +263,6 @@ private fun RestoreWorkspaceSheet(
     onRestore: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val haptics = rememberAnyaHaptics()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -274,42 +270,41 @@ private fun RestoreWorkspaceSheet(
         containerColor = MaterialTheme.colorScheme.background,
         tonalElevation = 0.dp,
     ) {
+        // Apple HIG action sheet: centered title block with the body as the secondary
+        // line, the emphasized restore on its own card, cancel last.
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = AnyaSpace.Screen)
-                .padding(bottom = AnyaSpace.Xxl),
-            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
+                .padding(horizontal = AnyaSpace.Lg)
+                .padding(bottom = AnyaSpace.Xl),
+            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text(
-                text = stringResource(R.string.sessions_workspace_actions_title),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                text = stringResource(
+            AnyaSheetHeader(
+                title = stringResource(R.string.sessions_workspace_actions_title),
+                subtitle = stringResource(
                     R.string.sessions_workspace_restore_body,
                     workspaceName,
                     sessionCount,
                 ),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            AnyaPrimaryButton(
-                text = stringResource(R.string.sessions_workspace_restore),
-                onClick = {
-                    haptics.confirm()
-                    onRestore()
-                },
-            )
-            AnyaSecondaryButton(
-                text = stringResource(R.string.sessions_delete_cancel),
-                onClick = {
-                    haptics.tick()
-                    onDismiss()
-                },
-            )
-            Spacer(modifier = Modifier.height(AnyaSpace.Sm))
+            Spacer(modifier = Modifier.height(AnyaSpace.Xs))
+            AnyaSheetCard {
+                AnyaSheetActionRow(
+                    label = stringResource(R.string.sessions_workspace_restore),
+                    color = MaterialTheme.colorScheme.primary,
+                    onClick = onRestore,
+                )
+            }
+            // Cancel lives on its own card, separated from the actions — the
+            // action-sheet cancel pattern.
+            AnyaSheetCard {
+                AnyaSheetActionRow(
+                    label = stringResource(R.string.sessions_delete_cancel),
+                    emphasized = true,
+                    onClick = onDismiss,
+                )
+            }
         }
     }
 }

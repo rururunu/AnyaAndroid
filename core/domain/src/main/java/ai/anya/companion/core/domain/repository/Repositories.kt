@@ -109,11 +109,41 @@ public interface SessionRepository {
     public suspend fun refreshSessions(): AnyaResult<List<ChatSessionSummary>>
     public suspend fun refreshArchivedSessions(): AnyaResult<List<ChatSessionSummary>>
     public suspend fun loadHistory(sessionId: String): AnyaResult<List<ChatMessage>>
+    /**
+     * Loads one page of history older than [beforeMessageId] and merges it into the projection.
+     *
+     * Returns null when the desktop cannot page history at all, so callers stop asking and stay on
+     * full loads. Otherwise the value says whether anything older remains.
+     */
+    public suspend fun loadOlderHistory(
+        sessionId: String,
+        beforeMessageId: String,
+        limit: Int = 40,
+    ): AnyaResult<Boolean>?
+    /**
+     * Fetches the execution process (reasoning, work timeline, tool activities) for [messageIds].
+     *
+     * Light history leaves those out, so the companion calls this when the user expands a turn.
+     */
+    public suspend fun loadMessageDetail(
+        sessionId: String,
+        messageIds: List<String>,
+    ): AnyaResult<List<ChatMessage>>
     public suspend fun deleteSession(sessionId: String): AnyaResult<Unit>
     /** Archive (`true`) or restore (`false`) a session on desktop. */
     public suspend fun archiveSession(sessionId: String, archived: Boolean): AnyaResult<Unit>
+    /** Rename a session title on desktop (requires Anya ≥ 0.2.23). */
+    public suspend fun renameSession(sessionId: String, title: String): AnyaResult<String>
     /** Archive / restore a workspace and every session bound to it. */
     public suspend fun archiveWorkspace(workspaceId: String, archived: Boolean): AnyaResult<Unit>
+    /** Pin or unpin a workspace (requires Anya ≥ 0.2.23). */
+    public suspend fun pinWorkspace(workspaceId: String, pinned: Boolean): AnyaResult<Unit>
+    /** Update workspace display name (requires Anya ≥ 0.2.23). */
+    public suspend fun updateWorkspace(workspaceId: String, name: String): AnyaResult<Unit>
+    /** Git working-tree unified diff (requires Anya ≥ 0.2.23). */
+    public suspend fun workingTreeDiff(workspaceId: String? = null): AnyaResult<String>
+    /** Live desktop environment context (requires Anya ≥ 0.2.23). */
+    public suspend fun environmentContext(): AnyaResult<ai.anya.companion.core.model.workspace.EnvironmentContext>
     public suspend fun refreshArchivedWorkspaces(): AnyaResult<List<WorkspaceSummary>>
     /** Roll back to the checkpoint before user turn [turn]; history is reloaded on success. */
     public suspend fun rewindSession(sessionId: String, turn: Int): AnyaResult<Unit>
@@ -250,6 +280,27 @@ public interface ThemeRepository {
     public val theme: StateFlow<AppTheme>
     public fun current(): AppTheme
     public fun setTheme(theme: AppTheme)
+}
+
+/**
+ * Chat transcript display toggles. [showThinking] is off by default on phones: the model's
+ * reasoning text is only rendered in the transcript after the user opts in from Settings.
+ */
+public interface ChatDisplayRepository {
+    public val showThinking: StateFlow<Boolean>
+    public fun currentShowThinking(): Boolean
+    public fun setShowThinking(enabled: Boolean)
+}
+
+/**
+ * Which workspace groups the user left expanded in the sessions list. Nothing is expanded by
+ * default, so a fresh install shows every workspace collapsed; each toggle is remembered per
+ * workspace id and survives process death.
+ */
+public interface WorkspaceExpansionRepository {
+    public val expandedWorkspaceIds: StateFlow<Set<String>>
+    public fun currentExpandedWorkspaceIds(): Set<String>
+    public fun setExpanded(workspaceId: String, expanded: Boolean)
 }
 
 /**

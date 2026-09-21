@@ -1,5 +1,9 @@
 package ai.anya.companion.navigation
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import ai.anya.companion.R
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -32,13 +37,13 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import ai.anya.companion.core.designsystem.component.AnyaLoadingIndicator
-import ai.anya.companion.core.designsystem.component.AnyaSecondaryButton
 import ai.anya.companion.core.designsystem.theme.AnyaSpace
 import ai.anya.companion.core.domain.repository.ConnectionState
 import ai.anya.companion.feature.chat.ChatRoute
 import ai.anya.companion.feature.chat.NewChatSessionId
 import ai.anya.companion.feature.pairing.PairingRoute
 import ai.anya.companion.feature.sessions.ArchivedSessionsRoute
+import ai.anya.companion.feature.sessions.SessionSearchRoute
 import ai.anya.companion.feature.settings.AboutSettingsRoute
 import ai.anya.companion.feature.settings.ConnectionSettingsRoute
 import ai.anya.companion.feature.settings.GeneralSettingsRoute
@@ -51,6 +56,7 @@ object Routes {
     const val Pairing = "pairing?repairDeviceId={repairDeviceId}"
     const val Main = "main"
     const val Chat = "chat/{sessionId}?messageId={messageId}&workspaceId={workspaceId}"
+    const val Search = "search"
     const val Workspace = "workspace"
     const val SettingsConnection = "settings/connection"
     const val SettingsGeneral = "settings/general"
@@ -71,6 +77,15 @@ object Routes {
         return if (query.isEmpty()) base else "$base?${query.joinToString("&")}"
     }
 }
+
+/**
+ * Timing for the push/pop page transitions below.
+ *
+ * Navigation Compose's default is a cross-fade, which on back reads as the previous
+ * screen slowly appearing *through* the current one. A full-width horizontal slide —
+ * what the tab pager already does — moves the two screens like two pages instead.
+ */
+private val PageSlide = tween<IntOffset>(durationMillis = 280, easing = FastOutSlowInEasing)
 
 @Composable
 fun AnyaNavHost(
@@ -148,6 +163,10 @@ fun AnyaNavHost(
         NavHost(
             navController = navController,
             startDestination = startDestination,
+            enterTransition = { slideInHorizontally(PageSlide) { it } },
+            exitTransition = { slideOutHorizontally(PageSlide) { -it } },
+            popEnterTransition = { slideInHorizontally(PageSlide) { -it } },
+            popExitTransition = { slideOutHorizontally(PageSlide) { it } },
         ) {
             composable(
                 route = Routes.Pairing,
@@ -184,6 +203,9 @@ fun AnyaNavHost(
                         navController.navigate(
                             Routes.chat(NewChatSessionId, workspaceId = workspaceId),
                         )
+                    },
+                    onOpenSearch = {
+                        navController.navigate(Routes.Search)
                     },
                     onOpenConnectionSettings = {
                         navController.navigate(Routes.SettingsConnection)
@@ -223,10 +245,21 @@ fun AnyaNavHost(
                     },
                 ),
             ) {
-                ChatRoute(onBack = { navController.popBackStack() })
+                ChatRoute(
+                    onBack = { navController.popBackStack() },
+                    onOpenSettings = { navController.navigate(Routes.SettingsGeneral) },
+                )
             }
             composable(Routes.Workspace) {
                 WorkspaceRoute()
+            }
+            composable(Routes.Search) {
+                SessionSearchRoute(
+                    onBack = { navController.popBackStack() },
+                    onOpenSession = { id, messageId ->
+                        navController.navigate(Routes.chat(id, messageId))
+                    },
+                )
             }
             composable(Routes.SettingsConnection) {
                 ConnectionSettingsRoute(
@@ -320,11 +353,12 @@ fun AnyaNavHost(
                     )
                     if (showCancelConnect) {
                         Spacer(modifier = Modifier.height(24.dp))
-                        AnyaSecondaryButton(
-                            text = stringResource(R.string.boot_cancel_connect),
-                            onClick = { cancelBootConnect() },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
+                        androidx.compose.material3.TextButton(onClick = { cancelBootConnect() }) {
+                            Text(
+                                text = stringResource(R.string.boot_cancel_connect),
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
                     }
                 }
             }

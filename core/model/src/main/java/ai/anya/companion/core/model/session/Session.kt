@@ -56,6 +56,8 @@ public data class ToolPreviewPayload(
     public val path: String = "",
     public val affectedPaths: List<String> = emptyList(),
     public val unifiedDiff: String = "",
+    public val oldText: String? = null,
+    public val newText: String? = null,
 )
 
 @Serializable
@@ -213,6 +215,14 @@ public data class ChatMessage(
      * falls back to reasoning → tools → reply.
      */
     public val workTimeline: List<WorkTimelineItem> = emptyList(),
+    /**
+     * Desktop left this turn's execution process out of the history payload (`detailOmitted` in
+     * `session.history`), so the timeline and tool list need a `session.messageDetail` fetch
+     * before they can be rendered.
+     */
+    public val detailOmitted: Boolean = false,
+    /** Desktop tool-call count for this turn; usable while [toolActivities] is not loaded yet. */
+    public val stepCount: Int = 0,
     /** Companion-local shared files (desktop → phone). Not part of desktop history. */
     public val sharedFiles: List<ChatSharedFile> = emptyList(),
     /** Companion-local preview URLs (desktop gateway reverse-proxy). */

@@ -56,6 +56,9 @@
     <string name="settings_background">Background connection</string>
     <string name="settings_battery_title">Keep connection in background</string>
     <string name="settings_battery_subtitle">Ignore battery optimizations so the desktop link is less likely to drop. Some OEMs may still restrict background network.</string>
+    <string name="settings_chat_display">Chat display</string>
+    <string name="settings_thinking_title">Show thinking process</string>
+    <string name="settings_thinking_subtitle">Show the model’s reasoning in the transcript. Off by default.</string>
     <string name="settings_about">About Anya</string>
     <string name="settings_about_subtitle">Version and software updates</string>
     <string name="settings_about_update_available">Update %1$s available</string>

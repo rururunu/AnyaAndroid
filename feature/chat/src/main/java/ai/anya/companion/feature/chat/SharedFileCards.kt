@@ -66,6 +66,7 @@ import androidx.core.content.FileProvider
 import ai.anya.companion.core.designsystem.component.AnyaInlineLoadingMark
 import ai.anya.companion.core.designsystem.component.AnyaMarkdown
 import ai.anya.companion.core.designsystem.haptic.rememberAnyaHaptics
+import ai.anya.companion.core.designsystem.theme.AnyaColors
 import ai.anya.companion.core.designsystem.theme.AnyaSpace
 import ai.anya.companion.core.model.session.ChatSharedFile
 import ai.anya.companion.core.model.session.ChatSharedUrl
@@ -628,7 +629,7 @@ private fun ImageEditToolbar(
             )
         }
         if (error != null) {
-            Text(text = error, style = MaterialTheme.typography.labelSmall, color = Color(0xFFFF8A80))
+            Text(text = error, style = MaterialTheme.typography.labelSmall, color = AnyaColors.Danger)
         }
         Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp),

@@ -56,8 +56,10 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ai.anya.companion.core.designsystem.component.AnyaEmptyState
-import ai.anya.companion.core.designsystem.component.AnyaPrimaryButton
-import ai.anya.companion.core.designsystem.component.AnyaSecondaryButton
+import ai.anya.companion.core.designsystem.component.AnyaGlassSegmentedControl
+import ai.anya.companion.core.designsystem.component.AnyaSheetActionRow
+import ai.anya.companion.core.designsystem.component.AnyaSheetCard
+import ai.anya.companion.core.designsystem.component.AnyaSheetHeader
 import ai.anya.companion.core.designsystem.component.AnyaSegmentedControl
 import ai.anya.companion.core.designsystem.component.AnyaSurfaceCard
 import ai.anya.companion.core.designsystem.haptic.rememberAnyaHaptics
@@ -66,6 +68,8 @@ import ai.anya.companion.core.designsystem.theme.AnyaSpace
 import ai.anya.companion.core.model.approval.ApprovalKind
 import ai.anya.companion.core.model.inbox.InboxResultKind
 import ai.anya.companion.core.model.session.SharedFileStatus
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import kotlinx.coroutines.launch
 
 @Composable
@@ -93,27 +97,50 @@ public fun ApprovalTabContent(
     val scope = rememberCoroutineScope()
     val segmentProgress = pagerState.currentPage + pagerState.currentPageOffsetFraction
 
+    // This page owns a *local* backdrop layer rather than borrowing the shell's.
+    //
+    // Why it matters: the shell records every pager page into its own `glassBackdrop`.
+    // A glass reader placed inside a page then sits within the very layer it reads,
+    // which forms a RenderNode cycle - `prepareTreeImpl` recurses until the render
+    // thread's stack overflows (SIGSEGV in RenderThread). That is exactly what happened
+    // when this control first borrowed `glassBackdrop`.
+    //
+    // Here the lists below are recorded into this local layer and the segment control
+    // stays a *sibling* of that subtree, so what it reads can never contain it.
+    val pageBackground = MaterialTheme.colorScheme.background
+    val segmentBackdrop = rememberLayerBackdrop {
+        drawRect(pageBackground)
+        drawContent()
+    }
+    val segmentLabels = listOf(
+        stringResource(R.string.inbox_tab_pending),
+        stringResource(R.string.inbox_tab_results),
+    )
+    val segmentLayout = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = AnyaSpace.Screen)
+        .padding(top = AnyaSpace.Lg, bottom = AnyaSpace.Md)
+    val selectSegment: (Int) -> Unit = { index ->
+        scope.launch { pagerState.animateScrollToPage(index) }
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
-        AnyaSegmentedControl(
-            options = listOf(
-                stringResource(R.string.inbox_tab_pending),
-                stringResource(R.string.inbox_tab_results),
-            ),
+        AnyaGlassSegmentedControl(
+            backdrop = segmentBackdrop,
+            options = segmentLabels,
             selectedIndex = pagerState.currentPage.coerceIn(0, 1),
             selectedProgress = segmentProgress,
-            onSelect = { index ->
-                scope.launch { pagerState.animateScrollToPage(index) }
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = AnyaSpace.Screen)
-                .padding(top = AnyaSpace.Lg, bottom = AnyaSpace.Md),
+            onSelect = selectSegment,
+            modifier = segmentLayout,
         )
         HorizontalPager(
             state = pagerState,
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f),
+                .weight(1f)
+                // Recorded into the local layer the segment above reads from. This node
+                // is a sibling of the segment, never an ancestor of it.
+                .layerBackdrop(segmentBackdrop),
             beyondViewportPageCount = 1,
             key = { page -> if (page == 0) "pending" else "results" },
         ) { page ->
@@ -440,7 +467,6 @@ private fun InboxResultDeleteSheet(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val haptics = rememberAnyaHaptics()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -448,49 +474,36 @@ private fun InboxResultDeleteSheet(
         containerColor = MaterialTheme.colorScheme.background,
         tonalElevation = 0.dp,
     ) {
+        // Apple HIG action sheet: centered title block, destructive action card, cancel card.
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = AnyaSpace.Screen)
-                .padding(bottom = AnyaSpace.Xxl),
-            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
+                .padding(horizontal = AnyaSpace.Lg)
+                .padding(bottom = AnyaSpace.Xl),
+            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.DeleteOutline,
-                    contentDescription = null,
-                    tint = AnyaColors.Danger,
-                    modifier = Modifier.size(22.dp),
-                )
-                Text(
-                    text = stringResource(R.string.inbox_delete_title),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
+            AnyaSheetHeader(
+                title = stringResource(R.string.inbox_delete_title),
+                subtitle = stringResource(R.string.inbox_delete_body, title.ifBlank { "—" }),
+            )
+            Spacer(modifier = Modifier.height(AnyaSpace.Xs))
+            AnyaSheetCard {
+                AnyaSheetActionRow(
+                    label = stringResource(R.string.inbox_delete_confirm),
+                    color = AnyaColors.Danger,
+                    onClick = onConfirm,
                 )
             }
-            Text(
-                text = stringResource(R.string.inbox_delete_body, title.ifBlank { "—" }),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            AnyaPrimaryButton(
-                text = stringResource(R.string.inbox_delete_confirm),
-                onClick = {
-                    haptics.confirm()
-                    onConfirm()
-                },
-            )
-            AnyaSecondaryButton(
-                text = stringResource(R.string.inbox_delete_cancel),
-                onClick = {
-                    haptics.tick()
-                    onDismiss()
-                },
-            )
-            Spacer(modifier = Modifier.height(AnyaSpace.Sm))
+            // Cancel lives on its own card, separated from the actions — the
+            // action-sheet cancel pattern.
+            AnyaSheetCard {
+                AnyaSheetActionRow(
+                    label = stringResource(R.string.inbox_delete_cancel),
+                    emphasized = true,
+                    onClick = onDismiss,
+                )
+            }
         }
     }
 }

@@ -24,6 +24,10 @@ internal data class AnsiSpan(
 )
 
 /** 16-colour palette tuned for a dark terminal background (GitHub Dark). */
+/** Terminal chrome for the ShellTerminalCard body (the desktop dark terminal look). */
+internal val TerminalForeground: Color = Color(0xFFC9D1D9)
+internal val TerminalBackground: Color = Color(0xFF0D1117)
+
 private val PALETTE_NORMAL = listOf(
     Color(0xFF6E7681), Color(0xFFFF7B72), Color(0xFF3FB950), Color(0xFFD29922),
     Color(0xFF58A6FF), Color(0xFFBC8CFF), Color(0xFF39C5CF), Color(0xFFB1BAC4),

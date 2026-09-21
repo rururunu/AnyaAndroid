@@ -198,6 +198,40 @@ public sealed class ClientMessage {
         public val archived: Boolean,
     ) : ClientMessage()
 
+    /** Pin or unpin a workspace (desktop ≥ 0.2.23). */
+    @Serializable
+    @SerialName("workspace.pin")
+    public data class WorkspacePin(
+        public val requestId: String,
+        public val workspaceId: String,
+        public val pinned: Boolean,
+    ) : ClientMessage()
+
+    /** Update workspace display name (desktop ≥ 0.2.23). */
+    @Serializable
+    @SerialName("workspace.update")
+    public data class WorkspaceUpdate(
+        public val requestId: String,
+        public val workspaceId: String,
+        public val name: String,
+        public val description: String? = null,
+    ) : ClientMessage()
+
+    /** Git working-tree unified diff for a workspace (desktop ≥ 0.2.23). */
+    @Serializable
+    @SerialName("workspace.workingTreeDiff")
+    public data class WorkspaceWorkingTreeDiff(
+        public val requestId: String,
+        public val workspaceId: String? = null,
+    ) : ClientMessage()
+
+    /** Live desktop environment / IDE / Office context (desktop ≥ 0.2.23). */
+    @Serializable
+    @SerialName("context.environment")
+    public data class ContextEnvironment(
+        public val requestId: String,
+    ) : ClientMessage()
+
     /** Image-mode choices configured on the desktop (model / provider / styles). */
     @Serializable
     @SerialName("imageGen.options")
@@ -227,11 +261,34 @@ public sealed class ClientMessage {
         public val requestId: String,
     ) : ClientMessage()
 
+    /**
+     * Full session history, or a single page of it when [limit] / [beforeMessageId] are set.
+     *
+     * [detail] is `"light"` to skip each turn's execution process (reasoning, work timeline,
+     * tool activities) — those arrive later through [SessionMessageDetail] when the user expands a
+     * turn. All three fields are omitted while null, so a desktop that predates them receives
+     * exactly the frame it used to and replies with the whole session.
+     */
     @Serializable
     @SerialName("session.history")
     public data class SessionHistory(
         public val requestId: String,
         public val sessionId: String,
+        public val detail: String? = null,
+        public val limit: Int? = null,
+        public val beforeMessageId: String? = null,
+    ) : ClientMessage()
+
+    /**
+     * Full detail for individual messages (`session.messageDetail`). Sent when the user expands a
+     * turn whose execution process was left out of the light history payload.
+     */
+    @Serializable
+    @SerialName("session.messageDetail")
+    public data class SessionMessageDetail(
+        public val requestId: String,
+        public val sessionId: String,
+        public val messageIds: List<String>,
     ) : ClientMessage()
 
     @Serializable
@@ -248,6 +305,15 @@ public sealed class ClientMessage {
         public val requestId: String,
         public val sessionId: String,
         public val archived: Boolean,
+    ) : ClientMessage()
+
+    /** Rename a chat session (desktop ≥ 0.2.23). */
+    @Serializable
+    @SerialName("session.rename")
+    public data class SessionRename(
+        public val requestId: String,
+        public val sessionId: String,
+        public val title: String,
     ) : ClientMessage()
 
     /** List archived chat sessions. */

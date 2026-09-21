@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material3.MaterialTheme
@@ -26,10 +25,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -39,15 +38,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import ai.anya.companion.core.designsystem.haptic.rememberAnyaHaptics
 import ai.anya.companion.core.designsystem.theme.AnyaSpace
-import dev.chrisbanes.haze.HazeProgressive
-import dev.chrisbanes.haze.HazeTint
-import dev.chrisbanes.haze.hazeEffect
-import dev.chrisbanes.haze.hazeSource
-import dev.chrisbanes.haze.rememberHazeState
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 
 /**
- * Full-screen page chrome matching the chat detail screen: floating back chip,
- * optional title pill, and a soft progressive blur over scrolling content.
+ * Full-screen page chrome matching the chat detail screen: floating glass back
+ * chip, optional glass title pill, and a soft scrim so content fades under them.
  */
 @Composable
 public fun AnyaOverlayScaffold(
@@ -59,9 +55,14 @@ public fun AnyaOverlayScaffold(
 ) {
     val density = LocalDensity.current
     val canvas = MaterialTheme.colorScheme.surface
-    val hazeState = rememberHazeState()
+    // Self-contained liquid-glass layer: the scaffold records its own content so the
+    // header chips refract the page scrolling underneath them, same stack as MainShell.
+    val canvasBackground by rememberUpdatedState(canvas)
+    val backdrop = rememberLayerBackdrop {
+        drawRect(canvasBackground)
+        drawContent()
+    }
     val haptic = rememberAnyaHaptics()
-    val chipColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.82f)
     val barHeight = 40.dp
     var headerContentPx by remember { mutableStateOf(0) }
     val statusBarDp = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
@@ -80,7 +81,7 @@ public fun AnyaOverlayScaffold(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .hazeSource(hazeState),
+                .layerBackdrop(backdrop),
         ) {
             content(
                 PaddingValues(
@@ -96,16 +97,6 @@ public fun AnyaOverlayScaffold(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
-                .hazeEffect(state = hazeState) {
-                    backgroundColor = canvas
-                    tints = listOf(HazeTint(canvas.copy(alpha = 0.46f)))
-                    blurRadius = 22.dp
-                    noiseFactor = 0.04f
-                    progressive = HazeProgressive.verticalGradient(
-                        startIntensity = 0.72f,
-                        endIntensity = 0f,
-                    )
-                }
                 .background(
                     Brush.verticalGradient(
                         0.00f to canvas.copy(alpha = 0.82f),
@@ -125,30 +116,27 @@ public fun AnyaOverlayScaffold(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
             ) {
-                AnyaTopBarIconChip(
+                AnyaGlassIconChip(
+                    backdrop = backdrop,
                     icon = Icons.AutoMirrored.Rounded.ArrowBack,
                     contentDescription = "返回",
                     height = barHeight,
-                    containerColor = chipColor,
                     onClick = {
                         haptic.buttonPress()
                         onBack()
                     },
                 )
                 if (!title.isNullOrBlank()) {
-                    Row(
-                        modifier = Modifier
-                            .height(barHeight)
-                            .clip(RoundedCornerShape(999.dp))
-                            .background(chipColor)
-                            .padding(horizontal = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                    AnyaGlassChip(
+                        backdrop = backdrop,
+                        height = barHeight,
                     ) {
                         Text(
                             text = title,
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onBackground,
+                            maxLines = 1,
                         )
                     }
                 }

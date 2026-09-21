@@ -116,14 +116,14 @@ public fun PairingScreen(
         if (granted) {
             scanning = true
         } else {
-            haptic.reject()
+            haptic.error()
             onCameraDenied()
             manualOpen = true
         }
     }
 
     LaunchedEffect(state.error) {
-        if (state.error != null) haptic.reject()
+        if (state.error != null) haptic.error()
     }
     LaunchedEffect(state.info) {
         if (!state.info.isNullOrBlank() && state.error == null) haptic.tick()
@@ -138,7 +138,7 @@ public fun PairingScreen(
         QrScanScreen(
             onResult = { payload ->
                 scanning = false
-                haptic.confirm()
+                haptic.success()
                 onScanResult(payload)
             },
             onCancel = { scanning = false },

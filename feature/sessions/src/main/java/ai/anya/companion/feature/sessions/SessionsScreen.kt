@@ -1,9 +1,19 @@
 package ai.anya.companion.feature.sessions
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,8 +27,10 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -32,10 +44,7 @@ import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.FolderOpen
-import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material.icons.rounded.Shield
-import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -46,6 +55,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import ai.anya.companion.core.designsystem.component.AnyaInlineLoadingMark
 import ai.anya.companion.core.designsystem.component.AnyaPullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -55,23 +65,32 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ai.anya.companion.core.designsystem.component.AnyaEmptyState
-import ai.anya.companion.core.designsystem.component.AnyaPrimaryButton
-import ai.anya.companion.core.designsystem.component.AnyaSecondaryButton
+import ai.anya.companion.core.designsystem.component.AnyaOverlayScaffold
+import ai.anya.companion.core.designsystem.component.AnyaGlassSegmentedControl
 import ai.anya.companion.core.designsystem.component.AnyaSegmentedControl
+import ai.anya.companion.core.designsystem.component.AnyaSheetActionRow
+import ai.anya.companion.core.designsystem.component.AnyaSheetCard
+import ai.anya.companion.core.designsystem.component.AnyaSheetHairline
+import ai.anya.companion.core.designsystem.component.AnyaSheetHeader
+import com.kyant.backdrop.Backdrop
 import ai.anya.companion.core.designsystem.haptic.rememberAnyaHaptics
 import ai.anya.companion.core.designsystem.theme.AnyaColors
 import ai.anya.companion.core.designsystem.theme.AnyaSpace
@@ -103,6 +122,10 @@ public fun SessionsRoute(
         onArchiveSession = viewModel::archiveSession,
         onDeleteSession = viewModel::deleteSession,
         onArchiveWorkspace = viewModel::archiveWorkspace,
+        onRenameSession = viewModel::renameSession,
+        onPinWorkspace = viewModel::pinWorkspace,
+        onRenameWorkspace = viewModel::renameWorkspace,
+        onDismissActionError = viewModel::clearActionError,
     )
 }
 
@@ -112,20 +135,37 @@ public fun SessionsSegmentHeader(
     onSegmentSelect: (Int) -> Unit,
     modifier: Modifier = Modifier,
     selectedProgress: Float? = null,
+    backdrop: Backdrop? = null,
 ) {
-    AnyaSegmentedControl(
-        options = listOf(
-            stringResource(R.string.sessions_ask),
-            stringResource(R.string.sessions_workspace),
-        ),
-        selectedIndex = selectedIndex.coerceIn(0, 1),
-        selectedProgress = selectedProgress,
-        onSelect = onSegmentSelect,
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = AnyaSpace.Screen)
-            .padding(top = AnyaSpace.Lg, bottom = AnyaSpace.Md),
+    val labels = listOf(
+        stringResource(R.string.sessions_ask),
+        stringResource(R.string.sessions_workspace),
     )
+    val layout = modifier
+        .fillMaxWidth()
+        .padding(horizontal = AnyaSpace.Screen)
+        .padding(top = AnyaSpace.Lg, bottom = AnyaSpace.Md)
+
+    // Glass when the host has a backdrop layer to refract (main shell); the archived
+    // screen has none, so it keeps the flat control.
+    if (backdrop != null) {
+        AnyaGlassSegmentedControl(
+            backdrop = backdrop,
+            options = labels,
+            selectedIndex = selectedIndex.coerceIn(0, 1),
+            selectedProgress = selectedProgress,
+            onSelect = onSegmentSelect,
+            modifier = layout,
+        )
+    } else {
+        AnyaSegmentedControl(
+            options = labels,
+            selectedIndex = selectedIndex.coerceIn(0, 1),
+            selectedProgress = selectedProgress,
+            onSelect = onSegmentSelect,
+            modifier = layout,
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -137,28 +177,46 @@ public fun SessionsAskContent(
     modifier: Modifier = Modifier,
     onArchiveSession: ((String) -> Unit)? = null,
     onDeleteSession: ((String) -> Unit)? = null,
+    onRenameSession: ((String, String) -> Unit)? = null,
+    onDismissActionError: (() -> Unit)? = null,
+    contentPaddingTop: Dp = 0.dp,
 ) {
     var pendingActions by remember { mutableStateOf<ChatSessionSummary?>(null) }
-    AnyaPullToRefreshBox(
-        isRefreshing = state.isRefreshing,
-        onRefresh = onRefresh,
-        modifier = modifier
-            .fillMaxSize()
-            .padding(horizontal = AnyaSpace.Screen),
-    ) {
-        QuickAskPane(
-            sessions = state.quickAskSessions,
-            onOpenSession = onOpenSession,
-            onLongPressSession = if (onArchiveSession != null || onDeleteSession != null) {
-                { session -> pendingActions = session }
-            } else {
-                null
-            },
-        )
+    var renameTarget by remember { mutableStateOf<ChatSessionSummary?>(null) }
+    Column(modifier = modifier.fillMaxSize()) {
+        ActionErrorBanner(message = state.actionError, onDismiss = onDismissActionError)
+        AnyaPullToRefreshBox(
+            isRefreshing = state.isRefreshing,
+            onRefresh = onRefresh,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = AnyaSpace.Screen),
+            indicatorTopInset = contentPaddingTop,
+        ) {
+            QuickAskPane(
+                sessions = state.quickAskSessions,
+                contentPaddingTop = contentPaddingTop,
+                onOpenSession = onOpenSession,
+                onLongPressSession = if (
+                    onArchiveSession != null || onDeleteSession != null || onRenameSession != null
+                ) {
+                    { session -> pendingActions = session }
+                } else {
+                    null
+                },
+            )
+        }
     }
     pendingActions?.let { session ->
         SessionActionsSheet(
             session = session,
+            onRename = onRenameSession?.let {
+                {
+                    pendingActions = null
+                    renameTarget = session
+                }
+            },
             onArchive = onArchiveSession?.let { archive ->
                 {
                     pendingActions = null
@@ -172,6 +230,18 @@ public fun SessionsAskContent(
                 }
             },
             onDismiss = { pendingActions = null },
+        )
+    }
+    renameTarget?.let { session ->
+        RenameDialog(
+            title = stringResource(R.string.sessions_rename),
+            initialValue = session.title,
+            hint = stringResource(R.string.sessions_rename_hint),
+            onConfirm = { value ->
+                renameTarget = null
+                onRenameSession?.invoke(session.id, value)
+            },
+            onDismiss = { renameTarget = null },
         )
     }
 }
@@ -188,35 +258,60 @@ public fun SessionsWorkspaceContent(
     onDeleteSession: ((String) -> Unit)? = null,
     onNewSessionInWorkspace: ((String) -> Unit)? = null,
     onArchiveWorkspace: ((String) -> Unit)? = null,
+    onRenameSession: ((String, String) -> Unit)? = null,
+    onPinWorkspace: ((String, Boolean) -> Unit)? = null,
+    onRenameWorkspace: ((String, String) -> Unit)? = null,
+    onDismissActionError: (() -> Unit)? = null,
+    contentPaddingTop: Dp = 0.dp,
 ) {
     var pendingActions by remember { mutableStateOf<ChatSessionSummary?>(null) }
     var pendingWorkspace by remember { mutableStateOf<WorkspaceGroup?>(null) }
-    AnyaPullToRefreshBox(
-        isRefreshing = state.isRefreshing,
-        onRefresh = onRefresh,
-        modifier = modifier
-            .fillMaxSize()
-            .padding(horizontal = AnyaSpace.Screen),
-    ) {
-        WorkspacePane(
-            groups = state.workspaceGroups,
-            expandedIds = state.expandedWorkspaceIds,
-            onToggleWorkspace = onToggleWorkspace,
-            onOpenSession = onOpenSession,
-            onLongPressSession = if (onArchiveSession != null || onDeleteSession != null) {
-                { session -> pendingActions = session }
-            } else {
-                null
-            },
-            onNewSessionInWorkspace = onNewSessionInWorkspace,
-            onLongPressWorkspace = onArchiveWorkspace?.let { archive ->
-                { group -> pendingWorkspace = group }
-            },
-        )
+    var renameSessionTarget by remember { mutableStateOf<ChatSessionSummary?>(null) }
+    var renameWorkspaceTarget by remember { mutableStateOf<WorkspaceGroup?>(null) }
+    Column(modifier = modifier.fillMaxSize()) {
+        ActionErrorBanner(message = state.actionError, onDismiss = onDismissActionError)
+        AnyaPullToRefreshBox(
+            isRefreshing = state.isRefreshing,
+            onRefresh = onRefresh,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = AnyaSpace.Screen),
+            indicatorTopInset = contentPaddingTop,
+        ) {
+            WorkspacePane(
+                groups = state.workspaceGroups,
+                expandedIds = state.expandedWorkspaceIds,
+                contentPaddingTop = contentPaddingTop,
+                onToggleWorkspace = onToggleWorkspace,
+                onOpenSession = onOpenSession,
+                onLongPressSession = if (
+                    onArchiveSession != null || onDeleteSession != null || onRenameSession != null
+                ) {
+                    { session -> pendingActions = session }
+                } else {
+                    null
+                },
+                onLongPressWorkspace = if (
+                    onArchiveWorkspace != null || onPinWorkspace != null || onRenameWorkspace != null
+                ) {
+                    { group -> pendingWorkspace = group }
+                } else {
+                    null
+                },
+                onNewSessionInWorkspace = onNewSessionInWorkspace,
+            )
+        }
     }
     pendingActions?.let { session ->
         SessionActionsSheet(
             session = session,
+            onRename = onRenameSession?.let {
+                {
+                    pendingActions = null
+                    renameSessionTarget = session
+                }
+            },
             onArchive = onArchiveSession?.let { archive ->
                 {
                     pendingActions = null
@@ -236,11 +331,48 @@ public fun SessionsWorkspaceContent(
         WorkspaceActionsSheet(
             workspaceName = group.workspace.name,
             sessionCount = group.sessions.size,
+            pinned = group.workspace.pinned,
+            onPin = onPinWorkspace?.let { pin ->
+                {
+                    pendingWorkspace = null
+                    pin(group.workspace.id, !group.workspace.pinned)
+                }
+            },
+            onRename = onRenameWorkspace?.let {
+                {
+                    pendingWorkspace = null
+                    renameWorkspaceTarget = group
+                }
+            },
             onArchive = {
                 pendingWorkspace = null
                 onArchiveWorkspace?.invoke(group.workspace.id)
             },
             onDismiss = { pendingWorkspace = null },
+        )
+    }
+    renameSessionTarget?.let { session ->
+        RenameDialog(
+            title = stringResource(R.string.sessions_rename),
+            initialValue = session.title,
+            hint = stringResource(R.string.sessions_rename_hint),
+            onConfirm = { value ->
+                renameSessionTarget = null
+                onRenameSession?.invoke(session.id, value)
+            },
+            onDismiss = { renameSessionTarget = null },
+        )
+    }
+    renameWorkspaceTarget?.let { group ->
+        RenameDialog(
+            title = stringResource(R.string.sessions_workspace_rename),
+            initialValue = group.workspace.name,
+            hint = stringResource(R.string.sessions_workspace_rename_hint),
+            onConfirm = { value ->
+                renameWorkspaceTarget = null
+                onRenameWorkspace?.invoke(group.workspace.id, value)
+            },
+            onDismiss = { renameWorkspaceTarget = null },
         )
     }
 }
@@ -257,6 +389,10 @@ public fun SessionsTabContent(
     onDeleteSession: ((String) -> Unit)? = null,
     onNewSessionInWorkspace: ((String) -> Unit)? = null,
     onArchiveWorkspace: ((String) -> Unit)? = null,
+    onRenameSession: ((String, String) -> Unit)? = null,
+    onPinWorkspace: ((String, Boolean) -> Unit)? = null,
+    onRenameWorkspace: ((String, String) -> Unit)? = null,
+    onDismissActionError: (() -> Unit)? = null,
 ) {
     val segment = segmentIndex.coerceIn(0, 1)
     Column(modifier = Modifier.fillMaxSize()) {
@@ -271,6 +407,8 @@ public fun SessionsTabContent(
                 onRefresh = onRefresh,
                 onArchiveSession = onArchiveSession,
                 onDeleteSession = onDeleteSession,
+                onRenameSession = onRenameSession,
+                onDismissActionError = onDismissActionError,
             )
             else -> SessionsWorkspaceContent(
                 state = state,
@@ -281,6 +419,10 @@ public fun SessionsTabContent(
                 onDeleteSession = onDeleteSession,
                 onNewSessionInWorkspace = onNewSessionInWorkspace,
                 onArchiveWorkspace = onArchiveWorkspace,
+                onRenameSession = onRenameSession,
+                onPinWorkspace = onPinWorkspace,
+                onRenameWorkspace = onRenameWorkspace,
+                onDismissActionError = onDismissActionError,
             )
         }
     }
@@ -293,61 +435,54 @@ private fun SessionActionsSheet(
     onArchive: (() -> Unit)?,
     onDelete: (() -> Unit)?,
     onDismiss: () -> Unit,
+    onRename: (() -> Unit)? = null,
 ) {
-    val haptics = rememberAnyaHaptics()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val title = session.title.ifBlank { stringResource(R.string.sessions_delete_untitled) }
+    val accent = MaterialTheme.colorScheme.primary
+    // iOS action order: neutral actions first, destructive ones last.
+    val actions = buildList {
+        if (onRename != null) add(Triple(stringResource(R.string.sessions_rename), accent, onRename))
+        if (onArchive != null) add(Triple(stringResource(R.string.sessions_archive), accent, onArchive))
+        if (onDelete != null) add(Triple(stringResource(R.string.sessions_delete_confirm), AnyaColors.Danger, onDelete))
+    }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.background,
         tonalElevation = 0.dp,
     ) {
+        // Apple HIG action sheet: centered title block, opaque action card, cancel card.
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = AnyaSpace.Screen)
-                .padding(bottom = AnyaSpace.Xxl),
-            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
+                .padding(horizontal = AnyaSpace.Lg)
+                .padding(bottom = AnyaSpace.Xl),
+            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text(
-                text = stringResource(R.string.sessions_actions_title),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
+            AnyaSheetHeader(
+                title = stringResource(R.string.sessions_actions_title),
+                subtitle = title,
             )
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (onArchive != null) {
-                AnyaPrimaryButton(
-                    text = stringResource(R.string.sessions_archive),
-                    onClick = {
-                        haptics.confirm()
-                        onArchive()
-                    },
+            Spacer(modifier = Modifier.height(AnyaSpace.Xs))
+            AnyaSheetCard {
+                actions.forEachIndexed { index, (label, color, action) ->
+                    AnyaSheetActionRow(
+                        label = label,
+                        color = color,
+                        showDivider = index < actions.lastIndex,
+                        onClick = action,
+                    )
+                }
+            }
+            AnyaSheetCard {
+                AnyaSheetActionRow(
+                    label = stringResource(R.string.sessions_delete_cancel),
+                    emphasized = true,
+                    onClick = onDismiss,
                 )
             }
-            if (onDelete != null) {
-                AnyaSecondaryButton(
-                    text = stringResource(R.string.sessions_delete_confirm),
-                    onClick = {
-                        haptics.confirm()
-                        onDelete()
-                    },
-                )
-            }
-            AnyaSecondaryButton(
-                text = stringResource(R.string.sessions_delete_cancel),
-                onClick = {
-                    haptics.tick()
-                    onDismiss()
-                },
-            )
-            Spacer(modifier = Modifier.height(AnyaSpace.Sm))
         }
     }
 }
@@ -359,51 +494,163 @@ private fun WorkspaceActionsSheet(
     sessionCount: Int,
     onArchive: () -> Unit,
     onDismiss: () -> Unit,
+    pinned: Boolean = false,
+    onPin: (() -> Unit)? = null,
+    onRename: (() -> Unit)? = null,
 ) {
-    val haptics = rememberAnyaHaptics()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val accent = MaterialTheme.colorScheme.primary
+    val actions = buildList {
+        if (onRename != null) add(Triple(stringResource(R.string.sessions_workspace_rename), accent, onRename))
+        if (onPin != null) {
+            val label = stringResource(
+                if (pinned) R.string.sessions_workspace_unpin else R.string.sessions_workspace_pin,
+            )
+            add(Triple(label, accent, onPin))
+        }
+        add(Triple(stringResource(R.string.sessions_workspace_archive), accent, onArchive))
+    }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.background,
         tonalElevation = 0.dp,
     ) {
+        // Apple HIG action sheet: centered title block, opaque action card, cancel card.
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = AnyaSpace.Screen)
-                .padding(bottom = AnyaSpace.Xxl),
-            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
+                .padding(horizontal = AnyaSpace.Lg)
+                .padding(bottom = AnyaSpace.Xl),
+            verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text(
-                text = stringResource(R.string.sessions_workspace_actions_title),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                text = stringResource(
+            AnyaSheetHeader(
+                title = stringResource(R.string.sessions_workspace_actions_title),
+                subtitle = stringResource(
                     R.string.sessions_workspace_archive_body,
                     workspaceName,
                     sessionCount,
                 ),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            AnyaPrimaryButton(
-                text = stringResource(R.string.sessions_workspace_archive),
+            Spacer(modifier = Modifier.height(AnyaSpace.Xs))
+            AnyaSheetCard {
+                actions.forEachIndexed { index, (label, color, action) ->
+                    AnyaSheetActionRow(
+                        label = label,
+                        color = color,
+                        showDivider = index < actions.lastIndex,
+                        onClick = action,
+                    )
+                }
+            }
+            AnyaSheetCard {
+                AnyaSheetActionRow(
+                    label = stringResource(R.string.sessions_delete_cancel),
+                    emphasized = true,
+                    onClick = onDismiss,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActionErrorBanner(
+    message: String?,
+    onDismiss: (() -> Unit)?,
+) {
+    if (message.isNullOrBlank()) return
+    Text(
+        text = message,
+        color = MaterialTheme.colorScheme.error,
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onDismiss?.invoke() }
+            .padding(horizontal = AnyaSpace.Screen)
+            .padding(bottom = AnyaSpace.Xs),
+    )
+}
+
+@Composable
+private fun RenameDialog(
+    title: String,
+    initialValue: String,
+    hint: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var value by remember(initialValue) { mutableStateOf(initialValue) }
+    // iOS alert: a narrow rounded card on a dimmed backdrop, centered content, action
+    // rows separated by hairlines.
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .widthIn(max = 320.dp)
+                .fillMaxWidth()
+                .background(
+                    MaterialTheme.colorScheme.surface,
+                    RoundedCornerShape(AnyaSpace.CardRadius),
+                ),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(AnyaSpace.Lg),
+                verticalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center,
+                )
+                BasicTextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(
+                        color = MaterialTheme.colorScheme.onBackground,
+                    ),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f),
+                            RoundedCornerShape(AnyaSpace.ControlRadius),
+                        )
+                        .padding(horizontal = AnyaSpace.Md, vertical = AnyaSpace.Sm),
+                    decorationBox = { inner ->
+                        Box {
+                            if (value.isEmpty()) {
+                                Text(
+                                    text = hint,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            inner()
+                        }
+                    },
+                )
+            }
+            AnyaSheetHairline()
+            AnyaSheetActionRow(
+                label = stringResource(R.string.sessions_rename_save),
+                color = MaterialTheme.colorScheme.primary,
+                showDivider = true,
                 onClick = {
-                    haptics.confirm()
-                    onArchive()
+                    val trimmed = value.trim()
+                    if (trimmed.isNotEmpty()) onConfirm(trimmed)
                 },
             )
-            AnyaSecondaryButton(
-                text = stringResource(R.string.sessions_delete_cancel),
-                onClick = {
-                    haptics.tick()
-                    onDismiss()
-                },
+            AnyaSheetActionRow(
+                label = stringResource(R.string.sessions_delete_cancel),
+                emphasized = true,
+                onClick = onDismiss,
             )
-            Spacer(modifier = Modifier.height(AnyaSpace.Sm))
         }
     }
 }
@@ -411,22 +658,40 @@ private fun WorkspaceActionsSheet(
 @Composable
 internal fun QuickAskPane(
     sessions: List<ChatSessionSummary>,
+    contentPaddingTop: Dp = 0.dp,
     onOpenSession: (String) -> Unit,
     onLongPressSession: ((ChatSessionSummary) -> Unit)? = null,
 ) {
     if (sessions.isEmpty()) {
+        var visible by remember { mutableStateOf(false) }
+        LaunchedEffect(Unit) { visible = true }
+        val emptyAlpha by animateFloatAsState(
+            targetValue = if (visible) 1f else 0f,
+            animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+            label = "emptyStateAlpha",
+        )
+        val emptyOffset by animateFloatAsState(
+            targetValue = if (visible) 0f else 12f,
+            animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+            label = "emptyStateOffset",
+        )
         AnyaEmptyState(
             icon = Icons.Outlined.ChatBubbleOutline,
             title = stringResource(R.string.sessions_ask_empty_title),
             subtitle = stringResource(R.string.sessions_ask_empty_subtitle),
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    alpha = emptyAlpha
+                    translationY = emptyOffset.dp.toPx()
+                },
         )
         return
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         // Leave room for the circular new-chat FAB above the bottom nav.
-        contentPadding = PaddingValues(bottom = 96.dp),
+        contentPadding = PaddingValues(top = contentPaddingTop, bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
     ) {
         items(sessions, key = ChatSessionSummary::id) { session ->
@@ -443,6 +708,7 @@ internal fun QuickAskPane(
 internal fun WorkspacePane(
     groups: List<WorkspaceGroup>,
     expandedIds: Set<String>,
+    contentPaddingTop: Dp = 0.dp,
     onToggleWorkspace: (String) -> Unit,
     onOpenSession: (String) -> Unit,
     onLongPressSession: ((ChatSessionSummary) -> Unit)? = null,
@@ -460,7 +726,7 @@ internal fun WorkspacePane(
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 96.dp),
+        contentPadding = PaddingValues(top = contentPaddingTop, bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
     ) {
         groups.forEach { group ->
@@ -553,11 +819,20 @@ private fun WorkspaceHeader(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        Text(
-            text = count.toString(),
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(AnyaSpace.Sm))
+                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.07f))
+                .padding(horizontal = AnyaSpace.Sm, vertical = 2.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = count.toString(),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         if (onNewSession != null) {
             IconButton(
                 onClick = {
@@ -586,13 +861,38 @@ internal fun SessionCard(
     onLongClick: (() -> Unit)? = null,
 ) {
     val haptics = rememberAnyaHaptics()
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val pressScale by animateFloatAsState(
+        targetValue = if (pressed) 0.98f else 1f,
+        animationSpec = tween(durationMillis = 120, easing = FastOutSlowInEasing),
+        label = "sessionCardPressScale",
+    )
+    val cardShape = RoundedCornerShape(AnyaSpace.CardRadius)
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(start = if (indented) AnyaSpace.Lg else 0.dp)
-            .clip(RoundedCornerShape(AnyaSpace.CardRadius))
-            .background(MaterialTheme.colorScheme.surface)
+            .graphicsLayer {
+                scaleX = pressScale
+                scaleY = pressScale
+            }
+            .clip(cardShape)
+            .background(
+                if (pressed) {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
+                } else {
+                    MaterialTheme.colorScheme.surface
+                },
+            )
+            .border(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.07f),
+                shape = cardShape,
+            )
             .combinedClickable(
+                interactionSource = interactionSource,
+                indication = null,
                 onClick = onClick,
                 onLongClick = onLongClick?.let {
                     {
@@ -612,6 +912,7 @@ internal fun SessionCard(
             Text(
                 text = session.title.ifBlank { stringResource(R.string.sessions_delete_untitled) },
                 style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -633,6 +934,11 @@ internal fun SessionCard(
                     text = statusLabel(session.runState),
                     style = MaterialTheme.typography.bodySmall,
                     color = statusColor(session.runState),
+                    fontWeight = if (session.runState != AgentRunState.Idle) {
+                        FontWeight.Medium
+                    } else {
+                        FontWeight.Normal
+                    },
                 )
             }
         }
@@ -643,26 +949,57 @@ internal fun SessionCard(
 @Composable
 private fun SessionStatusIcon(runState: AgentRunState) {
     when (runState) {
-        AgentRunState.WaitingApproval, AgentRunState.WaitingAskUser -> {
-            Icon(
-                imageVector = Icons.Rounded.Shield,
+        AgentRunState.Streaming -> {
+            val transition = rememberInfiniteTransition(label = "streamingPulse")
+            val pulseAlpha by transition.animateFloat(
+                initialValue = 0.35f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(durationMillis = 900, easing = FastOutSlowInEasing),
+                    repeatMode = RepeatMode.Reverse,
+                ),
+                label = "streamingPulseAlpha",
+            )
+            StatusDot(
+                color = AnyaColors.Info,
                 contentDescription = statusLabel(runState),
-                modifier = Modifier.size(18.dp),
-                tint = AnyaColors.Warning,
+                alpha = pulseAlpha,
             )
         }
-        AgentRunState.Streaming -> {
-            Icon(
-                imageVector = Icons.Rounded.Refresh,
+        AgentRunState.WaitingApproval, AgentRunState.WaitingAskUser -> {
+            StatusDot(
+                color = AnyaColors.Warning,
                 contentDescription = statusLabel(runState),
-                modifier = Modifier.size(18.dp),
-                tint = AnyaColors.Info,
+                alpha = 1f,
             )
         }
         AgentRunState.Error -> {
             Text("!", color = AnyaColors.Danger, style = MaterialTheme.typography.labelLarge)
         }
         AgentRunState.Idle -> Unit
+    }
+}
+
+@Composable
+private fun StatusDot(
+    color: Color,
+    contentDescription: String,
+    alpha: Float,
+) {
+    Box(
+        modifier = Modifier
+            .size(AnyaSpace.Xxl)
+            .clip(CircleShape)
+            .background(color.copy(alpha = 0.14f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(AnyaSpace.Sm)
+                .graphicsLayer { this.alpha = alpha }
+                .clip(CircleShape)
+                .background(color),
+        )
     }
 }
 
@@ -705,12 +1042,51 @@ private fun formatSessionTime(epochMs: Long): String {
     }
 }
 
+/**
+ * Standalone search page (pushed from the main screen's search chip). The overlay
+ * scaffold supplies the glass header with back + title; the panel below fills the
+ * rest of the viewport. Search state is cleared when the page is popped.
+ */
+@Composable
+public fun SessionSearchRoute(
+    onBack: () -> Unit,
+    onOpenSession: (sessionId: String, messageId: String?) -> Unit,
+    viewModel: SessionsViewModel = hiltViewModel(),
+) {
+    val searchState by viewModel.searchState.collectAsStateWithLifecycle()
+    val haptic = rememberAnyaHaptics()
+    DisposableEffect(Unit) {
+        onDispose { viewModel.clearSearch() }
+    }
+    AnyaOverlayScaffold(
+        onBack = onBack,
+        title = stringResource(R.string.sessions_search),
+    ) { padding ->
+        SessionSearchPanel(
+            state = searchState,
+            onQueryChange = viewModel::onSearchQueryChange,
+            onOpenSession = { sessionId, messageId ->
+                haptic.linearTick()
+                viewModel.clearSearch()
+                onOpenSession(sessionId, messageId)
+            },
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize(),
+            fillViewport = true,
+        )
+    }
+}
+
 @Composable
 public fun SessionSearchPanel(
     state: SessionSearchUiState,
     onQueryChange: (String) -> Unit,
     onOpenSession: (sessionId: String, messageId: String?) -> Unit,
     modifier: Modifier = Modifier,
+    // True when hosted as a full page: the scaffold supplies the title, and the
+    // results list fills the remaining viewport instead of capping at 480dp.
+    fillViewport: Boolean = false,
 ) {
     val focusRequester = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -729,26 +1105,33 @@ public fun SessionSearchPanel(
             .padding(bottom = AnyaSpace.Md),
         verticalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
     ) {
-        Column {
-            Text(
-                text = stringResource(R.string.sessions_search),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                text = stringResource(R.string.sessions_search_help),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp),
+        if (!fillViewport) {
+            AnyaSheetHeader(
+                title = stringResource(R.string.sessions_search),
+                subtitle = stringResource(R.string.sessions_search_help),
             )
         }
-        SearchQueryField(
-            query = state.query,
-            onQueryChange = onQueryChange,
-            isSearching = state.isSearchingMessages,
-            focusRequester = focusRequester,
-            onSearch = { keyboard?.hide() },
-        )
+        if (fillViewport) {
+            SearchQueryField(
+                query = state.query,
+                onQueryChange = onQueryChange,
+                isSearching = state.isSearchingMessages,
+                focusRequester = focusRequester,
+                onSearch = { keyboard?.hide() },
+            )
+        } else {
+            // Sheet form: the field sits in an opaque card, like the rest of the HIG sheet.
+            AnyaSheetCard {
+                SearchQueryField(
+                    query = state.query,
+                    onQueryChange = onQueryChange,
+                    isSearching = state.isSearchingMessages,
+                    focusRequester = focusRequester,
+                    onSearch = { keyboard?.hide() },
+                    modifier = Modifier.padding(AnyaSpace.Md),
+                )
+            }
+        }
 
         when {
             state.query.isBlank() -> Unit
@@ -764,9 +1147,13 @@ public fun SessionSearchPanel(
             }
             else -> {
                 LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 480.dp),
+                    modifier = if (fillViewport) {
+                        Modifier.fillMaxWidth().weight(1f)
+                    } else {
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 480.dp)
+                    },
                     verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
                     contentPadding = PaddingValues(bottom = AnyaSpace.Sm),
                 ) {
@@ -810,12 +1197,13 @@ private fun SearchQueryField(
     isSearching: Boolean,
     focusRequester: FocusRequester,
     onSearch: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val dark = LocalDarkTheme.current
-    val fill = if (dark) Color(0xFF2A2A2C) else Color(0xFFF2F2F2)
-    val placeholder = if (dark) Color(0xFF8E8E93) else Color(0xFF9A9A9A)
+    val fill = if (dark) AnyaColors.FieldFillDark else AnyaColors.FieldFillLight
+    val placeholder = if (dark) AnyaColors.FieldPlaceholderDark else AnyaColors.FieldPlaceholderLight
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(AnyaSpace.ControlRadius))
             .background(fill)

@@ -4,6 +4,8 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import ai.anya.companion.core.common.result.AnyaResult
+import ai.anya.companion.core.common.result.userMessage
+import ai.anya.companion.core.domain.repository.ChatDisplayRepository
 import ai.anya.companion.core.domain.repository.ConnectionRepository
 import ai.anya.companion.core.domain.repository.ConnectionState
 import ai.anya.companion.core.domain.download.FileDownloadManager
@@ -11,6 +13,8 @@ import ai.anya.companion.core.domain.repository.SessionRepository
 import ai.anya.companion.core.domain.usecase.ApprovePlanUseCase
 import ai.anya.companion.core.domain.usecase.CancelChatMessageUseCase
 import ai.anya.companion.core.domain.usecase.LoadHistoryUseCase
+import ai.anya.companion.core.domain.usecase.LoadMessageDetailUseCase
+import ai.anya.companion.core.domain.usecase.LoadOlderHistoryUseCase
 import ai.anya.companion.core.domain.usecase.ObserveApprovalsUseCase
 import ai.anya.companion.core.domain.usecase.ObserveComposeUseCase
 import ai.anya.companion.core.domain.usecase.ObserveMessagesUseCase
@@ -77,6 +81,15 @@ import java.util.UUID
 /** Route sentinel: open the chat screen without a session; the first send creates one. */
 public const val NewChatSessionId: String = "new"
 
+/** Page size requested when pulling older history on scroll-to-top. */
+private const val HISTORY_PAGE_SIZE = 40
+
+/** Scroll-to-top paging state for the open session. */
+private data class HistoryPaging(
+    val loading: Boolean = false,
+    val hasMore: Boolean = true,
+)
+
 public data class ChatUiState(
     public val sessionId: String,
     public val title: String = "",
@@ -97,6 +110,12 @@ public data class ChatUiState(
     public val focusMessageId: String? = null,
     /** True until the initial history fetch for this session completes. */
     public val historyLoading: Boolean = true,
+    /** True while an older page of history is being pulled in on scroll-to-top. */
+    public val isLoadingOlder: Boolean = false,
+    /** False once a page came back short, or when the desktop cannot page history at all. */
+    public val hasMoreHistory: Boolean = true,
+    /** Turns whose execution process is being fetched because the user expanded them. */
+    public val detailLoadingIds: Set<String> = emptySet(),
     /** Gateway link state — drives the disconnect banner and blocks actions below. */
     public val connectionState: ConnectionState = ConnectionState.Disconnected,
     /** Rewind points keyed by the user message that started the turn. */
@@ -120,6 +139,8 @@ public data class ChatUiState(
     public val imagePreviews: List<ChatSharedFile> = emptyList(),
     /** Mid-turn staged queue shared with desktop. */
     public val stagedMessages: List<String> = emptyList(),
+    /** Whether the model's reasoning is rendered in the transcript (Settings → Chat display). */
+    public val showThinking: Boolean = false,
 )
 
 /**
@@ -203,7 +224,10 @@ public class ChatViewModel @Inject constructor(
     observeApprovals: ObserveApprovalsUseCase,
     private val sessionRepository: SessionRepository,
     private val connectionRepository: ConnectionRepository,
+    private val chatDisplayRepository: ChatDisplayRepository,
     private val loadHistory: LoadHistoryUseCase,
+    private val loadOlderHistory: LoadOlderHistoryUseCase,
+    private val loadMessageDetail: LoadMessageDetailUseCase,
     private val sendChatMessage: SendChatMessageUseCase,
     private val cancelChatMessage: CancelChatMessageUseCase,
     private val refreshCompose: RefreshComposeUseCase,
@@ -238,6 +262,13 @@ public class ChatViewModel @Inject constructor(
     private val error = MutableStateFlow<String?>(null)
     private val planApprovedMessageIds = MutableStateFlow<Set<String>>(emptySet())
     private val historyLoading = MutableStateFlow(activeSessionId.value != null)
+    /**
+     * Starts optimistically at "more available" so the first scroll-to-top pulls a page; a short
+     * page — or a desktop that cannot page history — turns it off.
+     */
+    private val historyPaging = MutableStateFlow(HistoryPaging())
+    /** Message ids whose on-demand detail fetch is in flight. */
+    private val detailLoadingIds = MutableStateFlow<Set<String>>(emptySet())
     private val _attachCatalog = MutableStateFlow(AttachCatalogUiState())
     public val attachCatalog: StateFlow<AttachCatalogUiState> = _attachCatalog.asStateFlow()
 
@@ -392,6 +423,10 @@ public class ChatViewModel @Inject constructor(
             historyLoading = c.historyLoading,
             connectionState = c.connectionState,
         )
+    }.combine(historyPaging) { state, paging ->
+        state.copy(isLoadingOlder = paging.loading, hasMoreHistory = paging.hasMore)
+    }.combine(detailLoadingIds) { state, ids ->
+        state.copy(detailLoadingIds = ids)
     }.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
@@ -424,8 +459,11 @@ public class ChatViewModel @Inject constructor(
             imagePreviews = previews.values.toList(),
         )
     }.let { coreFlow ->
-        combine(coreFlow, stagedFlow) { base, staged ->
-            base.copy(stagedMessages = staged)
+        combine(coreFlow, stagedFlow, chatDisplayRepository.showThinking) { base, staged, showThinking ->
+            base.copy(
+                stagedMessages = staged,
+                showThinking = showThinking,
+            )
         }
     }.stateIn(
         viewModelScope,
@@ -436,6 +474,48 @@ public class ChatViewModel @Inject constructor(
             historyLoading = activeSessionId.value != null,
         ),
     )
+
+    /**
+     * Pulls the previous page of transcript when the user scrolls back to the very top.
+     *
+     * The repository answers null once it learns the desktop cannot page history; that turns the
+     * affordance off instead of retrying the probe on every scroll.
+     */
+    public fun loadOlderMessages() {
+        val sid = activeSessionId.value ?: return
+        val paging = historyPaging.value
+        if (paging.loading || !paging.hasMore) return
+        val oldest = state.value.messages.firstOrNull() ?: return
+        historyPaging.value = paging.copy(loading = true)
+        viewModelScope.launch {
+            val hasMore = when (val loaded = loadOlderHistory(sid, oldest.id, HISTORY_PAGE_SIZE)) {
+                is AnyaResult.Success -> loaded.data
+                is AnyaResult.Failure, null -> false
+            }
+            historyPaging.value = HistoryPaging(loading = false, hasMore = hasMore)
+        }
+    }
+
+    /**
+     * Fetches a turn's execution process the first time the user expands it.
+     *
+     * Light history leaves reasoning / work timeline / tool activities out; the desktop sends them
+     * on demand and the repository merges the result back into the projection.
+     */
+    public fun ensureMessageDetail(messageId: String) {
+        val sid = activeSessionId.value ?: return
+        if (messageId in detailLoadingIds.value) return
+        val message = state.value.messages.firstOrNull { it.id == messageId } ?: return
+        if (!message.detailOmitted) return
+        detailLoadingIds.value = detailLoadingIds.value + messageId
+        viewModelScope.launch {
+            try {
+                loadMessageDetail(sid, listOf(messageId))
+            } finally {
+                detailLoadingIds.value = detailLoadingIds.value - messageId
+            }
+        }
+    }
 
     /**
      * Roll the desktop session back to the checkpoint before [userMessageId] (code + conversation),
@@ -450,7 +530,7 @@ public class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = sessionRepository.rewindSession(sid, checkpoint.turn)) {
                 is AnyaResult.Success -> if (promptText.isNotBlank()) draft.value = promptText
-                is AnyaResult.Failure -> error.value = result.error.toString()
+                is AnyaResult.Failure -> error.value = result.error.userMessage
             }
             rewinding.value = false
         }
@@ -519,7 +599,7 @@ public class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = sessionRepository.setImageGenModel(provider, model)) {
                 is AnyaResult.Success -> Unit
-                is AnyaResult.Failure -> error.value = result.error.toString()
+                is AnyaResult.Failure -> error.value = result.error.userMessage
             }
         }
     }
@@ -733,7 +813,7 @@ public class ChatViewModel @Inject constructor(
                         draft.value = ""
                         imageEditRefs.value = emptyList()
                     }
-                    is AnyaResult.Failure -> error.value = result.error.toString()
+                    is AnyaResult.Failure -> error.value = result.error.userMessage
                 }
             }
             return
@@ -765,7 +845,7 @@ public class ChatViewModel @Inject constructor(
                         adoptNewSession(result.data)
                     }
                 }
-                is AnyaResult.Failure -> error.value = result.error.toString()
+                is AnyaResult.Failure -> error.value = result.error.userMessage
             }
             sending.value = false
         }
@@ -777,7 +857,7 @@ public class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = sessionRepository.guideStaged(sid, index)) {
                 is AnyaResult.Success -> Unit
-                is AnyaResult.Failure -> error.value = result.error.toString()
+                is AnyaResult.Failure -> error.value = result.error.userMessage
             }
         }
     }
@@ -788,8 +868,28 @@ public class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = sessionRepository.removeStaged(sid, index)) {
                 is AnyaResult.Success -> Unit
-                is AnyaResult.Failure -> error.value = result.error.toString()
+                is AnyaResult.Failure -> error.value = result.error.userMessage
             }
+        }
+    }
+
+    /** Working-tree unified diff for Diff Review (desktop ≥ 0.2.23). */
+    public suspend fun loadWorkingTreeDiff(): Result<String> {
+        val workspaceId = sessionRepository.sessions.value
+            .firstOrNull { it.id == activeSessionId.value }
+            ?.workspaceId
+            ?: routeWorkspaceId
+        return when (val result = sessionRepository.workingTreeDiff(workspaceId)) {
+            is AnyaResult.Success -> Result.success(result.data)
+            is AnyaResult.Failure -> Result.failure(Exception(result.error.userMessage))
+        }
+    }
+
+    /** Live desktop environment context for `/context` (desktop ≥ 0.2.23). */
+    public suspend fun loadEnvironmentContext(): Result<ai.anya.companion.core.model.workspace.EnvironmentContext> {
+        return when (val result = sessionRepository.environmentContext()) {
+            is AnyaResult.Success -> Result.success(result.data)
+            is AnyaResult.Failure -> Result.failure(Exception(result.error.userMessage))
         }
     }
 
@@ -816,7 +916,7 @@ public class ChatViewModel @Inject constructor(
             error.value = null
             when (val result = cancelChatMessage(messageId)) {
                 is AnyaResult.Success -> Unit
-                is AnyaResult.Failure -> error.value = result.error.toString()
+                is AnyaResult.Failure -> error.value = result.error.userMessage
             }
         }
     }
@@ -1010,11 +1110,14 @@ public class ChatViewModel @Inject constructor(
                     adoptNewSession(file.sessionId)
                 }
                 val abs = file.absolutePath?.takeIf { it.isNotBlank() }
-                val treatAsRef = asImageRef || (
-                    state.value.compose.chatMode == ChatMode.Image &&
-                        mime?.startsWith("image/") == true &&
-                        abs != null
-                    )
+                val isImage = mime?.startsWith("image/") == true
+                // An image picked from the phone always travels as a reference, never as
+                // an `@path` mention. The reference is rendered as markdown ahead of the
+                // prompt (see the `formatAttachedImagesForMessage` note in the send path)
+                // and that is the only form that puts the picture itself into the model's
+                // context. A normal pick used to insert `@<desktop path>`, which reached
+                // the desktop but left the model holding a path string, not an image.
+                val treatAsRef = asImageRef || (isImage && abs != null)
                 if (treatAsRef && abs != null) {
                     imageEditRefs.update { current ->
                         current + ImageEditRef(
@@ -1034,7 +1137,7 @@ public class ChatViewModel @Inject constructor(
                     }
                     _download.value = FileDownloadUiState(
                         fileName = file.name,
-                        message = if (asImageRef && abs == null) {
+                        message = if ((asImageRef || isImage) && abs == null) {
                             "已上传 ${file.name}（桌面端需 ≥ 0.2.18 才能用作参考图）"
                         } else {
                             "Uploaded ${file.name}"
@@ -1310,7 +1413,7 @@ public class ChatViewModel @Inject constructor(
             when (val result = approvePlanUseCase(sid)) {
                 is AnyaResult.Failure -> {
                     planApprovedMessageIds.update { it - messageId }
-                    error.value = result.error.toString()
+                    error.value = result.error.userMessage
                 }
                 is AnyaResult.Success -> {
                     error.value = null
@@ -1356,7 +1459,7 @@ public class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = respondAsk(ask.requestId, payload.toString())) {
                 is AnyaResult.Success -> Unit
-                is AnyaResult.Failure -> error.value = result.error.toString()
+                is AnyaResult.Failure -> error.value = result.error.userMessage
             }
         }
     }
@@ -1367,7 +1470,7 @@ public class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = respondApproval(ask.requestId, decision)) {
                 is AnyaResult.Success -> Unit
-                is AnyaResult.Failure -> error.value = result.error.toString()
+                is AnyaResult.Failure -> error.value = result.error.userMessage
             }
         }
     }

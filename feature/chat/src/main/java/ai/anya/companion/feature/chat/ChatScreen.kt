@@ -69,13 +69,13 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.Difference
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
-import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Stop
@@ -86,6 +86,9 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import ai.anya.companion.core.designsystem.component.AnyaLoadingIndicator
 import ai.anya.companion.core.designsystem.component.AnyaSegmentedControl
+import ai.anya.companion.core.designsystem.component.AnyaSheetCard
+import ai.anya.companion.core.designsystem.component.AnyaSheetHairline
+import ai.anya.companion.core.designsystem.component.AnyaSheetHeader
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -122,6 +125,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -135,6 +139,8 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import ai.anya.companion.core.designsystem.haptic.rememberAnyaHaptics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -150,16 +156,15 @@ import ai.anya.companion.core.designsystem.component.MascotFace
 import ai.anya.companion.core.designsystem.component.MascotState
 import ai.anya.companion.core.designsystem.component.MascotTool
 import ai.anya.companion.core.designsystem.component.AnyaInlineLoadingMark
-import ai.anya.companion.core.designsystem.component.AnyaTopBarIconChip
+import ai.anya.companion.core.designsystem.component.AnyaGlassIconChip
+import ai.anya.companion.core.designsystem.component.anyaGlassSurface
 import ai.anya.companion.core.designsystem.icon.AnyaIcons
+import ai.anya.companion.core.designsystem.theme.AnyaColors
 import ai.anya.companion.core.designsystem.theme.AnyaSpace
 import ai.anya.companion.core.designsystem.theme.LocalDarkTheme
-import dev.chrisbanes.haze.HazeProgressive
-import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.HazeTint
-import dev.chrisbanes.haze.hazeEffect
-import dev.chrisbanes.haze.hazeSource
-import dev.chrisbanes.haze.rememberHazeState
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import ai.anya.companion.core.domain.repository.ConnectionState
 import ai.anya.companion.core.model.session.ChatMessage
 import ai.anya.companion.core.model.session.ChatMode
@@ -357,17 +362,6 @@ private fun ConnectionLostBanner(
     }
 }
 
-/** Closest earlier non-soft-inject user message — the one that started the assistant turn. */
-private fun precedingUserMessage(messages: List<ChatMessage>, index: Int): ChatMessage? {
-    for (i in index - 1 downTo 0) {
-        val candidate = messages[i]
-        if (candidate.role == ChatRole.User && !isSoftInjectContent(candidate.content)) {
-            return candidate
-        }
-    }
-    return null
-}
-
 private sealed class ChatDisplayItem {
     abstract val key: String
 
@@ -384,10 +378,16 @@ private sealed class ChatDisplayItem {
     }
 }
 
-/** Fold soft-inject user messages into the preceding assistant turn (desktop MessageList). */
+/**
+ * Fold soft-inject user messages into the preceding assistant turn (desktop MessageList).
+ *
+ * Single forward pass: the owning user message is carried along instead of rescanning backwards
+ * for every assistant, which keeps this O(n) on long histories.
+ */
 private fun buildChatDisplayItems(messages: List<ChatMessage>): List<ChatDisplayItem> {
     val items = mutableListOf<ChatDisplayItem>()
-    messages.forEachIndexed { index, message ->
+    var turnUser: ChatMessage? = null
+    messages.forEach { message ->
         when (message.role) {
             ChatRole.User -> {
                 if (isSoftInjectContent(message.content)) {
@@ -398,6 +398,7 @@ private fun buildChatDisplayItems(messages: List<ChatMessage>): List<ChatDisplay
                         items += ChatDisplayItem.User(message)
                     }
                 } else {
+                    turnUser = message
                     items += ChatDisplayItem.User(message)
                 }
             }
@@ -405,7 +406,7 @@ private fun buildChatDisplayItems(messages: List<ChatMessage>): List<ChatDisplay
                 items += ChatDisplayItem.Assistant(
                     message = message,
                     injects = emptyList(),
-                    turnUser = precedingUserMessage(messages, index),
+                    turnUser = turnUser,
                 )
             }
         }
@@ -448,6 +449,7 @@ private fun formatUserTurnTime(epochMs: Long): String {
 @Composable
 public fun ChatRoute(
     onBack: () -> Unit,
+    onOpenSettings: () -> Unit = {},
     viewModel: ChatViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -471,6 +473,7 @@ public fun ChatRoute(
         state = state,
         attachCatalog = attachCatalog,
         onBack = onBack,
+        onOpenSettings = onOpenSettings,
         onDraftChange = viewModel::onDraftChange,
         onSend = viewModel::send,
         onStop = viewModel::stop,
@@ -504,6 +507,10 @@ public fun ChatRoute(
         onPickAlbumRefs = viewModel::uploadAlbumAsRefs,
         onGuideStaged = viewModel::guideStaged,
         onRemoveStaged = viewModel::removeStaged,
+        onLoadWorkingTreeDiff = viewModel::loadWorkingTreeDiff,
+        onLoadEnvironmentContext = viewModel::loadEnvironmentContext,
+        onLoadOlderHistory = viewModel::loadOlderMessages,
+        onNeedMessageDetail = viewModel::ensureMessageDetail,
     )
 }
 
@@ -525,6 +532,7 @@ public fun ChatScreen(
     onAnswerAsk: (Map<Int, List<String>>, Boolean) -> Unit,
     onAnswerToolApproval: (ai.anya.companion.core.model.approval.ApprovalDecision) -> Unit,
     onRetryConnection: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
     download: FileDownloadUiState = FileDownloadUiState(),
     localUploads: List<LocalUploadItem> = emptyList(),
     onPickLocalFiles: (List<android.net.Uri>) -> Unit = {},
@@ -550,7 +558,15 @@ public fun ChatScreen(
     onPickAlbumRefs: (List<android.net.Uri>) -> Unit = {},
     onGuideStaged: (Int) -> Unit = {},
     onRemoveStaged: (Int) -> Unit = {},
+    onLoadWorkingTreeDiff: suspend () -> Result<String> = { Result.success("") },
+    onLoadEnvironmentContext: suspend () -> Result<ai.anya.companion.core.model.workspace.EnvironmentContext> = {
+        Result.failure(Exception("unavailable"))
+    },
+    onLoadOlderHistory: () -> Unit = {},
+    /** Fetches a turn's execution process after the user expands it (light history omits it). */
+    onNeedMessageDetail: (String) -> Unit = {},
 ) {
+    MessageDetailRequest.handler = onNeedMessageDetail
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
@@ -596,6 +612,19 @@ public fun ChatScreen(
             val lastVisible = info.visibleItemsInfo.lastOrNull() ?: return@LaunchedEffect
             stickToBottom = lastVisible.index >= state.messages.lastIndex - 1 &&
                 lastVisible.offset + lastVisible.size <= info.viewportEndOffset + with(density) { 48.dp.roundToPx() }
+        }
+    }
+
+    // Pull the previous page once the user returns to the very top. Prepending is safe for the
+    // viewport: the list keys items by message id, so Compose keeps the anchored message in place.
+    var sawNonTop by remember { mutableStateOf(false) }
+    LaunchedEffect(listState.isScrollInProgress) {
+        if (listState.isScrollInProgress) return@LaunchedEffect
+        val atTop = listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
+        if (!atTop) {
+            sawNonTop = true
+        } else if (sawNonTop && state.hasMoreHistory) {
+            onLoadOlderHistory()
         }
     }
 
@@ -649,6 +678,25 @@ public fun ChatScreen(
 
     var sheet by remember { mutableStateOf(ChatSheet.None) }
     var diffRequest by remember { mutableStateOf<DiffViewRequest?>(null) }
+    var showDiffReview by remember { mutableStateOf(false) }
+    var showEnvironmentContext by remember { mutableStateOf(false) }
+    val slashMatches = remember(state.draft) { matchingSlashCommands(state.draft) }
+    fun runSlash(command: SlashCommand) {
+        onDraftChange("")
+        when (command.action) {
+            SlashAction.OpenHistory -> sheet = ChatSheet.UserTurns
+            SlashAction.OpenModel -> sheet = ChatSheet.Model
+            SlashAction.OpenThinking -> sheet = ChatSheet.Model
+            SlashAction.OpenSettings -> onOpenSettings()
+            SlashAction.OpenAttach -> {
+                onAttachOpen()
+                sheet = ChatSheet.Attach
+            }
+            SlashAction.ClearInput -> onDraftChange("")
+            SlashAction.ShowContext -> showEnvironmentContext = true
+            SlashAction.Exit -> onBack()
+        }
+    }
     val albumRefPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris ->
@@ -673,8 +721,14 @@ public fun ChatScreen(
     } else {
         statusBarDp + 40.dp + AnyaSpace.Xs * 2 + 20.dp
     }
-    val hazeState = rememberHazeState()
     val canvas = MaterialTheme.colorScheme.surface
+    // One liquid-glass layer for the whole screen: the header chips and the floating
+    // composer refract the message list scrolling underneath them.
+    val canvasBackground by rememberUpdatedState(canvas)
+    val backdrop = rememberLayerBackdrop {
+        drawRect(canvasBackground)
+        drawContent()
+    }
     var selectionEpoch by remember { mutableIntStateOf(0) }
 
     val foldController = remember { CompletedFoldController() }
@@ -688,7 +742,7 @@ public fun ChatScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .hazeSource(hazeState)
+                    .layerBackdrop(backdrop)
                     .padding(top = headerContentDp, bottom = composerFootprintDp),
                 contentAlignment = Alignment.Center,
             ) {
@@ -702,14 +756,17 @@ public fun ChatScreen(
                 chatMode = state.compose.chatMode,
                 modifier = Modifier
                     .fillMaxSize()
-                    .hazeSource(hazeState)
+                    .layerBackdrop(backdrop)
                     .padding(top = headerContentDp, bottom = composerFootprintDp),
             )
         } else {
             val messagesSnapshot = state.messages
             val imagePreviews = state.imagePreviews
+            // Derived per recomposition but compared by value: a streaming delta rewrites message
+            // text without touching sharedFiles, so the heavy actions below survive the delta.
+            val sharedFileRefs = messagesSnapshot.flatMap { it.sharedFiles }
             val generatedImageActions = remember(
-                messagesSnapshot,
+                sharedFileRefs,
                 imagePreviews,
                 onEnsureImagePreview,
                 onEditFromImage,
@@ -718,8 +775,7 @@ public fun ChatScreen(
                     fetch = onEnsureImagePreview,
                     resolveLocal = { path ->
                         findLocalSharedImage(
-                            imagePreviews.asSequence() +
-                                messagesSnapshot.asSequence().flatMap { it.sharedFiles.asSequence() },
+                            imagePreviews.asSequence() + sharedFileRefs.asSequence(),
                             path,
                         )
                     },
@@ -743,17 +799,19 @@ public fun ChatScreen(
                     onInspectSubagent = { parent, pool -> subagentInspect = parent to pool },
                 )
             }
+            val displayItems = remember(messagesSnapshot) { buildChatDisplayItems(messagesSnapshot) }
             key(selectionEpoch) {
                 SelectionContainer(modifier = Modifier.fillMaxSize()) {
                     androidx.compose.runtime.CompositionLocalProvider(
                         LocalGeneratedImageActions provides generatedImageActions,
                         LocalTurnActions provides turnActions,
+                        LocalShowThinking provides state.showThinking,
                     ) {
                     LazyColumn(
                         state = listState,
                         modifier = Modifier
                             .fillMaxSize()
-                            .hazeSource(hazeState),
+                            .layerBackdrop(backdrop),
                         contentPadding = PaddingValues(
                             start = AnyaSpace.Screen,
                             end = AnyaSpace.Screen,
@@ -762,7 +820,19 @@ public fun ChatScreen(
                         ),
                         verticalArrangement = Arrangement.spacedBy(AnyaSpace.Lg),
                     ) {
-                        items(buildChatDisplayItems(messagesSnapshot), key = { it.key }) { item ->
+                        if (state.isLoadingOlder) {
+                            item(key = "older-history-loading") {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = AnyaSpace.Sm),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    AnyaLoadingIndicator(size = 28.dp, label = null)
+                                }
+                            }
+                        }
+                        items(displayItems, key = { it.key }) { item ->
                             when (item) {
                                 is ChatDisplayItem.User -> MessageBubble(
                                     message = item.message,
@@ -859,16 +929,6 @@ public fun ChatScreen(
                         }
                     }
                 }
-                .hazeEffect(state = hazeState) {
-                    backgroundColor = canvas
-                    tints = listOf(HazeTint(canvas.copy(alpha = 0.78f)))
-                    blurRadius = 24.dp
-                    noiseFactor = 0.06f
-                    progressive = HazeProgressive.verticalGradient(
-                        startIntensity = 0f,
-                        endIntensity = 1f,
-                    )
-                }
                 .background(
                     Brush.verticalGradient(
                         0.00f to Color.Transparent,
@@ -910,9 +970,18 @@ public fun ChatScreen(
                     )
                 }
 
+                if (slashMatches.isNotEmpty()) {
+                    SlashSuggestionsPanel(
+                        commands = slashMatches,
+                        onSelect = { runSlash(it) },
+                        modifier = Modifier.padding(horizontal = AnyaSpace.Screen),
+                    )
+                }
+
                 MobileComposer(
                     draft = state.draft,
                     busy = state.busy,
+                    backdrop = backdrop,
                     chatMode = state.compose.chatMode,
                     modelLabel = if (state.compose.chatMode == ChatMode.Image) {
                         state.imageGenOptions.selectedLabel
@@ -936,7 +1005,14 @@ public fun ChatScreen(
                     imageGenCompose = state.imageGenCompose,
                     imageGenOptions = state.imageGenOptions,
                     onDraftChange = onDraftChange,
-                    onSend = onSend,
+                    onSend = {
+                        val slash = resolveSlashCommand(state.draft)
+                        if (slash != null) {
+                            runSlash(slash)
+                        } else {
+                            onSend()
+                        }
+                    },
                     onStop = onStop,
                     onAttachClick = {
                         onAttachOpen()
@@ -975,13 +1051,14 @@ public fun ChatScreen(
         ChatTopBar(
             chatMode = state.compose.chatMode,
             approvalMode = state.compose.toolApprovalMode,
-            hazeState = hazeState,
+            backdrop = backdrop,
             canvas = canvas,
             onHeaderHeight = { headerContentPx = it },
             onBack = onBack,
             onModeClick = { sheet = ChatSheet.ChatMode },
             onApprovalClick = { sheet = ChatSheet.ApprovalMode },
             onHistoryClick = { sheet = ChatSheet.UserTurns },
+            onReviewClick = { showDiffReview = true },
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .pointerInput(Unit) {
@@ -1129,6 +1206,24 @@ public fun ChatScreen(
             },
         )
     }
+    if (showDiffReview) {
+        DiffReviewSheet(
+            messages = state.messages,
+            workspaceId = null,
+            loadUncommitted = { onLoadWorkingTreeDiff() },
+            onOpenDiff = { request ->
+                showDiffReview = false
+                diffRequest = request
+            },
+            onDismiss = { showDiffReview = false },
+        )
+    }
+    if (showEnvironmentContext) {
+        EnvironmentContextSheet(
+            load = onLoadEnvironmentContext,
+            onDismiss = { showEnvironmentContext = false },
+        )
+    }
     subagentInspect?.let { (parent, pool) ->
         SubagentSheet(
             parent = parent,
@@ -1203,41 +1298,66 @@ private enum class ChatSheet {
     ImageModel,
 }
 
-@Composable
-private fun chatTopChipColor(): Color =
-    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.82f)
-
 // region Top bar
+
+/**
+ * Gap between the status-bar inset and the chat top bar's chips. The bar used to be
+ * pulled *into* the inset so it hugged the system clock; that read as cramped, so the
+ * chips now sit a small distance below the status bar instead.
+ */
+private val TopBarStatusGap = 8.dp
+
+/**
+ * Composer glass, at the strength the library's own sample uses for a pane:
+ * `vibrancy` + 12dp blur + a 24/32dp lens with chromatic aberration. The shared chip
+ * tokens - 4dp blur, 8/12dp lens, no aberration - are sized for 32dp controls and read
+ * as a flat tint across a panel this large.
+ */
+private val ComposerGlassBlur = 12.dp
+private val ComposerGlassRefractionHeight = 24.dp
+private val ComposerGlassRefractionAmount = 32.dp
+
+/**
+ * Veil drawn over the refracted content. The library's sample uses `Color.White` at 20%,
+ * which assumes a dark, busy backdrop; the light theme would vanish into a near-white
+ * canvas under that, so light veils with black instead.
+ *
+ * The veil is needed at all because `liquidGlassSurfaceColor()` composes
+ * `colorScheme.surface`, and the composer's backdrop base *is* that surface - the shared
+ * tint therefore lands within 1/255 of the canvas (`#202020` over `#1F1F1F`) and shows
+ * nothing.
+ */
+private const val ComposerGlassDarkAlpha = 0.20f
+private const val ComposerGlassLightAlpha = 0.08f
+
+/** Composer glass tint: a white lift in dark, a dark lift in light. */
+@Composable
+private fun composerGlassTint(): Color = if (LocalDarkTheme.current) {
+    Color.White.copy(alpha = ComposerGlassDarkAlpha)
+} else {
+    Color.Black.copy(alpha = ComposerGlassLightAlpha)
+}
 
 @Composable
 private fun ChatTopBar(
     chatMode: ChatMode,
     approvalMode: ToolApprovalMode,
-    hazeState: HazeState,
+    backdrop: Backdrop,
     canvas: Color,
     onHeaderHeight: (Int) -> Unit,
     onBack: () -> Unit,
     onModeClick: () -> Unit,
     onApprovalClick: () -> Unit,
     onHistoryClick: () -> Unit,
+    onReviewClick: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val haptic = rememberAnyaHaptics()
     val barHeight = 40.dp
-    val chipColor = chatTopChipColor()
+    val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .hazeEffect(state = hazeState) {
-                backgroundColor = canvas
-                tints = listOf(HazeTint(canvas.copy(alpha = 0.46f)))
-                blurRadius = 22.dp
-                noiseFactor = 0.04f
-                progressive = HazeProgressive.verticalGradient(
-                    startIntensity = 0.72f,
-                    endIntensity = 0f,
-                )
-            }
             .background(
                 Brush.verticalGradient(
                     0.00f to canvas.copy(alpha = 0.82f),
@@ -1251,29 +1371,45 @@ private fun ChatTopBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(horizontal = AnyaSpace.Md, vertical = AnyaSpace.Xs),
+                // Sits below the status-bar inset with a small gap, so the chips are
+                // not flush against the top of the screen.
+                .padding(
+                    start = AnyaSpace.Md,
+                    end = AnyaSpace.Md,
+                    top = statusBarTop + TopBarStatusGap,
+                    bottom = AnyaSpace.Xs,
+                ),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
         ) {
-            AnyaTopBarIconChip(
+            AnyaGlassIconChip(
+                backdrop = backdrop,
                 icon = Icons.AutoMirrored.Rounded.ArrowBack,
                 contentDescription = "返回",
                 height = barHeight,
-                containerColor = chipColor,
                 onClick = {
                     haptic.buttonPress()
                     onBack()
                 },
             )
-            ChatModeChip(chatMode = chatMode, onClick = onModeClick)
+            ChatModeChip(backdrop = backdrop, chatMode = chatMode, onClick = onModeClick)
             Spacer(modifier = Modifier.weight(1f))
-            ApprovalModeChip(approvalMode = approvalMode, onClick = onApprovalClick)
-            AnyaTopBarIconChip(
+            ApprovalModeChip(backdrop = backdrop, approvalMode = approvalMode, onClick = onApprovalClick)
+            AnyaGlassIconChip(
+                backdrop = backdrop,
+                icon = Icons.Rounded.Difference,
+                contentDescription = "审查更改",
+                height = barHeight,
+                onClick = {
+                    haptic.buttonPress()
+                    onReviewClick()
+                },
+            )
+            AnyaGlassIconChip(
+                backdrop = backdrop,
                 icon = Icons.Rounded.History,
                 contentDescription = "发出的消息",
                 height = barHeight,
-                containerColor = chipColor,
                 onClick = {
                     haptic.buttonPress()
                     onHistoryClick()
@@ -1285,51 +1421,33 @@ private fun ChatTopBar(
 }
 
 @Composable
-private fun ChatModeChip(chatMode: ChatMode, onClick: () -> Unit) {
-    PillChip(onClick = onClick) {
-        Icon(
-            imageVector = chatMode.icon(),
-            contentDescription = null,
-            modifier = Modifier.size(16.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            text = chatMode.chineseLabel(),
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onBackground,
-        )
-        Icon(
-            imageVector = Icons.Rounded.ExpandMore,
-            contentDescription = null,
-            modifier = Modifier.size(16.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
+private fun ChatModeChip(backdrop: Backdrop, chatMode: ChatMode, onClick: () -> Unit) {
+    val haptic = rememberAnyaHaptics()
+    AnyaGlassIconChip(
+        backdrop = backdrop,
+        icon = chatMode.icon(),
+        contentDescription = chatMode.chineseLabel(),
+        height = 40.dp,
+        onClick = {
+            haptic.linearTick()
+            onClick()
+        },
+    )
 }
 
 @Composable
-private fun ApprovalModeChip(approvalMode: ToolApprovalMode, onClick: () -> Unit) {
-    PillChip(onClick = onClick) {
-        Icon(
-            imageVector = approvalMode.icon(),
-            contentDescription = null,
-            modifier = Modifier.size(16.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            text = approvalMode.chineseLabel(),
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onBackground,
-        )
-        Icon(
-            imageVector = Icons.Rounded.ExpandMore,
-            contentDescription = null,
-            modifier = Modifier.size(16.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
+private fun ApprovalModeChip(backdrop: Backdrop, approvalMode: ToolApprovalMode, onClick: () -> Unit) {
+    val haptic = rememberAnyaHaptics()
+    AnyaGlassIconChip(
+        backdrop = backdrop,
+        icon = approvalMode.icon(),
+        contentDescription = approvalMode.chineseLabel(),
+        height = 40.dp,
+        onClick = {
+            haptic.linearTick()
+            onClick()
+        },
+    )
 }
 
 @Composable
@@ -1339,28 +1457,6 @@ private fun ModeGlyph(icon: ImageVector) {
         contentDescription = null,
         modifier = Modifier.size(18.dp),
         tint = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-}
-
-@Composable
-private fun PillChip(
-    onClick: () -> Unit,
-    content: @Composable RowScope.() -> Unit,
-) {
-    val haptic = rememberAnyaHaptics()
-    Row(
-        modifier = Modifier
-            .height(40.dp)
-            .clip(RoundedCornerShape(999.dp))
-            .background(chatTopChipColor())
-            .clickable {
-                haptic.linearTick()
-                onClick()
-            }
-            .padding(horizontal = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        content = content,
     )
 }
 
@@ -1425,15 +1521,15 @@ private fun EmptyConversationHero(
 }
 
 private fun ToolApprovalMode.chineseLabel(): String = when (this) {
-    ToolApprovalMode.Ask -> "询问"
+    ToolApprovalMode.Ask -> "请求"
     ToolApprovalMode.Auto -> "自动"
-    ToolApprovalMode.AlwaysAllow -> "一律允许"
+    ToolApprovalMode.AlwaysAllow -> "完全批准"
 }
 
 private fun ToolApprovalMode.icon(): ImageVector = when (this) {
-    ToolApprovalMode.Ask -> AnyaIcons.ChatCircleOutline
-    ToolApprovalMode.Auto -> Icons.Rounded.Shield
-    ToolApprovalMode.AlwaysAllow -> Icons.Rounded.LockOpen
+    ToolApprovalMode.Ask -> AnyaIcons.ShieldQuestion
+    ToolApprovalMode.Auto -> AnyaIcons.Shield
+    ToolApprovalMode.AlwaysAllow -> AnyaIcons.ShieldOff
 }
 
 // endregion
@@ -1481,16 +1577,10 @@ private fun UserTurnsSheet(
                 .navigationBarsPadding()
                 .padding(bottom = AnyaSpace.Md),
         ) {
-            Text(
-                text = "发出的消息",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                text = "点击一条可跳转到对话中的位置",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp, bottom = AnyaSpace.Md),
+            AnyaSheetHeader(
+                title = "发出的消息",
+                subtitle = "点击一条可跳转到对话中的位置",
+                modifier = Modifier.padding(bottom = AnyaSpace.Md),
             )
             if (turns.isEmpty()) {
                 Text(
@@ -1500,39 +1590,42 @@ private fun UserTurnsSheet(
                     modifier = Modifier.padding(vertical = AnyaSpace.Lg),
                 )
             } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 480.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    items(turns, key = ChatMessage::id) { message ->
-                        val timeLabel = formatUserTurnTime(message.createdAtEpochMs)
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable {
-                                    haptic.linearTick()
-                                    onJump(message.id)
+                AnyaSheetCard {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 480.dp),
+                    ) {
+                        itemsIndexed(turns, key = { _, message -> message.id }) { index, message ->
+                            val timeLabel = formatUserTurnTime(message.createdAtEpochMs)
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        haptic.linearTick()
+                                        onJump(message.id)
+                                    }
+                                    .padding(horizontal = AnyaSpace.Lg, vertical = AnyaSpace.Sm),
+                            ) {
+                                if (timeLabel.isNotEmpty()) {
+                                    Text(
+                                        text = timeLabel,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
                                 }
-                                .padding(horizontal = 10.dp, vertical = 10.dp),
-                        ) {
-                            if (timeLabel.isNotEmpty()) {
                                 Text(
-                                    text = timeLabel,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    text = userMessagePreview(message.content),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(top = if (timeLabel.isNotEmpty()) 2.dp else 0.dp),
                                 )
                             }
-                            Text(
-                                text = userMessagePreview(message.content),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onBackground,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.padding(top = if (timeLabel.isNotEmpty()) 2.dp else 0.dp),
-                            )
+                            if (index < turns.lastIndex) {
+                                AnyaSheetHairline(insetStart = AnyaSpace.Lg)
+                            }
                         }
                     }
                 }
@@ -1555,24 +1648,22 @@ private fun ChatModeSheet(
                 .navigationBarsPadding()
                 .padding(bottom = AnyaSpace.Md),
         ) {
-            Text(
-                text = "对话模式",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
+            AnyaSheetHeader(
+                title = "对话模式",
+                subtitle = "选择本轮对话的工作方式",
+                modifier = Modifier.padding(bottom = AnyaSpace.Md),
             )
-            Text(
-                text = "选择本轮对话的工作方式",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp, bottom = AnyaSpace.Md),
-            )
-            listOf(ChatMode.Ask, ChatMode.Agent, ChatMode.Plan, ChatMode.Image).forEach { mode ->
-                SheetOptionRow(
-                    label = mode.chineseLabel(),
-                    selected = mode == current,
-                    leading = { ModeGlyph(icon = mode.icon()) },
-                    onClick = { onSelect(mode) },
-                )
+            val modes = listOf(ChatMode.Ask, ChatMode.Agent, ChatMode.Plan, ChatMode.Image)
+            AnyaSheetCard {
+                modes.forEachIndexed { index, mode ->
+                    SheetOptionRow(
+                        label = mode.chineseLabel(),
+                        selected = mode == current,
+                        leading = { ModeGlyph(icon = mode.icon()) },
+                        showDivider = index < modes.lastIndex,
+                        onClick = { onSelect(mode) },
+                    )
+                }
             }
         }
     }
@@ -1592,24 +1683,22 @@ private fun ApprovalModeSheet(
                 .navigationBarsPadding()
                 .padding(bottom = AnyaSpace.Md),
         ) {
-            Text(
-                text = "工具审批模式",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
+            AnyaSheetHeader(
+                title = "工具审批模式",
+                subtitle = "控制 Agent 使用工具时的确认策略",
+                modifier = Modifier.padding(bottom = AnyaSpace.Md),
             )
-            Text(
-                text = "控制 Agent 使用工具时的确认策略",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp, bottom = AnyaSpace.Md),
-            )
-            listOf(ToolApprovalMode.Ask, ToolApprovalMode.Auto, ToolApprovalMode.AlwaysAllow).forEach { mode ->
-                SheetOptionRow(
-                    label = mode.chineseLabel(),
-                    selected = mode == current,
-                    leading = { ModeGlyph(icon = mode.icon()) },
-                    onClick = { onSelect(mode) },
-                )
+            val modes = listOf(ToolApprovalMode.Ask, ToolApprovalMode.Auto, ToolApprovalMode.AlwaysAllow)
+            AnyaSheetCard {
+                modes.forEachIndexed { index, mode ->
+                    SheetOptionRow(
+                        label = mode.chineseLabel(),
+                        selected = mode == current,
+                        leading = { ModeGlyph(icon = mode.icon()) },
+                        showDivider = index < modes.lastIndex,
+                        onClick = { onSelect(mode) },
+                    )
+                }
             }
         }
     }
@@ -1631,18 +1720,19 @@ private fun ImageGenOptionSheet(
                 .navigationBarsPadding()
                 .padding(bottom = AnyaSpace.Md),
         ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
+            AnyaSheetHeader(
+                title = title,
                 modifier = Modifier.padding(bottom = AnyaSpace.Md),
             )
-            options.forEach { (id, label) ->
-                SheetOptionRow(
-                    label = label,
-                    selected = id == currentId,
-                    onClick = { onSelect(id) },
-                )
+            AnyaSheetCard {
+                options.forEachIndexed { index, (id, label) ->
+                    SheetOptionRow(
+                        label = label,
+                        selected = id == currentId,
+                        showDivider = index < options.lastIndex,
+                        onClick = { onSelect(id) },
+                    )
+                }
             }
         }
     }
@@ -1664,37 +1754,42 @@ private fun ImageGenStyleSheet(
                 .navigationBarsPadding()
                 .padding(bottom = AnyaSpace.Md),
         ) {
-            Text(
-                text = "风格",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
+            AnyaSheetHeader(
+                title = "风格",
                 modifier = Modifier.padding(bottom = AnyaSpace.Md),
             )
             Column(
                 modifier = Modifier
                     .heightIn(max = 420.dp)
                     .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
             ) {
-                builtins.forEach { preset ->
-                    SheetOptionRow(
-                        label = preset.label,
-                        selected = compose.styleId == preset.id,
-                        onClick = { onSelect(preset.id) },
-                    )
+                AnyaSheetCard {
+                    builtins.forEachIndexed { index, preset ->
+                        SheetOptionRow(
+                            label = preset.label,
+                            selected = compose.styleId == preset.id,
+                            showDivider = index < builtins.lastIndex,
+                            onClick = { onSelect(preset.id) },
+                        )
+                    }
                 }
                 if (options.styles.isNotEmpty()) {
                     Text(
                         text = "桌面自定义",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = AnyaSpace.Sm, bottom = AnyaSpace.Xs),
+                        modifier = Modifier.padding(top = AnyaSpace.Xs),
                     )
-                    options.styles.forEach { style ->
-                        SheetOptionRow(
-                            label = style.name.ifBlank { style.id },
-                            selected = compose.styleId == style.id,
-                            onClick = { onSelect(style.id) },
-                        )
+                    AnyaSheetCard {
+                        options.styles.forEachIndexed { index, style ->
+                            SheetOptionRow(
+                                label = style.name.ifBlank { style.id },
+                                selected = compose.styleId == style.id,
+                                showDivider = index < options.styles.lastIndex,
+                                onClick = { onSelect(style.id) },
+                            )
+                        }
                     }
                 }
             }
@@ -1716,16 +1811,10 @@ private fun ImageGenModelSheet(
                 .navigationBarsPadding()
                 .padding(bottom = AnyaSpace.Md),
         ) {
-            Text(
-                text = "生图模型",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                text = "切换后写入桌面端设置，两端同步",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp, bottom = AnyaSpace.Md),
+            AnyaSheetHeader(
+                title = "生图模型",
+                subtitle = "切换后写入桌面端设置，两端同步",
+                modifier = Modifier.padding(bottom = AnyaSpace.Md),
             )
             if (options.choices.isEmpty()) {
                 Text(
@@ -1734,17 +1823,20 @@ private fun ImageGenModelSheet(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
-                Column(
-                    modifier = Modifier
-                        .heightIn(max = 360.dp)
-                        .verticalScroll(rememberScrollState()),
-                ) {
-                    options.choices.forEach { choice ->
-                        SheetOptionRow(
-                            label = choice.label,
-                            selected = choice.provider == options.provider && choice.model == options.model,
-                            onClick = { onSelect(choice.provider, choice.model) },
-                        )
+                AnyaSheetCard {
+                    Column(
+                        modifier = Modifier
+                            .heightIn(max = 360.dp)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        options.choices.forEachIndexed { index, choice ->
+                            SheetOptionRow(
+                                label = choice.label,
+                                selected = choice.provider == options.provider && choice.model == options.model,
+                                showDivider = index < options.choices.lastIndex,
+                                onClick = { onSelect(choice.provider, choice.model) },
+                            )
+                        }
                     }
                 }
             }
@@ -1776,6 +1868,14 @@ private fun ModelSheet(
     }
     val activeGroupLabel = groups.find { it.provider == activeProvider }?.label.orEmpty()
     val currentModel = findModelEntry(models, currentId, currentProvider)
+    val currentGroupLabel = groups.find { it.provider == currentProvider }?.label.orEmpty()
+    val currentSelectionLabel = listOf(
+        currentGroupLabel,
+        currentModel?.let { getModelDisplayLabel(it) }
+            ?: getModelDisplayLabel(currentId, currentProvider, null),
+    ).filter { it.isNotBlank() }
+        .distinct()
+        .joinToString(" · ")
     val thinkingControl = resolveReasoningControl(currentModel, currentId, currentProvider)
     val thinkingOptions = thinkingOptionsFor(thinkingControl, currentModel)
     val thinkingBranding = resolveModelBranding(
@@ -1795,20 +1895,14 @@ private fun ModelSheet(
                 .navigationBarsPadding()
                 .padding(bottom = AnyaSpace.Md),
         ) {
-            Text(
-                text = if (showingGroups) "选择提供商" else "选择模型",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                text = if (showingGroups) {
+            AnyaSheetHeader(
+                title = if (showingGroups) "选择提供商" else "选择模型",
+                subtitle = if (showingGroups) {
                     "先选择分组，再选择该分组下的模型"
                 } else {
                     "切换后将用于后续消息"
                 },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp, bottom = AnyaSpace.Md),
+                modifier = Modifier.padding(bottom = AnyaSpace.Md),
             )
             if (models.isEmpty()) {
                 Text(
@@ -1818,107 +1912,136 @@ private fun ModelSheet(
                     modifier = Modifier.padding(vertical = AnyaSpace.Lg),
                 )
             } else {
-                Column(
-                    modifier = Modifier
-                        .heightIn(max = 360.dp)
-                        .verticalScroll(androidx.compose.foundation.rememberScrollState()),
-                ) {
-                    if (showingGroups) {
-                        groups.forEach { group ->
-                            val branding = resolveGroupBranding(group)
-                            val hasCurrent = group.models.any { model ->
-                                isModelSelected(model, currentId, currentProvider)
-                            }
-                            SheetOptionRow(
-                                label = group.label,
-                                subtitle = "${group.models.size} 个模型",
-                                selected = hasCurrent,
-                                leading = if (branding.hasIcon) {
-                                    { VendorBadge(branding = branding, size = 28.dp) }
-                                } else {
-                                    null
-                                },
-                                trailing = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        if (hasCurrent) {
+                AnyaSheetCard {
+                    Column(
+                        modifier = Modifier
+                            .heightIn(max = 360.dp)
+                            .verticalScroll(androidx.compose.foundation.rememberScrollState()),
+                    ) {
+                        if (showingGroups) {
+                            groups.forEachIndexed { index, group ->
+                                val branding = resolveGroupBranding(group)
+                                val hasCurrent = group.models.any { model ->
+                                    isModelSelected(model, currentId, currentProvider)
+                                }
+                                SheetOptionRow(
+                                    label = group.label,
+                                    subtitle = "${group.models.size} 个模型",
+                                    selected = hasCurrent,
+                                    leading = if (branding.hasIcon) {
+                                        { VendorBadge(branding = branding, size = 28.dp) }
+                                    } else {
+                                        null
+                                    },
+                                    trailing = {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            if (hasCurrent) {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.Check,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.onSurface,
+                                                )
+                                            }
                                             Icon(
-                                                imageVector = Icons.Rounded.Check,
+                                                imageVector = Icons.Rounded.ChevronRight,
                                                 contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.onBackground,
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                             )
                                         }
+                                    },
+                                    showDivider = index < groups.lastIndex,
+                                    onClick = {
+                                        haptic.tick()
+                                        activeProvider = group.provider
+                                    },
+                                )
+                            }
+                        } else {
+                            if (hierarchical && activeProvider != null) {
+                                SheetOptionRow(
+                                    label = activeGroupLabel.ifBlank { "返回分组" },
+                                    selected = false,
+                                    leading = {
                                         Icon(
-                                            imageVector = Icons.Rounded.ChevronRight,
+                                            imageVector = Icons.Rounded.ChevronLeft,
                                             contentDescription = null,
                                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
-                                    }
-                                },
-                                onClick = {
-                                    haptic.tick()
-                                    activeProvider = group.provider
-                                },
-                            )
-                        }
-                    } else {
-                        if (hierarchical && activeProvider != null) {
-                            SheetOptionRow(
-                                label = activeGroupLabel.ifBlank { "返回分组" },
-                                selected = false,
-                                leading = {
-                                    Icon(
-                                        imageVector = Icons.Rounded.ChevronLeft,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                },
-                                onClick = {
-                                    haptic.tick()
-                                    activeProvider = null
-                                },
-                            )
-                        }
-                        visibleModels.forEach { model ->
-                            val branding = resolveModelBranding(model)
-                            val selected = isModelSelected(model, currentId, currentProvider)
-                            SheetOptionRow(
-                                label = getModelDisplayLabel(model),
-                                subtitle = getModelDisplaySubtitle(model),
-                                selected = selected,
-                                leading = if (branding.hasIcon) {
-                                    { VendorBadge(branding = branding, size = 28.dp) }
-                                } else {
-                                    null
-                                },
-                                onClick = {
-                                    haptic.tick()
-                                    onSelect(model)
-                                },
-                            )
+                                    },
+                                    showDivider = visibleModels.isNotEmpty(),
+                                    onClick = {
+                                        haptic.tick()
+                                        activeProvider = null
+                                    },
+                                )
+                            }
+                            visibleModels.forEachIndexed { index, model ->
+                                val branding = resolveModelBranding(model)
+                                val selected = isModelSelected(model, currentId, currentProvider)
+                                SheetOptionRow(
+                                    label = getModelDisplayLabel(model),
+                                    subtitle = getModelDisplaySubtitle(model),
+                                    selected = selected,
+                                    leading = if (branding.hasIcon) {
+                                        { VendorBadge(branding = branding, size = 28.dp) }
+                                    } else {
+                                        null
+                                    },
+                                    showDivider = index < visibleModels.lastIndex,
+                                    onClick = {
+                                        haptic.tick()
+                                        onSelect(model)
+                                    },
+                                )
+                            }
                         }
                     }
                 }
             }
-            if (thinkingOptions.size > 1) {
+            if (currentSelectionLabel.isNotBlank() || thinkingOptions.size > 1) {
                 Spacer(modifier = Modifier.height(AnyaSpace.Md))
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(1.dp)
-                        .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
-                )
+                AnyaSheetHairline()
                 Spacer(modifier = Modifier.height(AnyaSpace.Md))
-                ThinkingEffortPanel(
-                    options = thinkingOptions,
-                    selectedId = selectedThinkingId(
-                        thinkingControl,
-                        currentModel,
-                        currentId,
-                        reasoningEffort,
-                    ),
-                    accent = thinkingAccent,
-                    onSelect = onThinkingSelect,
-                )
+                if (currentSelectionLabel.isNotBlank()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
+                    ) {
+                        Text(
+                            text = "当前选择",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                        Text(
+                            text = currentSelectionLabel,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onBackground,
+                            textAlign = TextAlign.End,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+                if (thinkingOptions.size > 1) {
+                    if (currentSelectionLabel.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(AnyaSpace.Md))
+                    }
+                    ThinkingEffortPanel(
+                        options = thinkingOptions,
+                        selectedId = selectedThinkingId(
+                            thinkingControl,
+                            currentModel,
+                            currentId,
+                            reasoningEffort,
+                        ),
+                        accent = thinkingAccent,
+                        onSelect = onThinkingSelect,
+                    )
+                }
             }
         }
     }
@@ -1960,18 +2083,14 @@ private fun AttachSheet(
                 .navigationBarsPadding()
                 .padding(bottom = AnyaSpace.Md),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "添加到消息",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f),
+            Box(modifier = Modifier.fillMaxWidth()) {
+                AnyaSheetHeader(
+                    title = "添加到消息",
+                    modifier = Modifier.align(Alignment.Center),
                 )
                 Row(
                     modifier = Modifier
+                        .align(Alignment.CenterEnd)
                         .clip(RoundedCornerShape(999.dp))
                         .background(
                             if (catalog.loading) {
@@ -2421,31 +2540,29 @@ private fun SheetOptionRow(
     subtitle: String? = null,
     leading: (@Composable () -> Unit)? = null,
     trailing: (@Composable () -> Unit)? = null,
+    showDivider: Boolean = false,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(AnyaSpace.ControlRadius))
-            .background(
-                if (selected) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
-                else Color.Transparent,
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = AnyaSpace.Sm, vertical = AnyaSpace.Md),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
-    ) {
-        if (leading != null) {
-            leading()
-        }
-        Column(modifier = Modifier.weight(1f)) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .defaultMinSize(minHeight = 56.dp)
+                .clickable(onClick = onClick)
+                .padding(horizontal = AnyaSpace.Lg, vertical = AnyaSpace.Sm),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
+        ) {
+            if (leading != null) {
+                leading()
+            }
             Text(
                 text = label,
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                color = MaterialTheme.colorScheme.onBackground,
+                color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
             )
             if (!subtitle.isNullOrBlank()) {
                 Text(
@@ -2456,15 +2573,18 @@ private fun SheetOptionRow(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            if (trailing != null) {
+                trailing()
+            } else if (selected) {
+                Icon(
+                    imageVector = Icons.Rounded.Check,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurface,
+                )
+            }
         }
-        if (trailing != null) {
-            trailing()
-        } else if (selected) {
-            Icon(
-                imageVector = Icons.Rounded.Check,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onBackground,
-            )
+        if (showDivider) {
+            AnyaSheetHairline(insetStart = AnyaSpace.Lg)
         }
     }
 }
@@ -2489,6 +2609,8 @@ private fun MobileComposer(
     contextUsage: ContextUsageSnapshot,
     skills: List<SkillSummary>,
     mcpServers: List<McpServerSummary>,
+    /** Layer the composer refracts; the message list is recorded into it. */
+    backdrop: Backdrop,
     pendingAsk: ai.anya.companion.core.model.approval.PendingApproval?,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
@@ -2518,8 +2640,8 @@ private fun MobileComposer(
     val canSend = canSendNormal || canStage
     val showStop = busy && draft.isBlank() && pendingAsk == null
     val dark = LocalDarkTheme.current
-    val barBg = if (dark) Color(0xFF2A2A2C) else Color(0xFFF2F2F2)
-    val toolBg = if (dark) Color(0xFF3A3A3C) else Color.White
+    val toolBg = if (dark) AnyaColors.SurfaceRaisedDark else AnyaColors.SurfaceLight
+    val glassTint = composerGlassTint()
     val shape = RoundedCornerShape(20.dp)
     val ink = MaterialTheme.colorScheme.onBackground
     val chips = remember(draft) { composerChips(draft) }
@@ -2555,7 +2677,17 @@ private fun MobileComposer(
                 spotColor = Color.Black.copy(alpha = 0.08f),
             )
             .clip(shape)
-            .background(barBg)
+            // Pane-sized glass (see ComposerGlassBlur): the chip defaults read as a
+            // flat tint at this size.
+            .anyaGlassSurface(
+                backdrop = backdrop,
+                shape = shape,
+                surfaceTint = glassTint,
+                blurRadius = ComposerGlassBlur,
+                refractionHeight = ComposerGlassRefractionHeight,
+                refractionAmount = ComposerGlassRefractionAmount,
+                chromaticAberration = true,
+            )
             .padding(start = 14.dp, end = 14.dp, top = 14.dp, bottom = 10.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -2674,7 +2806,7 @@ private fun MobileComposer(
                     textStyle = MaterialTheme.typography.bodyLarge.copy(
                         color = ink,
                     ),
-                    cursorBrush = SolidColor(Color(0xFF3B82F6)),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(
                         onSend = { if (canSend) onSend() },
@@ -2685,7 +2817,11 @@ private fun MobileComposer(
                                 Text(
                                     text = fieldPlaceholder,
                                     style = MaterialTheme.typography.bodyLarge,
-                                    color = Color(0xFF9A9A9A),
+                                    color = if (dark) {
+                                        AnyaColors.FieldPlaceholderDark
+                                    } else {
+                                        AnyaColors.FieldPlaceholderLight
+                                    },
                                 )
                             }
                             inner()
@@ -2702,6 +2838,7 @@ private fun MobileComposer(
         ) {
             ComposerCircleButton(
                 background = toolBg,
+                backdrop = backdrop,
                 enabled = pendingAsk == null,
                 onClick = onAttachClick,
                 size = controlSize,
@@ -2719,6 +2856,7 @@ private fun MobileComposer(
                 onClick = onModelClick,
                 height = controlSize,
                 enabled = pendingAsk == null && !busy,
+                backdrop = backdrop,
             )
             Spacer(modifier = Modifier.weight(1f))
             if (!imageMode) {
@@ -2834,7 +2972,7 @@ private fun ImageGenChip(
 ) {
     val haptic = rememberAnyaHaptics()
     val dark = LocalDarkTheme.current
-    val bg = if (dark) Color(0xFF3A3A3C) else Color.White
+    val bg = if (dark) AnyaColors.SurfaceRaisedDark else AnyaColors.SurfaceLight
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(999.dp))
@@ -3181,7 +3319,7 @@ private fun ComposerPlainField(
             fontSize = MaterialTheme.typography.bodyLarge.fontSize,
             lineHeight = MaterialTheme.typography.bodyLarge.lineHeight,
         ),
-        cursorBrush = SolidColor(Color(0xFF3B82F6)),
+        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
         keyboardActions = KeyboardActions(
             onSend = { if (canSend) onSend() },
@@ -3193,7 +3331,11 @@ private fun ComposerPlainField(
                     Text(
                         text = if (busy) "回答中…" else (placeholder ?: "随时提问…"),
                         style = MaterialTheme.typography.bodyLarge,
-                        color = Color(0xFF9A9A9A),
+                        color = if (LocalDarkTheme.current) {
+                            AnyaColors.FieldPlaceholderDark
+                        } else {
+                            AnyaColors.FieldPlaceholderLight
+                        },
                     )
                 }
                 inner()
@@ -3209,9 +3351,9 @@ private fun InlineMentionToken(
     mcpServers: List<McpServerSummary>,
 ) {
     val dark = LocalDarkTheme.current
-    val blue = if (dark) Color(0xFF60A5FA) else Color(0xFF2563EB)
-    val teal = if (dark) Color(0xFF2DD4BF) else Color(0xFF0F766E)
-    val orange = if (dark) Color(0xFFFB923C) else Color(0xFFC2410C)
+    val blue = if (dark) AnyaColors.AccentBlueDark else AnyaColors.AccentBlueLight
+    val teal = if (dark) AnyaColors.AccentTealDark else AnyaColors.AccentTealLight
+    val orange = if (dark) AnyaColors.AccentOrangeDark else AnyaColors.AccentOrangeLight
     val (label, iconUrl, color, fallback, letter) = when (segment) {
         is ComposerSegment.Mention -> TokenVisual(
             label = "@${mentionDisplayLabel(segment.path, segment.isDir)}",
@@ -3272,15 +3414,31 @@ private fun ModelPill(
     onClick: () -> Unit,
     height: androidx.compose.ui.unit.Dp = 36.dp,
     enabled: Boolean = true,
+    /** Non-null paints the pill as liquid glass instead of a flat surface fill. */
+    backdrop: Backdrop? = null,
 ) {
     val haptic = rememberAnyaHaptics()
-    val displayLabel = label
+    val shape = RoundedCornerShape(999.dp)
+    val fill = if (backdrop != null) {
+        Modifier.anyaGlassSurface(
+            backdrop = backdrop,
+            shape = shape,
+            surfaceTint = composerGlassTint(),
+            blurRadius = ComposerGlassBlur,
+            refractionHeight = ComposerGlassRefractionHeight,
+            refractionAmount = ComposerGlassRefractionAmount,
+            chromaticAberration = true,
+        )
+    } else {
+        Modifier.background(MaterialTheme.colorScheme.surface)
+    }
     Row(
         modifier = Modifier
             .height(height)
             .defaultMinSize(minHeight = height)
-            .clip(RoundedCornerShape(999.dp))
-            .background(MaterialTheme.colorScheme.surface)
+            .clip(shape)
+            .then(fill)
+            .semantics { contentDescription = label }
             .then(
                 if (enabled) {
                     Modifier.clickable {
@@ -3293,25 +3451,17 @@ private fun ModelPill(
             )
             .padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         if (branding.hasIcon) {
             VendorBadge(branding = branding, size = 18.dp)
+        } else {
+            Icon(
+                imageVector = Icons.Rounded.SmartToy,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.onBackground,
+            )
         }
-        Text(
-            text = displayLabel,
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.onBackground,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Icon(
-            imageVector = Icons.Rounded.ExpandMore,
-            contentDescription = null,
-            modifier = Modifier.size(14.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
@@ -3322,9 +3472,24 @@ private fun ComposerCircleButton(
     onClick: () -> Unit,
     emitHaptic: Boolean = true,
     size: androidx.compose.ui.unit.Dp = 36.dp,
+    /** Non-null paints the button as liquid glass instead of [background]. */
+    backdrop: Backdrop? = null,
     content: @Composable () -> Unit,
 ) {
     val haptic = rememberAnyaHaptics()
+    val fill = if (backdrop != null) {
+        Modifier.anyaGlassSurface(
+            backdrop = backdrop,
+            shape = CircleShape,
+            surfaceTint = composerGlassTint(),
+            blurRadius = ComposerGlassBlur,
+            refractionHeight = ComposerGlassRefractionHeight,
+            refractionAmount = ComposerGlassRefractionAmount,
+            chromaticAberration = true,
+        )
+    } else {
+        Modifier.background(background)
+    }
     Box(
         modifier = Modifier
             .size(size)
@@ -3336,7 +3501,7 @@ private fun ComposerCircleButton(
                 spotColor = Color.Black.copy(alpha = 0.06f),
             )
             .clip(CircleShape)
-            .background(background)
+            .then(fill)
             .then(
                 if (enabled) {
                     Modifier.clickable {
@@ -3413,6 +3578,7 @@ private fun MessageBubble(
                 approvedPlanIds = approvedPlanIds,
                 foldController = foldController,
                 onOpenDiff = onOpenDiff,
+                onNeedDetail = { MessageDetailRequest.handler(it) },
             )
         }
     }
@@ -3453,29 +3619,7 @@ private fun SoftInjectList(injects: List<ChatMessage>) {
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         injects.forEach { inject ->
-            val text = stripSoftInjectMarker(inject.content).ifBlank { "…" }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth(0.92f)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f))
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.Top,
-            ) {
-                Text(
-                    text = "已追加到本轮",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    text = text,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
-                )
-            }
+            SoftInjectCard(content = inject.content)
         }
     }
 }
@@ -3488,7 +3632,16 @@ private fun UserBubble(
 ) {
     // Reference images (data URLs / desktop paths) render as thumbnails, not as raw markdown.
     val displayContent = remember(message.content) { stripSoftInjectMarker(message.content) }
-    val userContent = remember(displayContent) { parseUserContent(displayContent) }
+    val extras = remember(displayContent) { parseUserExtras(displayContent) }
+    val envFence = remember(extras.body) { extractEnvironmentFence(extras.body) }
+    val bodyWithoutEnv = remember(extras.body, envFence) {
+        if (envFence == null) extras.body
+        else extras.body.replace(
+            Regex("""```(?:environment|env-context)\s*\n[\s\S]*?```""", RegexOption.IGNORE_CASE),
+            "",
+        ).trim()
+    }
+    val userContent = remember(bodyWithoutEnv) { parseUserContent(bodyWithoutEnv) }
     val parts = remember(userContent.text) { parseInlineParts(userContent.text) }
     val hasTokens = parts.any { it !is ComposerSegment.Text }
     val softInject = isSoftInjectContent(message.content)
@@ -3498,12 +3651,16 @@ private fun UserBubble(
         verticalArrangement = Arrangement.spacedBy(AnyaSpace.Xs),
     ) {
         if (softInject) {
-            Text(
-                text = "已追加到本轮",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-            )
+            SoftInjectCard(content = message.content)
+            return@Column
         }
+        extras.imageAnalyses.forEach { analysis ->
+            ImageAnalysisCard(block = analysis)
+        }
+        extras.selection?.takeIf { it.isNotBlank() }?.let { selection ->
+            SelectionCard(selection = selection, lineCount = extras.selectionLines)
+        }
+        envFence?.let { EnvironmentFenceCard(body = it) }
         if (userContent.images.isNotEmpty()) {
             DisableSelection { UserMessageImages(images = userContent.images) }
         }
@@ -3588,6 +3745,16 @@ private fun RewindButton(userMessageId: String, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * Bridge for the on-demand detail fetch.
+ *
+ * The assistant subtree sits several composables below [ChatScreen], so the screen installs its
+ * handler here instead of threading the callback through every layer between.
+ */
+internal object MessageDetailRequest {
+    var handler: (String) -> Unit = {}
+}
+
 @Composable
 private fun AssistantContent(
     message: ChatMessage,
@@ -3596,6 +3763,8 @@ private fun AssistantContent(
     approvedPlanIds: Set<String>,
     foldController: CompletedFoldController,
     onOpenDiff: (DiffViewRequest) -> Unit = {},
+    /** Fetches a turn's execution process after the user expands it. */
+    onNeedDetail: (String) -> Unit = {},
 ) {
     // No heavy bubble chrome for assistant turns — plain text on the white canvas.
     Column(
@@ -3616,6 +3785,8 @@ private fun AssistantContent(
                     foldExpanded = foldController.isExpanded(message.id),
                     onFoldExpandedChange = { foldController.setExpanded(message.id, it) },
                     onOpenDiff = onOpenDiff,
+                    detailOmitted = message.detailOmitted,
+                    onNeedDetail = { onNeedDetail(message.id) },
                 )
             }
         }
@@ -3798,7 +3969,7 @@ private fun ShellTerminalCard(activity: ToolActivity) {
             }
             if (expanded) {
                 // Dark terminal body with ANSI colours, like the desktop ShellTerminalCard.
-                val terminalFg = Color(0xFFC9D1D9)
+                val terminalFg = TerminalForeground
                 val rendered = remember(body) {
                     if (hasAnsi(body)) parseAnsi(body).toAnnotatedString(terminalFg) else AnnotatedString(body)
                 }
@@ -3807,7 +3978,7 @@ private fun ShellTerminalCard(activity: ToolActivity) {
                         .fillMaxWidth()
                         .padding(start = 8.dp, end = 8.dp, bottom = 8.dp)
                         .clip(RoundedCornerShape(8.dp))
-                        .background(Color(0xFF0D1117)),
+                        .background(TerminalBackground),
                 ) {
                     Text(
                         text = if (body.isBlank() && running) AnnotatedString("正在运行…") else rendered,
@@ -3884,7 +4055,11 @@ internal fun ReasoningSection(
     streaming: Boolean,
     showSummary: Boolean = true,
     title: String? = null,
+    visible: Boolean = true,
 ) {
+    // Bail before BOTH branches: the `showSummary = false` path renders the reasoning text directly,
+    // so a check placed only in the disclosure branch would leak it straight into the completed fold.
+    if (!visible) return
     if (!showSummary) {
         Text(
             text = reasoning,

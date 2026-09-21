@@ -8,16 +8,41 @@ import android.os.VibratorManager
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
+import com.swmansion.pulsar.Pulsar
+import com.swmansion.pulsar.presets.PresetsWrapper
+import com.swmansion.pulsar.types.CompatibilityMode
 
 /**
  * Real device vibration — Compose [androidx.compose.ui.hapticfeedback.HapticFeedback]
  * is a no-op on many OEM builds / when the system "touch vibration" toggle is off.
+ *
+ * Feedback comes from Pulsar presets. Every method keeps the hand-rolled waveform it used
+ * before as its fallback, so a device Pulsar cannot serve still gets the old behaviour
+ * instead of silently going dead.
  */
 public class AnyaHaptics(private val context: Context) {
+    private val pulsar: Pulsar? = runCatching { Pulsar(context.applicationContext) }.getOrNull()
+    private val presets: PresetsWrapper? = pulsar?.let { engine ->
+        runCatching { engine.getPresets() }.getOrNull()
+    }
+    private val pulsarReady: Boolean = pulsar?.let { engine ->
+        presets != null && runCatching {
+            engine.hapticSupport() != CompatibilityMode.NO_SUPPORT
+        }.getOrDefault(false)
+    } ?: false
+
+    /** Plays [preset] through Pulsar; returns false when the fallback waveform should run. */
+    private fun playPreset(preset: (PresetsWrapper) -> Unit): Boolean {
+        val target = presets
+        if (!pulsarReady || target == null) return false
+        return runCatching { preset(target) }.isSuccess
+    }
+
     /**
      * Linear-feeling switch haptic with stronger energy for tab/menu/session transitions.
      */
     public fun linearTick() {
+        if (playPreset { it.systemSegmentTick() }) return
         vibrate(
             timings = longArrayOf(0, 12, 10, 14),
             amplitudes = intArrayOf(0, 72, 132, 192),
@@ -26,6 +51,7 @@ public class AnyaHaptics(private val context: Context) {
 
     /** Button press — strong at top, easing downward like a physical tap. */
     public fun buttonPress() {
+        if (playPreset { it.systemImpactMedium() }) return
         vibrate(
             timings = longArrayOf(0, 10, 8, 12, 8),
             amplitudes = intArrayOf(0, 200, 150, 100, 60),
@@ -33,14 +59,17 @@ public class AnyaHaptics(private val context: Context) {
     }
 
     public fun tick() {
+        if (playPreset { it.systemEffectTick() }) return
         vibrate(longArrayOf(0, 18), amplitudes = intArrayOf(0, 90))
     }
 
     public fun confirm() {
+        if (playPreset { it.systemNotificationSuccess() }) return
         vibrate(longArrayOf(0, 28, 40, 36), amplitudes = intArrayOf(0, 140, 0, 180))
     }
 
     public fun reject() {
+        if (playPreset { it.systemNotificationError() }) return
         vibrate(longArrayOf(0, 40, 50, 40), amplitudes = intArrayOf(0, 200, 0, 120))
     }
 
@@ -49,6 +78,7 @@ public class AnyaHaptics(private val context: Context) {
      * decaying ticks. Uses composition primitives when the motor supports them.
      */
     public fun mascotPleased() {
+        if (playPreset { it.chirp() }) return
         val vibrator = vibratorOrNull() ?: return
         try {
             if (tryMascotComposition(vibrator)) return
@@ -59,6 +89,48 @@ public class AnyaHaptics(private val context: Context) {
         } catch (_: SecurityException) {
             // Missing VIBRATE (or OEM-denied) must never crash UI navigation.
         }
+    }
+
+    /** Picker or selection-row change — the classic Android selection tick. */
+    public fun selection() {
+        if (playPreset { it.systemSelection() }) return
+        tick()
+    }
+
+    /** An operation finished successfully. */
+    public fun success() {
+        if (playPreset { it.systemNotificationSuccess() }) return
+        confirm()
+    }
+
+    /** Non-blocking heads-up, for things worth flagging without interrupting. */
+    public fun warning() {
+        if (playPreset { it.systemNotificationWarning() }) return
+        tick()
+    }
+
+    /** An operation failed. */
+    public fun error() {
+        if (playPreset { it.systemNotificationError() }) return
+        reject()
+    }
+
+    /** Irreversible, high-stakes action such as a delete. */
+    public fun destructive() {
+        if (playPreset { it.cleave() }) return
+        reject()
+    }
+
+    /** Long-press activation, or a charge that has completed. */
+    public fun longPress() {
+        if (playPreset { it.systemLongPress() }) return
+        buttonPress()
+    }
+
+    /** An inbound message or alert that wants the user's attention. */
+    public fun notification() {
+        if (playPreset { it.chime() }) return
+        confirm()
     }
 
     private fun vibrate(timings: LongArray, amplitudes: IntArray) {

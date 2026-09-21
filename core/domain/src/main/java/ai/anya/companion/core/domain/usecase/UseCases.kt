@@ -95,6 +95,32 @@ public class LoadHistoryUseCase @Inject constructor(
         sessionRepository.loadHistory(sessionId)
 }
 
+public class LoadOlderHistoryUseCase @Inject constructor(
+    private val sessionRepository: SessionRepository,
+) {
+    /**
+     * Null when the desktop cannot page history at all; otherwise whether anything older remains.
+     * The page itself is already merged into the session projection by the repository.
+     */
+    public suspend operator fun invoke(
+        sessionId: String,
+        beforeMessageId: String,
+        limit: Int = 40,
+    ): AnyaResult<Boolean>? =
+        sessionRepository.loadOlderHistory(sessionId, beforeMessageId, limit)
+}
+
+public class LoadMessageDetailUseCase @Inject constructor(
+    private val sessionRepository: SessionRepository,
+) {
+    /** Pulls the execution process for [messageIds]; light history leaves it out. */
+    public suspend operator fun invoke(
+        sessionId: String,
+        messageIds: List<String>,
+    ): AnyaResult<List<ChatMessage>> =
+        sessionRepository.loadMessageDetail(sessionId, messageIds)
+}
+
 public class DeleteSessionUseCase @Inject constructor(
     private val sessionRepository: SessionRepository,
 ) {

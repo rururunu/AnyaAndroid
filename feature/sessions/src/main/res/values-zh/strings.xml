@@ -14,6 +14,13 @@
     <string name="sessions_delete_cancel">取消</string>
     <string name="sessions_actions_title">对话操作</string>
     <string name="sessions_archive">归档</string>
+    <string name="sessions_rename">重命名</string>
+    <string name="sessions_rename_hint">对话标题</string>
+    <string name="sessions_rename_save">保存</string>
+    <string name="sessions_workspace_pin">置顶工作区</string>
+    <string name="sessions_workspace_unpin">取消置顶</string>
+    <string name="sessions_workspace_rename">重命名工作区</string>
+    <string name="sessions_workspace_rename_hint">工作区名称</string>
     <string name="sessions_archive_body">「%1$s」将移入归档，之后可以恢复。</string>
     <string name="sessions_restore">恢复</string>
     <string name="sessions_workspace_archive">归档工作区</string>

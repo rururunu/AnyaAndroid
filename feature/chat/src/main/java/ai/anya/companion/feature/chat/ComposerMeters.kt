@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import ai.anya.companion.core.designsystem.haptic.rememberAnyaHaptics
+import ai.anya.companion.core.designsystem.theme.AnyaColors
 import ai.anya.companion.core.designsystem.theme.AnyaSpace
 import ai.anya.companion.core.model.session.ChatMessage
 import ai.anya.companion.core.model.session.ChatRole
@@ -260,9 +261,9 @@ internal fun ContextUsageSheet(
                 messages = messages.toFloat() / totalParts,
             )
             Spacer(modifier = Modifier.height(AnyaSpace.Md))
-            ContextLegendRow(color = Color(0xFF3B82F6), label = "系统 prompt", tokens = system)
-            ContextLegendRow(color = Color(0xFFF59E0B), label = "工具", tokens = tools)
-            ContextLegendRow(color = Color(0xFF22C55E), label = "消息", tokens = messages)
+            ContextLegendRow(color = AnyaColors.MeterBlue, label = "系统 prompt", tokens = system)
+            ContextLegendRow(color = AnyaColors.MeterAmber, label = "工具", tokens = tools)
+            ContextLegendRow(color = AnyaColors.MeterGreen, label = "消息", tokens = messages)
             Spacer(modifier = Modifier.height(AnyaSpace.Lg))
             Box(
                 modifier = Modifier
@@ -311,12 +312,12 @@ private fun ContextBreakdownBar(
             drawRect(color = color, topLeft = Offset(start, 0f), size = Size(w, size.height))
             start += w
         }
-        segment(system, Color(0xFF3B82F6))
-        segment(tools, Color(0xFFF59E0B))
-        segment(messages, Color(0xFF22C55E))
+        segment(system, AnyaColors.MeterBlue)
+        segment(tools, AnyaColors.MeterAmber)
+        segment(messages, AnyaColors.MeterGreen)
         if (start < width) {
             drawRect(
-                color = Color(0xFFE5E7EB),
+                color = AnyaColors.MeterTrack,
                 topLeft = Offset(start, 0f),
                 size = Size(width - start, size.height),
             )
@@ -354,9 +355,9 @@ private fun ContextLegendRow(color: Color, label: String, tokens: Long) {
 }
 
 internal fun contextUsageColor(ratio: Float): Color = when {
-    ratio >= 0.9f -> Color(0xFFDC2626)
-    ratio >= 0.7f -> Color(0xFFF59E0B)
-    else -> Color(0xFF3B82F6)
+    ratio >= 0.9f -> AnyaColors.MeterRed
+    ratio >= 0.7f -> AnyaColors.MeterAmber
+    else -> AnyaColors.MeterBlue
 }
 
 internal fun formatCompactTokens(value: Long): String {
@@ -380,7 +381,10 @@ internal fun sessionRoundCount(messages: List<ChatMessage>): Int =
     messages.count { it.role == ChatRole.User }
 
 internal fun sessionStepCount(messages: List<ChatMessage>): Int =
-    messages.sumOf { it.toolActivities.size }
+    messages.sumOf { message ->
+        // Light history ships a step count instead of the activities themselves.
+        if (message.toolActivities.isEmpty()) message.stepCount else message.toolActivities.size
+    }
 
 /** Conversation-level DeepSeek prompt-cache hit rate (same formula as desktop). */
 internal fun sessionCacheHitPercent(usages: Collection<MessageCacheUsage>): Int? {

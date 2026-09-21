@@ -14,6 +14,13 @@
     <string name="sessions_delete_cancel">Cancel</string>
     <string name="sessions_actions_title">Chat actions</string>
     <string name="sessions_archive">Archive</string>
+    <string name="sessions_rename">Rename</string>
+    <string name="sessions_rename_hint">Chat title</string>
+    <string name="sessions_rename_save">Save</string>
+    <string name="sessions_workspace_pin">Pin workspace</string>
+    <string name="sessions_workspace_unpin">Unpin workspace</string>
+    <string name="sessions_workspace_rename">Rename workspace</string>
+    <string name="sessions_workspace_rename_hint">Workspace name</string>
     <string name="sessions_archive_body">“%1$s” will be moved to Archive. You can restore it later.</string>
     <string name="sessions_restore">Restore</string>
     <string name="sessions_workspace_archive">Archive workspace</string>

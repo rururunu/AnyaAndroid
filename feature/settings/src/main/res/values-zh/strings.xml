@@ -56,6 +56,9 @@
     <string name="settings_background">后台连接</string>
     <string name="settings_battery_title">保持后台连接</string>
     <string name="settings_battery_subtitle">忽略电池优化，降低桌面连接断开的概率。部分厂商仍可能限制后台网络。</string>
+    <string name="settings_chat_display">对话显示</string>
+    <string name="settings_thinking_title">显示思考过程</string>
+    <string name="settings_thinking_subtitle">在对话中展开模型的思考过程。默认关闭。</string>
     <string name="settings_about">关于 Anya</string>
     <string name="settings_about_subtitle">版本与软件更新</string>
     <string name="settings_about_update_available">可更新至 %1$s</string>

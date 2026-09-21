@@ -31,6 +31,16 @@ public sealed class AnyaError {
     public data class Unknown(public val message: String, public val cause: Throwable? = null) : AnyaError()
 }
 
+/** Human-readable message for UI banners (avoids `Network(message=…)` from `toString()`). */
+public val AnyaError.userMessage: String
+    get() = when (this) {
+        is AnyaError.Network -> message
+        is AnyaError.Unauthorized -> message
+        is AnyaError.Protocol -> message
+        is AnyaError.NotPaired -> message
+        is AnyaError.Unknown -> message
+    }
+
 public inline fun <T> runCatchingAnya(block: () -> T): AnyaResult<T> = try {
     AnyaResult.Success(block())
 } catch (t: Throwable) {

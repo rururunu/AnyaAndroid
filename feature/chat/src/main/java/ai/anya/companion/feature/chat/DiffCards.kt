@@ -332,10 +332,10 @@ internal fun FileDiffCard(
 }
 
 private object DiffColors {
-    val addedText = Color(0xFF2EA043)
-    val removedText = Color(0xFFD1242F)
-    val addedBg = Color(0x2E2EA043)
-    val removedBg = Color(0x2ED1242F)
+    val addedText = ai.anya.companion.core.designsystem.theme.AnyaColors.DiffAdded
+    val removedText = ai.anya.companion.core.designsystem.theme.AnyaColors.DiffRemoved
+    val addedBg = ai.anya.companion.core.designsystem.theme.AnyaColors.DiffAddedBackground
+    val removedBg = ai.anya.companion.core.designsystem.theme.AnyaColors.DiffRemovedBackground
 }
 
 @Composable

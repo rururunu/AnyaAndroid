@@ -2,6 +2,26 @@
 
 All notable Companion releases. Desktop Anya has its own changelog in [rururunu/Anya](https://github.com/rururunu/Anya).
 
+## [0.1.8] - 2026-09-20
+
+Parity with desktop Anya 0.2.23: Diff review, session/workspace management, Slash commands, environment context, and chart export.
+
+### Added
+
+- **Review changes**: top-bar entry with round / uncommitted / session scopes; Diff viewer renders unified only
+- Long-press a chat to **rename**; long-press a workspace to **pin / rename**
+- Type `/` for Slash commands (`/model` `/thinking` `/history` `/work` `/context` `/settings` `/clear` `/exit`)
+- `/context` fetches live desktop environment context; message bubbles render image-analysis cards, selection cards, and foldable SoftInject
+- Chart cards can **export PNG** for sharing
+
+### Changed
+
+- Liquid glass is one stack now: `backdrop` 1.0.2 → 1.0.6, the bottom nav's selected pill is a real glass layer that slides between items, and the chat top bar plus page chrome (settings, archived chats) refract through that same layer instead of a second blur library
+
+### Notes
+
+New RPCs (`session.rename`, `workspace.pin`, `workspace.update`, `workspace.workingTreeDiff`, `context.environment`) need desktop Anya ≥ **0.2.23**. Older desktops fail those actions with a message; other features keep working.
+
 ## [0.1.6] - 2026-09-03
 
 Staged queue, in-app theme, and a fix for chats that went blank after the agent stopped.
@@ -134,6 +154,7 @@ First public Android remote.
 
 Requires desktop Anya with Remote Gateway. Companion does not call model providers itself.
 
+[0.1.8]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.8
 [0.1.6]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.6
 [0.1.5]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.5
 [0.1.4]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.4
