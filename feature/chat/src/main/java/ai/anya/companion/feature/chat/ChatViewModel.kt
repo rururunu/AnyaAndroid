@@ -282,7 +282,8 @@ public class ChatViewModel @Inject constructor(
     public val contextUsage: StateFlow<ContextUsageSnapshot> = _contextUsage.asStateFlow()
 
     /** Compose choices made before the first message creates the session. */
-    private val draftCompose = MutableStateFlow(SessionCompose())
+    private val draftCompose = MutableStateFlow(sessionRepository.desktopDefaults.value)
+    private var draftComposeEdited = false
 
     private val pendingAskForSession = combine(
         observeApprovals(),
@@ -621,6 +622,13 @@ public class ChatViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
+            sessionRepository.desktopDefaults.collect { defaults ->
+                if (activeSessionId.value == null && !draftComposeEdited) {
+                    draftCompose.value = defaults
+                }
+            }
+        }
+        viewModelScope.launch {
             val cached = loadCachedAttachCatalog()
             if (cached.skills.isNotEmpty() || cached.mcpServers.isNotEmpty()) {
                 _attachCatalog.update {
@@ -924,6 +932,7 @@ public class ChatViewModel @Inject constructor(
     public fun setChatMode(mode: ChatMode) {
         val sid = activeSessionId.value
         if (sid == null) {
+            draftComposeEdited = true
             draftCompose.update { it.copy(chatMode = mode) }
             return
         }
@@ -933,15 +942,25 @@ public class ChatViewModel @Inject constructor(
     public fun setApprovalMode(mode: ToolApprovalMode) {
         val sid = activeSessionId.value
         if (sid == null) {
+            draftComposeEdited = true
             draftCompose.update { it.copy(toolApprovalMode = mode) }
             return
         }
         viewModelScope.launch { setComposeUseCase(sid, toolApprovalMode = mode) }
     }
 
+    public suspend fun readCodePreview(activityId: String): Result<String> {
+        val sessionId = activeSessionId.value ?: return Result.failure(IllegalStateException("No active session"))
+        return when (val result = sessionRepository.readCodePreview(sessionId, activityId)) {
+            is AnyaResult.Success -> Result.success(result.data)
+            is AnyaResult.Failure -> Result.failure(IllegalStateException(result.error.toString()))
+        }
+    }
+
     public fun setModel(model: ChatModelInfo) {
         val sid = activeSessionId.value
         if (sid == null) {
+            draftComposeEdited = true
             draftCompose.update {
                 it.copy(
                     chatModel = model.id,
@@ -981,6 +1000,7 @@ public class ChatViewModel @Inject constructor(
     public fun setReasoningEffort(effort: String) {
         val sid = activeSessionId.value
         if (sid == null) {
+            draftComposeEdited = true
             draftCompose.update { it.copy(reasoningEffort = effort) }
         }
         val target = sid ?: NewChatSessionId

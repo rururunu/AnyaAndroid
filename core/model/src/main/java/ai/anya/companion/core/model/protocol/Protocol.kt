@@ -291,6 +291,15 @@ public sealed class ClientMessage {
         public val messageIds: List<String>,
     ) : ClientMessage()
 
+    /** Current file for an already successful read activity; desktop validates the activity. */
+    @Serializable
+    @SerialName("session.readCodePreview")
+    public data class SessionReadCodePreview(
+        public val requestId: String,
+        public val sessionId: String,
+        public val activityId: String,
+    ) : ClientMessage()
+
     @Serializable
     @SerialName("session.delete")
     public data class SessionDelete(

@@ -103,6 +103,10 @@ public class ApprovalViewModel @Inject constructor(
         sessionRepository.deleteInboxResult(offerId)
     }
 
+    public fun clearResults() {
+        sessionRepository.clearInboxResults()
+    }
+
     private fun decide(requestId: String, decision: ApprovalDecision) {
         viewModelScope.launch { respondApproval(requestId, decision) }
     }

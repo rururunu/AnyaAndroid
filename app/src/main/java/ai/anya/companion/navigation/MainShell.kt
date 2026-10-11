@@ -349,6 +349,7 @@ fun MainRoute(
                                 onOpenSession(id, null)
                             },
                             onDeleteResult = approvalViewModel::deleteResult,
+                            onClearResults = approvalViewModel::clearResults,
                         )
                         }
                     }

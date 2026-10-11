@@ -7,6 +7,7 @@ android {
 }
 
 dependencies {
+    testImplementation(libs.junit)
     implementation(libs.coil.compose)
     implementation(libs.coil.svg)
     implementation(libs.androidx.activity.compose)

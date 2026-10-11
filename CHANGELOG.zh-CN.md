@@ -2,6 +2,26 @@
 
 Companion 的版本记录。桌面 Anya 的变更见 [rururunu/Anya](https://github.com/rururunu/Anya)。
 
+## [0.1.9] - 2026-10-11
+
+收件结果、代码读取和新对话默认设置的体验改进。
+
+### 新增
+
+- 展开成功的代码读取活动可查看读取时快照；桌面支持 `session.readCodePreview` 时，还可核对当前文件，文件变化时保留快照
+- 新对话使用配对桌面提供的模型和编写默认项，并按桌面设备缓存
+- 权限范围显示为只读 / 工作区写入 / 完全访问；启用完全访问前需要再次确认
+
+### 改进与修复
+
+- 收件结果按对话分组，展示对话与结果总数；整理清空按钮、分组卡片和圆角，修复清空确认后无反应
+- 归档工作区的会话不再显示为额外工作区分组
+- 更新应用图标和启动动画，并升级 Android 构建工具
+
+### 说明
+
+查看当前代码文件需要桌面端提供 `session.readCodePreview`；不支持该接口时仍可查看读取时快照。完整设置文件和密钥不会同步到手机。
+
 ## [0.1.8] - 2026-09-20
 
 对齐桌面 Anya 0.2.23：Diff 审查、会话/工作区管理、Slash、环境上下文与图表导出。
@@ -154,6 +174,7 @@ Companion 的版本记录。桌面 Anya 的变更见 [rururunu/Anya](https://git
 
 需要已开启 Remote Gateway 的桌面 Anya。Companion 不会自己调用模型服务商。
 
+[0.1.9]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.9
 [0.1.8]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.8
 [0.1.6]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.6
 [0.1.5]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.5

@@ -13,7 +13,7 @@ reconnects.
 | ------------- | ---------------------------------------------------------------------------- |
 | **Product**   | Anya Companion — remote console for [desktop Anya](https://github.com/rururunu/Anya) |
 | **Repo**      | [rururunu/AnyaAndroid](https://github.com/rururunu/AnyaAndroid)              |
-| **Version**   | v0.1.8                                                                       |
+| **Version**   | v0.1.9                                                                       |
 | **Runtime**   | Android 8.0+ (minSdk 26, compile/target 36)                                  |
 | **UI**        | Jetpack Compose · Hilt · Navigation                                          |
 | **Transport** | OkHttp WebSocket → desktop `/remote/v1`                                      |
@@ -220,12 +220,16 @@ JSON frames, tagged `type`. Protocol version **1**.
 | `type`                   | Role                                              |
 | ------------------------ | ------------------------------------------------- |
 | `session.list`           | Session catalog                                   |
-| `session.history`        | Load one thread                                   |
+| `session.history`        | Page through history; `detail=light` omits execution details and `beforeMessageId` pages backward |
+| `session.messageDetail`  | Fetch reasoning, tools, and work timeline for expanded messages |
+| `session.readCodePreview` | Fetch the current code file by successful read activity ID; keep the captured snapshot if it changed (new desktop RPC) |
+| `session.staged.get/push/remove/guide/pop/clear` | Manage the staged message queue during a run |
+| `context.usage`         | Context usage for the session and draft |
 | `session.delete`         | Delete a session                                  |
 | `chat.send`              | Send user text (+ mode / model / workspace)       |
 | `chat.cancel`            | Cancel an in-flight run                           |
-| `session.compose.get/set`| Ask / Agent / Plan + model on that session        |
-| `models.list`            | Models configured on the desktop                  |
+| `session.compose.get/set`| Session mode, model, and permission scope; wire values remain `ask` / `auto` / `alwaysAllow` |
+| `models.list`            | Desktop models and safe compose defaults (model, reasoning, mode, approval scope) |
 | `plan.approve`           | Approve a Plan gate                               |
 | `approval.respond`       | Tool allow-once / session / deny                  |
 | `ask.respond`            | Answer `ask_user`                                 |
@@ -240,6 +244,10 @@ JSON frames, tagged `type`. Protocol version **1**.
 Streamed as `event` frames: chat deltas, approvals, compose changes, file-share
 offers, session snapshot, connection status. The phone **projects** them into
 Compose state; it does not re-run the Agent.
+
+On connection, the phone requests `models.list` and caches its catalog and compose defaults per paired desktop. A new conversation starts from those defaults; `settings.defaults` events refresh them after desktop changes. The full settings file and credentials never cross this interface.
+
+The phone labels the permission scopes **Read-only / Workspace-write / Full-access**. They retain the wire values `ask` / `auto` / `alwaysAllow`; selecting Full-access requires confirmation. A code-read card first shows the captured tool result, then requests the current file by activity ID. If the content changed, it keeps and labels the captured snapshot.
 
 Desktop implementation: `src-tauri/src/core/remote/` in
 [rururunu/Anya](https://github.com/rururunu/Anya).

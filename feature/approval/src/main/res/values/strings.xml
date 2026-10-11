@@ -26,9 +26,13 @@
     <string name="inbox_session_label">Chat: %1$s</string>
     <string name="inbox_session_untitled">Untitled chat</string>
     <string name="inbox_group_count">%1$d items</string>
+    <string name="inbox_results_summary">%1$d chats · %2$d items</string>
     <string name="inbox_quick_ask">Ask</string>
     <string name="inbox_delete_title">Remove this result</string>
     <string name="inbox_delete_body">“%1$s” will be removed from the inbox. The chat itself is kept.</string>
     <string name="inbox_delete_confirm">Remove</string>
     <string name="inbox_delete_cancel">Cancel</string>
+    <string name="inbox_clear_results">Clear results</string>
+    <string name="inbox_clear_body">All results will be removed from this phone. Chats and shared files are kept.</string>
+    <string name="inbox_clear_confirm">Clear all</string>
 </resources>

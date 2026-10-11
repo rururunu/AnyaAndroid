@@ -21,7 +21,7 @@
 
 <p align="center">
   <img alt="platform" src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=flat-square" />
-  <img alt="release" src="https://img.shields.io/badge/version-v0.1.8-4D6BFE?style=flat-square" />
+  <img alt="release" src="https://img.shields.io/badge/version-v0.1.9-4D6BFE?style=flat-square" />
   <img alt="stack" src="https://img.shields.io/badge/Compose%20%2B%20Hilt%20%2B%20OkHttp-black?style=flat-square" />
 </p>
 
@@ -40,6 +40,8 @@
 | **Pair**           | Scan the desktop “Connect phone” QR, or paste host / token. Deep link: `anya://pair`.    |
 | **Chat**           | Same sessions as the PC: send, stream replies, cancel, switch Ask / Agent / Plan / Image. |
 | **Approvals**      | Tool allow-once / session / deny, plus `ask_user` and plan cards.                        |
+| **Permission scope** | Read-only / Workspace-write / Full-access, with confirmation for Full-access. |
+| **Code reads** | Expand a read activity for its captured snapshot and compare it with the current file. |
 | **Files**          | Attach from the phone (chunked upload, up to 500MB). Tap a desktop offer to download.    |
 | **Reachability**   | Same Wi-Fi uses LAN `ws://`. Away from home, Cloudflare Tunnel `wss://`.                 |
 

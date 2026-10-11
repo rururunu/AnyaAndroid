@@ -37,6 +37,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -82,6 +83,7 @@ public fun ApprovalRoute(
         state = state,
         onOpenSession = onOpenSession,
         onDeleteResult = viewModel::deleteResult,
+        onClearResults = viewModel::clearResults,
     )
 }
 
@@ -90,9 +92,11 @@ public fun ApprovalTabContent(
     state: ApprovalUiState,
     onOpenSession: (sessionId: String) -> Unit,
     onDeleteResult: (String) -> Unit = {},
+    onClearResults: () -> Unit,
     pagerState: PagerState = rememberPagerState(pageCount = { 2 }),
 ) {
     var pendingDelete by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingClear by rememberSaveable { mutableStateOf(false) }
     val pendingDeleteItem = state.results.firstOrNull { it.record.id == pendingDelete }
     val scope = rememberCoroutineScope()
     val segmentProgress = pagerState.currentPage + pagerState.currentPageOffsetFraction
@@ -150,6 +154,7 @@ public fun ApprovalTabContent(
                     groups = state.resultGroups,
                     onOpenSession = onOpenSession,
                     onDelete = { pendingDelete = it },
+                    onClear = { pendingClear = true },
                 )
             }
         }
@@ -169,6 +174,17 @@ public fun ApprovalTabContent(
                 pendingDelete = null
             },
             onDismiss = { pendingDelete = null },
+        )
+    }
+    if (pendingClear) {
+        InboxResultDeleteSheet(
+            title = stringResource(R.string.inbox_clear_body),
+            onConfirm = {
+                onClearResults()
+                pendingClear = false
+            },
+            onDismiss = { pendingClear = false },
+            clearAll = true,
         )
     }
 }
@@ -219,6 +235,7 @@ private fun ResultInboxList(
     groups: List<InboxResultGroup>,
     onOpenSession: (sessionId: String) -> Unit,
     onDelete: (String) -> Unit,
+    onClear: () -> Unit,
 ) {
     var expandedIds by remember { mutableStateOf(setOf<String>()) }
     var seenIds by remember { mutableStateOf(setOf<String>()) }
@@ -241,10 +258,36 @@ private fun ResultInboxList(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
             horizontal = AnyaSpace.Screen,
-            vertical = AnyaSpace.Sm,
+            vertical = AnyaSpace.Xs,
         ),
-        verticalArrangement = Arrangement.spacedBy(AnyaSpace.Md),
+        verticalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
     ) {
+        item(key = "clear-results") {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = stringResource(
+                        R.string.inbox_results_summary,
+                        groups.size,
+                        groups.sumOf { it.items.size },
+                    ),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onClear) {
+                    Icon(
+                        Icons.Rounded.DeleteOutline,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.size(AnyaSpace.Xs))
+                    Text(stringResource(R.string.inbox_clear_results))
+                }
+            }
+        }
         groups.forEach { group ->
             val expanded = group.sessionId in expandedIds
             stickyHeader(key = "header-${group.sessionId}") {
@@ -311,21 +354,18 @@ private fun ResultGroupHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.background)
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(vertical = 2.dp)
+            .clip(RoundedCornerShape(AnyaSpace.Md))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
             .clickable {
                 haptics.tick()
                 onToggle()
             }
-            .padding(top = AnyaSpace.Sm, bottom = AnyaSpace.Xs),
+            .padding(horizontal = AnyaSpace.Md, vertical = AnyaSpace.Md),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Xs),
+        horizontalArrangement = Arrangement.spacedBy(AnyaSpace.Sm),
     ) {
-        Icon(
-            imageVector = if (expanded) Icons.Rounded.ExpandMore else Icons.Rounded.ChevronRight,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
@@ -340,6 +380,12 @@ private fun ResultGroupHeader(
                 maxLines = 1,
             )
         }
+        Icon(
+            imageVector = if (expanded) Icons.Rounded.ExpandMore else Icons.Rounded.ChevronRight,
+            contentDescription = null,
+            modifier = Modifier.size(20.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -466,6 +512,7 @@ private fun InboxResultDeleteSheet(
     title: String,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
+    clearAll: Boolean = false,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
@@ -484,13 +531,13 @@ private fun InboxResultDeleteSheet(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             AnyaSheetHeader(
-                title = stringResource(R.string.inbox_delete_title),
-                subtitle = stringResource(R.string.inbox_delete_body, title.ifBlank { "—" }),
+                title = stringResource(if (clearAll) R.string.inbox_clear_results else R.string.inbox_delete_title),
+                subtitle = if (clearAll) title else stringResource(R.string.inbox_delete_body, title.ifBlank { "—" }),
             )
             Spacer(modifier = Modifier.height(AnyaSpace.Xs))
             AnyaSheetCard {
                 AnyaSheetActionRow(
-                    label = stringResource(R.string.inbox_delete_confirm),
+                    label = stringResource(if (clearAll) R.string.inbox_clear_confirm else R.string.inbox_delete_confirm),
                     color = AnyaColors.Danger,
                     onClick = onConfirm,
                 )

@@ -100,6 +100,8 @@ public interface SessionRepository {
     public suspend fun guideStaged(sessionId: String, index: Int): AnyaResult<Unit>
     public suspend fun popStaged(sessionId: String): AnyaResult<String?>
     public fun models(): StateFlow<List<ChatModelInfo>>
+    /** Sanitized compose defaults from the paired desktop, cached per device. */
+    public val desktopDefaults: StateFlow<SessionCompose>
     public fun planTasks(sessionId: String): Flow<List<PlanTaskItem>>
     /** Rewind points from the last `session.history` (desktop ≥ 0.2.18). */
     public fun checkpoints(sessionId: String): Flow<List<ai.anya.companion.core.model.session.SessionCheckpoint>>
@@ -129,6 +131,7 @@ public interface SessionRepository {
         sessionId: String,
         messageIds: List<String>,
     ): AnyaResult<List<ChatMessage>>
+    public suspend fun readCodePreview(sessionId: String, activityId: String): AnyaResult<String>
     public suspend fun deleteSession(sessionId: String): AnyaResult<Unit>
     /** Archive (`true`) or restore (`false`) a session on desktop. */
     public suspend fun archiveSession(sessionId: String, archived: Boolean): AnyaResult<Unit>
@@ -204,6 +207,8 @@ public interface SessionRepository {
     public fun markInboxUrlViewed(offerId: String)
 
     public fun deleteInboxResult(offerId: String)
+
+    public fun clearInboxResults()
 }
 
 public interface ApprovalRepository {

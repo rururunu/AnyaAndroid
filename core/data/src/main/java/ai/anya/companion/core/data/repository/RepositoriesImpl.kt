@@ -871,6 +871,7 @@ public class DefaultSessionRepository @Inject constructor(
     private val gateway: RemoteGatewayClient,
     private val json: Json,
     private val connectionRepository: ConnectionRepository,
+    @ApplicationContext private val context: Context,
     @ApplicationScope private val appScope: CoroutineScope,
     private val inboxResultStore: InboxResultStore,
     private val imageGenComposeStore: ImageGenComposeStore,
@@ -935,7 +936,10 @@ public class DefaultSessionRepository @Inject constructor(
     private val checkpointsBySession = MutableStateFlow<Map<String, List<SessionCheckpoint>>>(emptyMap())
     private val cacheUsageBySession =
         MutableStateFlow<Map<String, Map<String, MessageCacheUsage>>>(emptyMap())
-    private val _models = MutableStateFlow<List<ChatModelInfo>>(emptyList())
+    private val desktopCache = context.getSharedPreferences("anya_desktop_compose_cache", Context.MODE_PRIVATE)
+    private val _desktopDefaults = MutableStateFlow(readDesktopDefaults(currentDeviceId()))
+    override val desktopDefaults: StateFlow<SessionCompose> = _desktopDefaults.asStateFlow()
+    private val _models = MutableStateFlow(readCachedModels(currentDeviceId()))
 
     init {
         appScope.launch {
@@ -950,6 +954,8 @@ public class DefaultSessionRepository @Inject constructor(
                         // Cached history belongs to the previous desktop; drop it with the projection.
                         sessionHistoryStore.clear()
                     }
+                    _desktopDefaults.value = readDesktopDefaults(id.orEmpty())
+                    _models.value = readCachedModels(id.orEmpty())
                     seen = true
                     lastId = id
                 }
@@ -1334,6 +1340,20 @@ public class DefaultSessionRepository @Inject constructor(
                     }
                     AnyaResult.Success(detailed)
                 }
+            }
+        }
+    }
+
+    override suspend fun readCodePreview(sessionId: String, activityId: String): AnyaResult<String> {
+        val requestId = UUID.randomUUID().toString()
+        return when (val result = gateway.request(
+            ClientMessage.SessionReadCodePreview(requestId, sessionId, activityId), requestId,
+        )) {
+            is AnyaResult.Failure -> result
+            is AnyaResult.Success -> {
+                val rpc = result.data
+                if (!rpc.ok) AnyaResult.Failure(AnyaError.Network(rpc.error ?: "session.readCodePreview failed"))
+                else AnyaResult.Success((rpc.data as? JsonObject)?.string("content").orEmpty())
             }
         }
     }
@@ -2056,13 +2076,8 @@ public class DefaultSessionRepository @Inject constructor(
                     AnyaResult.Failure(AnyaError.Network(rpc.error ?: "models.list failed"))
                 } else {
                     val payload = rpc.data as? JsonObject
-                    val models = payload?.get("models")?.let { element ->
-                        runCatching {
-                            json.decodeFromJsonElement<List<ChatModelInfo>>(element)
-                        }.getOrElse { emptyList() }
-                    }.orEmpty()
-                    _models.value = models
-                    AnyaResult.Success(models)
+                    if (payload != null) applyModelsPayload(payload)
+                    AnyaResult.Success(_models.value)
                 }
             }
         }
@@ -2189,6 +2204,10 @@ public class DefaultSessionRepository @Inject constructor(
 
     override fun deleteInboxResult(offerId: String) {
         inboxResultStore.delete(offerId)
+    }
+
+    override fun clearInboxResults() {
+        inboxResultStore.clear()
     }
 
     private fun mergeRemoteAndLocal(
@@ -2388,6 +2407,11 @@ public class DefaultSessionRepository @Inject constructor(
                 }
             }
             "session.archived.snapshot" -> applyArchivedSessions(data)
+            "workspace.archived.snapshot" -> applyArchivedWorkspaces(data)
+            "settings.defaults" -> {
+                applyDesktopDefaults(data)
+                appScope.launch { refreshModels() }
+            }
             "session.rewound" -> {
                 val sessionId = data.string("sessionId") ?: return
                 // Another client rolled the session back; refetch the truncated history.
@@ -2593,10 +2617,7 @@ public class DefaultSessionRepository @Inject constructor(
                 return
             }
             if (payload.containsKey("models")) {
-                val models = runCatching {
-                    json.decodeFromJsonElement<List<ChatModelInfo>>(payload["models"]!!)
-                }.getOrElse { emptyList() }
-                _models.value = models
+                applyModelsPayload(payload)
                 return
             }
         }
@@ -3174,6 +3195,61 @@ public class DefaultSessionRepository @Inject constructor(
 
     private fun currentDeviceId(): String =
         connectionRepository.credential.value?.deviceId.orEmpty()
+
+    private fun readDesktopDefaults(deviceId: String): SessionCompose =
+        desktopCache.getString("$deviceId.defaults", null)?.let { raw ->
+            runCatching { json.decodeFromString<SessionCompose>(raw) }.getOrNull()
+        } ?: SessionCompose()
+
+    private fun readCachedModels(deviceId: String): List<ChatModelInfo> =
+        desktopCache.getString("$deviceId.models", null)?.let { raw ->
+            runCatching { json.decodeFromString<List<ChatModelInfo>>(raw) }.getOrNull()
+        } ?: emptyList()
+
+    private fun applyDesktopDefaults(element: kotlinx.serialization.json.JsonElement) {
+        val defaults = runCatching { json.decodeFromJsonElement<SessionCompose>(element) }
+            .getOrElse { error ->
+                Timber.w(error, "Failed to decode desktop compose defaults")
+                return
+            }
+        saveDesktopDefaults(defaults)
+    }
+
+    private fun saveDesktopDefaults(defaults: SessionCompose) {
+        _desktopDefaults.value = defaults
+        currentDeviceId().takeIf { it.isNotBlank() }?.let { id ->
+            desktopCache.edit().putString("$id.defaults", json.encodeToString(defaults)).apply()
+        }
+    }
+
+    private fun applyModelsPayload(payload: JsonObject) {
+        payload["defaults"]?.takeUnless { it is kotlinx.serialization.json.JsonNull }
+            ?.let(::applyDesktopDefaults)
+        val models = payload["models"]?.let { element ->
+            runCatching { json.decodeFromJsonElement<List<ChatModelInfo>>(element) }
+                .getOrElse { error ->
+                    Timber.w(error, "Failed to decode desktop models")
+                    return
+                }
+        } ?: return
+        _models.value = models
+        // Desktop's composer chooses the first configured model when no default was saved.
+        // Mirror that effective selection for a brand-new phone conversation.
+        if (_desktopDefaults.value.chatModel.isBlank()) {
+            models.firstOrNull()?.let { first ->
+                saveDesktopDefaults(
+                    _desktopDefaults.value.copy(
+                        chatModel = first.id,
+                        chatModelProvider = first.provider,
+                        chatModelLabel = first.label,
+                    ),
+                )
+            }
+        }
+        currentDeviceId().takeIf { it.isNotBlank() }?.let { id ->
+            desktopCache.edit().putString("$id.models", json.encodeToString(models)).apply()
+        }
+    }
 
     private fun resetLocalProjection() {
         _sessions.value = emptyList()

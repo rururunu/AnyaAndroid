@@ -445,6 +445,7 @@ internal data class TurnActions(
     val rewinding: Boolean = false,
     val onRewind: (userMessageId: String) -> Unit = {},
     val onInspectSubagent: (parent: ToolActivity, pool: List<ToolActivity>) -> Unit = { _, _ -> },
+    val onReadCodePreview: suspend (String) -> Result<String> = { Result.failure(IllegalStateException("unavailable")) },
 )
 
 internal val LocalTurnActions = staticCompositionLocalOf { TurnActions() }
@@ -845,6 +846,7 @@ internal fun ToolActivityRow(
             }
         }
         if (expanded) {
+            ReadCodeCard(activity, LocalTurnActions.current.onReadCodePreview)
             val detail = activity.detail?.trim()
             val body = if (!detail.isNullOrEmpty()) detail else activity.result?.trim().orEmpty()
             if (children.isNotEmpty()) {
@@ -857,7 +859,7 @@ internal fun ToolActivityRow(
                     ToolActivityList(activities = children, pool = pool, onOpenDiff = onOpenDiff)
                 }
             }
-            if (body.isNotEmpty() && !isSubagent) {
+            if (body.isNotEmpty() && !isSubagent && readCodeSnapshot(activity) == null) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()

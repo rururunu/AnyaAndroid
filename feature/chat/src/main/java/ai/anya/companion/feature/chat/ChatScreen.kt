@@ -511,6 +511,7 @@ public fun ChatRoute(
         onLoadEnvironmentContext = viewModel::loadEnvironmentContext,
         onLoadOlderHistory = viewModel::loadOlderMessages,
         onNeedMessageDetail = viewModel::ensureMessageDetail,
+        onReadCodePreview = viewModel::readCodePreview,
     )
 }
 
@@ -565,6 +566,7 @@ public fun ChatScreen(
     onLoadOlderHistory: () -> Unit = {},
     /** Fetches a turn's execution process after the user expands it (light history omits it). */
     onNeedMessageDetail: (String) -> Unit = {},
+    onReadCodePreview: suspend (String) -> Result<String> = { Result.failure(IllegalStateException("unavailable")) },
 ) {
     MessageDetailRequest.handler = onNeedMessageDetail
     val listState = rememberLazyListState()
@@ -677,6 +679,7 @@ public fun ChatScreen(
     }
 
     var sheet by remember { mutableStateOf(ChatSheet.None) }
+    var confirmFullAccess by remember { mutableStateOf(false) }
     var diffRequest by remember { mutableStateOf<DiffViewRequest?>(null) }
     var showDiffReview by remember { mutableStateOf(false) }
     var showEnvironmentContext by remember { mutableStateOf(false) }
@@ -790,6 +793,7 @@ public fun ChatScreen(
                 state.cacheUsages,
                 state.rewinding,
                 onRewindToUserMessage,
+                onReadCodePreview,
             ) {
                 TurnActions(
                     checkpointsByUserMessage = state.checkpointsByUserMessage,
@@ -797,6 +801,7 @@ public fun ChatScreen(
                     rewinding = state.rewinding,
                     onRewind = { rewindTarget = it },
                     onInspectSubagent = { parent, pool -> subagentInspect = parent to pool },
+                    onReadCodePreview = onReadCodePreview,
                 )
             }
             val displayItems = remember(messagesSnapshot) { buildChatDisplayItems(messagesSnapshot) }
@@ -1087,8 +1092,12 @@ public fun ChatScreen(
         ChatSheet.ApprovalMode -> ApprovalModeSheet(
             current = state.compose.toolApprovalMode,
             onSelect = {
-                onApprovalModeSelect(it)
                 sheet = ChatSheet.None
+                if (it == ToolApprovalMode.AlwaysAllow && state.compose.toolApprovalMode != it) {
+                    confirmFullAccess = true
+                } else {
+                    onApprovalModeSelect(it)
+                }
             },
             onDismiss = { sheet = ChatSheet.None },
         )
@@ -1195,6 +1204,18 @@ public fun ChatScreen(
         )
         ChatSheet.None -> Unit
     }
+    if (confirmFullAccess) AlertDialog(
+        onDismissRequest = { confirmFullAccess = false },
+        title = { Text("启用完全访问？") },
+        text = { Text("Agent 可在工作区外读写和运行工具，可能修改或删除可访问的文件。危险命令仍受安全规则限制。") },
+        confirmButton = {
+            TextButton(onClick = {
+                confirmFullAccess = false
+                onApprovalModeSelect(ToolApprovalMode.AlwaysAllow)
+            }) { Text("启用完全访问") }
+        },
+        dismissButton = { TextButton(onClick = { confirmFullAccess = false }) { Text("取消") } },
+    )
 
     diffRequest?.let { request ->
         DiffViewerSheet(
@@ -1521,9 +1542,15 @@ private fun EmptyConversationHero(
 }
 
 private fun ToolApprovalMode.chineseLabel(): String = when (this) {
-    ToolApprovalMode.Ask -> "请求"
-    ToolApprovalMode.Auto -> "自动"
-    ToolApprovalMode.AlwaysAllow -> "完全批准"
+    ToolApprovalMode.Ask -> "只读"
+    ToolApprovalMode.Auto -> "工作区写入"
+    ToolApprovalMode.AlwaysAllow -> "完全访问"
+}
+
+private fun ToolApprovalMode.chineseDescription(): String = when (this) {
+    ToolApprovalMode.Ask -> "只执行读取操作，不通过审批提升写入权限"
+    ToolApprovalMode.Auto -> "可写工作区；访问工作区外路径需确认"
+    ToolApprovalMode.AlwaysAllow -> "可访问工作区外文件与工具；危险命令仍受安全规则限制"
 }
 
 private fun ToolApprovalMode.icon(): ImageVector = when (this) {
@@ -1684,8 +1711,8 @@ private fun ApprovalModeSheet(
                 .padding(bottom = AnyaSpace.Md),
         ) {
             AnyaSheetHeader(
-                title = "工具审批模式",
-                subtitle = "控制 Agent 使用工具时的确认策略",
+                title = "权限范围",
+                subtitle = "决定 Agent 可执行的操作范围",
                 modifier = Modifier.padding(bottom = AnyaSpace.Md),
             )
             val modes = listOf(ToolApprovalMode.Ask, ToolApprovalMode.Auto, ToolApprovalMode.AlwaysAllow)
@@ -1693,6 +1720,7 @@ private fun ApprovalModeSheet(
                 modes.forEachIndexed { index, mode ->
                     SheetOptionRow(
                         label = mode.chineseLabel(),
+                        subtitle = mode.chineseDescription(),
                         selected = mode == current,
                         leading = { ModeGlyph(icon = mode.icon()) },
                         showDivider = index < modes.lastIndex,
@@ -3435,6 +3463,7 @@ private fun ModelPill(
     Row(
         modifier = Modifier
             .height(height)
+            .widthIn(max = 160.dp)
             .defaultMinSize(minHeight = height)
             .clip(shape)
             .then(fill)
@@ -3462,6 +3491,14 @@ private fun ModelPill(
                 tint = MaterialTheme.colorScheme.onBackground,
             )
         }
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = label.takeUnless { it == "模型" } ?: "选择模型",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onBackground,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

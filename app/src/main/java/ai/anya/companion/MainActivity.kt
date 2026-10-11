@@ -13,11 +13,13 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalView
@@ -80,11 +82,17 @@ class MainActivity : ComponentActivity() {
             }
             AnyaTheme(darkTheme = darkTheme) {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    AnyaNavHost(
-                        initialPairUri = pairUri,
-                        openAbout = openAbout,
-                        onOpenAboutConsumed = { openAbout = false },
-                    )
+                    var showSplash by remember { mutableStateOf(savedInstanceState == null) }
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        AnyaNavHost(
+                            initialPairUri = pairUri,
+                            openAbout = openAbout,
+                            onOpenAboutConsumed = { openAbout = false },
+                        )
+                        if (showSplash) {
+                            MascotSplash(darkTheme = darkTheme, onFinished = { showSplash = false })
+                        }
+                    }
                 }
             }
         }

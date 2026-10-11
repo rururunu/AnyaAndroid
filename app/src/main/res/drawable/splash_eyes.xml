@@ -1,0 +1,10 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="288dp"
+    android:height="288dp"
+    android:viewportWidth="288"
+    android:viewportHeight="288">
+    <path android:fillColor="@color/splash_eyes_color"
+        android:pathData="M121,124 C125.4,124 129,127.6 129,132 L129,156 C129,160.4 125.4,164 121,164 C116.6,164 113,160.4 113,156 L113,132 C113,127.6 116.6,124 121,124 Z" />
+    <path android:fillColor="@color/splash_eyes_color"
+        android:pathData="M167,124 C171.4,124 175,127.6 175,132 L175,156 C175,160.4 171.4,164 167,164 C162.6,164 159,160.4 159,156 L159,132 C159,127.6 162.6,124 167,124 Z" />
+</vector>

@@ -1,8 +1,8 @@
 {
-  "version": "0.1.8",
-  "versionCode": 9,
-  "notes": "v0.1.8：对齐桌面 Anya 0.2.23——新增「审查更改」（Diff 查看器）、会话重命名与工作区置顶/改名、`/` Slash 命令、`/context` 环境上下文卡片与图表导出 PNG；液态玻璃统一为一套。相关 RPC 需桌面 Anya ≥ 0.2.23。",
-  "apkUrl": "https://github.com/rururunu/AnyaAndroid/releases/download/v0.1.8/Anya-v0.1.8.apk",
-  "sizeBytes": 3329822,
-  "sha256": "0e96d4ce1639d91db9ff2b5e246b9839b8aab213c6ce19a4c0c83671b9de3478"
+  "version": "0.1.9",
+  "versionCode": 10,
+  "notes": "v0.1.9：整理收件结果与清空操作；新增代码读取快照、桌面默认项缓存及完全访问确认；更新图标和启动动画。查看当前代码文件需要桌面端支持 session.readCodePreview。",
+  "apkUrl": "https://github.com/rururunu/AnyaAndroid/releases/download/v0.1.9/Anya-v0.1.9.apk",
+  "sizeBytes": 3261775,
+  "sha256": "711cc52d8689151c0b07c20310af50835e45320e2eb16580f5d7ebe1a876381a"
 }

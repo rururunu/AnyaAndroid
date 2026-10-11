@@ -2,6 +2,26 @@
 
 All notable Companion releases. Desktop Anya has its own changelog in [rururunu/Anya](https://github.com/rururunu/Anya).
 
+## [0.1.9] - 2026-10-11
+
+Improvements to inbox results, code reads, and defaults for new chats.
+
+### Added
+
+- Expand a successful code-read activity to see its captured snapshot; when the desktop supports `session.readCodePreview`, compare it with the current file while retaining the snapshot if the file changed
+- Start new chats with compose and model defaults from the paired desktop, cached per device
+- Show permission scopes as Read-only / Workspace-write / Full-access, with confirmation before enabling Full-access
+
+### Improved and fixed
+
+- Group inbox results by chat, show chat and result totals, refine the clear action and group cards, and fix clear confirmation doing nothing
+- Avoid showing sessions from archived workspaces as extra workspace groups
+- Refresh the app icon and launch animation, and update Android build tools
+
+### Notes
+
+Current-file comparison requires the desktop `session.readCodePreview` RPC. The captured snapshot remains available without it. Full settings and credentials are not synchronized to the phone.
+
 ## [0.1.8] - 2026-09-20
 
 Parity with desktop Anya 0.2.23: Diff review, session/workspace management, Slash commands, environment context, and chart export.
@@ -154,6 +174,7 @@ First public Android remote.
 
 Requires desktop Anya with Remote Gateway. Companion does not call model providers itself.
 
+[0.1.9]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.9
 [0.1.8]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.8
 [0.1.6]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.6
 [0.1.5]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.5

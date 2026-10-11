@@ -128,6 +128,10 @@ public class InboxResultStore @Inject constructor(
         mutate { list -> list.filterNot { it.id == offerId } }
     }
 
+    public fun clear() {
+        mutate { emptyList() }
+    }
+
     public fun removeSessions(sessionIds: Set<String>) {
         if (sessionIds.isEmpty()) return
         mutate { list -> list.filterNot { it.sessionId in sessionIds } }

@@ -101,6 +101,7 @@ public class SessionsViewModel @Inject constructor(
         refreshing,
         actionError,
     ) { cat, expandedIds, isRefreshing, error ->
+        val known = cat.workspaces.associateBy { it.id }
         val pendingBySession = cat.pending.groupBy { it.sessionId }
         val enriched = cat.sessions.map { session ->
             val items = pendingBySession[session.id].orEmpty()
@@ -109,7 +110,10 @@ public class SessionsViewModel @Inject constructor(
                 items.any { it.kind == ApprovalKind.AskUser } -> AgentRunState.WaitingAskUser
                 else -> session.runState
             }
-            session.copy(runState = runState)
+            session.copy(
+                runState = runState,
+                workspaceId = session.workspaceId?.takeIf { it in known },
+            )
         }
         val quickAsk = enriched
             .filter { it.workspaceId.isNullOrBlank() }
@@ -120,26 +124,12 @@ public class SessionsViewModel @Inject constructor(
         val byWorkspace = enriched
             .filter { !it.workspaceId.isNullOrBlank() }
             .groupBy { it.workspaceId!! }
-        val known = cat.workspaces.associateBy { it.id }
         val groups = buildList {
             cat.workspaces.forEach { workspace ->
                 add(
                     WorkspaceGroup(
                         workspace = workspace,
                         sessions = byWorkspace[workspace.id]
-                            .orEmpty()
-                            .sortedByDescending { it.updatedAtEpochMs },
-                    ),
-                )
-            }
-            byWorkspace.keys.filter { it !in known }.forEach { id ->
-                add(
-                    WorkspaceGroup(
-                        workspace = WorkspaceSummary(
-                            id = id,
-                            name = byWorkspace[id]?.firstOrNull()?.workspaceName ?: id,
-                        ),
-                        sessions = byWorkspace[id]
                             .orEmpty()
                             .sortedByDescending { it.updatedAtEpochMs },
                     ),

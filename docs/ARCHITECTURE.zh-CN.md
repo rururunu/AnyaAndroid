@@ -11,7 +11,7 @@
 | ---------- | ---------------------------------------------------------------------------- |
 | **产品**   | Anya Companion — [桌面 Anya](https://github.com/rururunu/Anya) 的远程控制台 |
 | **仓库**   | [rururunu/AnyaAndroid](https://github.com/rururunu/AnyaAndroid)              |
-| **版本**   | v0.1.8                                                                       |
+| **版本**   | v0.1.9                                                                       |
 | **运行时** | Android 8.0+（minSdk 26，compile/target 36）                                 |
 | **界面**   | Jetpack Compose · Hilt · Navigation                                          |
 | **传输**   | OkHttp WebSocket → 桌面 `/remote/v1`                                         |
@@ -201,12 +201,16 @@ JSON 帧，用 `type` 区分。协议版本 **1**。
 | `type`                   | 作用                                              |
 | ------------------------ | ------------------------------------------------- |
 | `session.list`           | 会话目录                                          |
-| `session.history`        | 加载一条线程                                      |
+| `session.history`        | 分页加载线程；`detail=light` 只取回复摘要，`beforeMessageId` 向前翻页 |
+| `session.messageDetail`  | 展开时按消息 ID 拉取推理、工具和工作时间线 |
+| `session.readCodePreview` | 按成功读取活动 ID 获取当前代码文件；失败或变更时保留读取快照（桌面新接口） |
+| `session.staged.get/push/remove/guide/pop/clear` | 忙碌时管理暂存消息队列 |
+| `context.usage`         | 当前会话和草稿的上下文用量 |
 | `session.delete`         | 删除会话                                          |
 | `chat.send`              | 发送用户文本（含模式 / 模型 / 工作区）            |
 | `chat.cancel`            | 取消进行中的 run                                  |
-| `session.compose.get/set`| 该会话的 Ask / Agent / Plan 与模型                |
-| `models.list`            | 桌面已配置的模型                                  |
+| `session.compose.get/set`| 该会话的模式、模型与权限范围；权限值仍用 `ask` / `auto` / `alwaysAllow` |
+| `models.list`            | 桌面模型及默认模型、思考强度、模式、权限范围的安全摘要 |
 | `plan.approve`           | 批准 Plan 门禁                                    |
 | `approval.respond`       | 工具允许一次 / 本会话 / 拒绝                      |
 | `ask.respond`            | 回答 `ask_user`                                   |
@@ -219,6 +223,10 @@ JSON 帧，用 `type` 区分。协议版本 **1**。
 ### 事件（桌面 → 手机）
 
 以 `event` 帧推送：对话增量、审批、compose 变更、文件分享卡片、会话快照、连接状态。手机只做 **投影**，不重跑 Agent。
+
+连接成功后，手机请求 `models.list`，按配对桌面缓存模型目录和新对话默认项。桌面设置变化时通过 `settings.defaults` 事件更新默认项。完整设置文件和密钥不会通过此接口发送。
+
+权限范围在手机上显示为 **只读 / 工作区写入 / 完全访问**。这三档分别沿用 `ask` / `auto` / `alwaysAllow` 线路值；选择完全访问需再次确认。代码读取卡先展示工具返回时的快照，再以活动 ID 请求当前文件，内容变化时继续标注并显示快照。
 
 桌面实现：[rururunu/Anya](https://github.com/rururunu/Anya) 的 `src-tauri/src/core/remote/`。
 

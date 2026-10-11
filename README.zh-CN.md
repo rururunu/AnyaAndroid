@@ -21,7 +21,7 @@
 
 <p align="center">
   <img alt="platform" src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=flat-square" />
-  <img alt="release" src="https://img.shields.io/badge/version-v0.1.8-4D6BFE?style=flat-square" />
+  <img alt="release" src="https://img.shields.io/badge/version-v0.1.9-4D6BFE?style=flat-square" />
   <img alt="stack" src="https://img.shields.io/badge/Compose%20%2B%20Hilt%20%2B%20OkHttp-black?style=flat-square" />
 </p>
 
@@ -40,6 +40,8 @@
 | **配对**     | 扫描桌面「连接手机」二维码，或手动填写主机 / 令牌。深度链接：`anya://pair`。             |
 | **对话**     | 与电脑同一批会话：发送、流式回复、取消，切换 Ask / Agent / Plan / Image。                |
 | **审批**     | 工具允许一次 / 本会话 / 拒绝，以及 `ask_user` 与计划批准卡。                             |
+| **权限范围** | 只读 / 工作区写入 / 完全访问；启用完全访问前再次确认。 |
+| **代码读取** | 展开工具活动查看读取快照；支持核对当前文件，变化时保留快照。 |
 | **文件**     | 手机附件分片上传（上限 500MB）；点桌面分享卡片分片下载。                                 |
 | **可达性**   | 同一 Wi-Fi 走局域网 `ws://`；外出走 Cloudflare 隧道 `wss://`。                           |
 
