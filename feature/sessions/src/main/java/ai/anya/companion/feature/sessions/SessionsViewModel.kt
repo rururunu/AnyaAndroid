@@ -101,19 +101,17 @@ public class SessionsViewModel @Inject constructor(
         refreshing,
         actionError,
     ) { cat, expandedIds, isRefreshing, error ->
-        val known = cat.workspaces.associateBy { it.id }
         val pendingBySession = cat.pending.groupBy { it.sessionId }
-        val enriched = cat.sessions.map { session ->
+        val enriched = cat.sessions.filterNot {
+            it.id.startsWith("plugin:") || "-sub-" in it.id
+        }.map { session ->
             val items = pendingBySession[session.id].orEmpty()
             val runState = when {
                 items.any { it.kind == ApprovalKind.Tool } -> AgentRunState.WaitingApproval
                 items.any { it.kind == ApprovalKind.AskUser } -> AgentRunState.WaitingAskUser
                 else -> session.runState
             }
-            session.copy(
-                runState = runState,
-                workspaceId = session.workspaceId?.takeIf { it in known },
-            )
+            session.copy(runState = runState)
         }
         val quickAsk = enriched
             .filter { it.workspaceId.isNullOrBlank() }

@@ -154,7 +154,6 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ai.anya.companion.core.designsystem.component.MascotFace
 import ai.anya.companion.core.designsystem.component.MascotState
-import ai.anya.companion.core.designsystem.component.MascotTool
 import ai.anya.companion.core.designsystem.component.AnyaInlineLoadingMark
 import ai.anya.companion.core.designsystem.component.AnyaGlassIconChip
 import ai.anya.companion.core.designsystem.component.anyaGlassSurface
@@ -1495,15 +1494,6 @@ private fun ChatMode.icon(): ImageVector = when (this) {
     ChatMode.Image -> Icons.Rounded.Brush
 }
 
-/** What the hero mascot holds, per chat mode: ask -> phone, agent -> wrench, plan -> clipboard, image -> brush. */
-private fun ChatMode.mascotTool(): MascotTool = when (this) {
-    ChatMode.Ask -> MascotTool.Phone
-    ChatMode.Agent -> MascotTool.Wrench
-    ChatMode.Plan -> MascotTool.Clipboard
-    ChatMode.Image -> MascotTool.Brush
-}
-
-/** Empty conversation: the mascot greets, carrying the current mode's prop. Tap it to make it beam. */
 @Composable
 private fun EmptyConversationHero(
     chatMode: ChatMode,
@@ -1517,7 +1507,7 @@ private fun EmptyConversationHero(
         MascotFace(
             modifier = Modifier.size(132.dp),
             state = MascotState.Idle,
-            tool = chatMode.mascotTool(),
+            eyesOnly = true,
             interactive = true,
             contentDescription = "Anya",
         )

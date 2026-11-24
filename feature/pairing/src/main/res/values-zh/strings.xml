@@ -6,6 +6,10 @@
     <string name="pairing_subtitle">在桌面工作台打开「连接手机」，扫描二维码即可连接。连接前可为这台主机命名。</string>
     <string name="pairing_top_subtitle">扫码或手动填写配对信息</string>
     <string name="pairing_scan">扫描二维码</string>
+    <string name="pairing_link">链接配对</string>
+    <string name="pairing_link_input">粘贴桌面分享的配对链接</string>
+    <string name="pairing_link_parse">解析链接</string>
+    <string name="pairing_link_invalid">无法识别配对链接，请重新复制。</string>
     <string name="pairing_scan_hint">推荐 · 识别后请确认主机名称</string>
     <string name="pairing_display_name">主机名称</string>
     <string name="pairing_display_name_hint">显示在左上角 · %1$d / %2$d</string>

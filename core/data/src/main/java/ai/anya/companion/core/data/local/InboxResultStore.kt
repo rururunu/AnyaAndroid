@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import ai.anya.companion.core.common.di.ApplicationScope
@@ -19,7 +20,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -45,37 +46,36 @@ public class InboxResultStore @Inject constructor(
 
     init {
         appScope.launch {
-            val loaded = dataStore.data.map { prefs ->
-                prefs[KEY]?.let { raw ->
-                    runCatching {
-                        json.decodeFromString(
-                            ListSerializer(InboxResultRecord.serializer()),
-                            raw,
-                        )
-                    }.onFailure { error ->
-                        Timber.w(error, "Failed to decode inbox results")
-                    }.getOrNull()
-                }.orEmpty()
-            }.first()
             mutex.withLock {
-                val existing = _records.value
-                if (existing.isEmpty()) {
-                    _records.value = loaded.sortedByDescending { it.createdAtEpochMs }
-                } else {
-                    val ids = existing.map { it.id }.toSet()
-                    val extras = loaded.filter { it.id !in ids }
-                    if (extras.isNotEmpty()) {
-                        _records.value = (existing + extras).sortedByDescending { it.createdAtEpochMs }
-                    }
-                }
+                _records.value = decode(dataStore.data.first()).sortedByDescending { it.createdAtEpochMs }
             }
+        }
+    }
+
+    public suspend fun deliveryCursor(deviceId: String): Long =
+        dataStore.data.first()[longPreferencesKey("delivery_cursor_$deviceId")] ?: 0L
+
+    public suspend fun saveDeliveryPage(deviceId: String, next: Long, records: List<InboxResultRecord>) {
+        val key = longPreferencesKey("delivery_cursor_$deviceId")
+        mutex.withLock {
+            val saved = dataStore.edit { prefs ->
+                if (next <= (prefs[key] ?: 0L)) return@edit
+                val merged = decode(prefs).associateBy { it.deviceId to it.id }.toMutableMap()
+                for (record in records) {
+                    val id = record.deviceId to record.id
+                    merged[id] = merged[id]?.let { merge(it, record) } ?: record
+                }
+                prefs[KEY] = json.encodeToString(SERIALIZER, merged.values.toList())
+                prefs[key] = next
+            }
+            _records.value = decode(saved).sortedByDescending { it.createdAtEpochMs }
         }
     }
 
     public fun upsert(record: InboxResultRecord) {
         if (record.id.isBlank() || record.sessionId.isBlank()) return
         mutate { list ->
-            val idx = list.indexOfFirst { it.id == record.id }
+            val idx = list.indexOfFirst { it.id == record.id && it.deviceId == record.deviceId }
             if (idx < 0) {
                 list + record
             } else {
@@ -153,30 +153,35 @@ public class InboxResultStore @Inject constructor(
             size = if (incoming.size > 0L) incoming.size else old.size,
             publicUrl = incoming.publicUrl.ifBlank { old.publicUrl },
             originUrl = incoming.originUrl.ifBlank { old.originUrl },
+            workspaceId = incoming.workspaceId ?: old.workspaceId,
+            syncedDelivery = old.syncedDelivery || incoming.syncedDelivery,
         )
     }
 
     private fun mutate(transform: (List<InboxResultRecord>) -> List<InboxResultRecord>) {
         appScope.launch {
-            mutex.withLock {
-                val next = transform(_records.value).sortedByDescending { it.createdAtEpochMs }
-                if (next == _records.value) return@withLock
-                _records.value = next
-                runCatching {
-                    dataStore.edit { prefs ->
-                        prefs[KEY] = json.encodeToString(
-                            ListSerializer(InboxResultRecord.serializer()),
-                            next,
-                        )
+            try {
+                mutex.withLock {
+                    val saved = dataStore.edit { prefs ->
+                        val current = decode(prefs)
+                        val next = transform(current)
+                        if (next != current) prefs[KEY] = json.encodeToString(SERIALIZER, next)
                     }
-                }.onFailure { error ->
-                    Timber.w(error, "Failed to persist inbox results")
+                    _records.value = decode(saved).sortedByDescending { it.createdAtEpochMs }
                 }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                Timber.w(error, "Failed to persist inbox results")
             }
         }
     }
 
+    private fun decode(prefs: Preferences): List<InboxResultRecord> =
+        prefs[KEY]?.let { json.decodeFromString(SERIALIZER, it) }.orEmpty()
+
     private companion object {
         val KEY = stringPreferencesKey("inbox_results_v1")
+        val SERIALIZER = ListSerializer(InboxResultRecord.serializer())
     }
 }

@@ -28,6 +28,7 @@ import androidx.core.view.WindowCompat
 import ai.anya.companion.core.designsystem.theme.AnyaTheme
 import ai.anya.companion.core.domain.repository.AppUpdateMonitor
 import ai.anya.companion.core.domain.repository.ConnectionRepository
+import ai.anya.companion.core.domain.repository.SessionRepository
 import ai.anya.companion.core.domain.repository.ThemeRepository
 import ai.anya.companion.navigation.AnyaNavHost
 import ai.anya.companion.notify.CompanionNotifier
@@ -41,6 +42,9 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var connectionRepository: ConnectionRepository
+
+    @Inject
+    lateinit var sessionRepository: SessionRepository
 
     @Inject
     lateinit var updateMonitor: AppUpdateMonitor
@@ -120,6 +124,7 @@ class MainActivity : ComponentActivity() {
         // Background sockets are often silently killed by the OS / carrier NAT;
         // verify and reconnect as soon as the user comes back.
         connectionRepository.nudge()
+        sessionRepository.requestDeliverySync()
         updateMonitor.onForeground()
     }
 

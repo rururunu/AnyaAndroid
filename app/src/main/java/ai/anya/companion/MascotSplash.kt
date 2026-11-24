@@ -21,7 +21,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import kotlinx.coroutines.delay
 
-/** The animated part of launch. The platform starting window uses the matching static eyes. */
+/** The animated part of launch, with the same face as the platform starting window. */
 @Composable
 internal fun MascotSplash(darkTheme: Boolean, onFinished: () -> Unit) {
     val blink = remember { Animatable(1f) }
@@ -54,7 +54,7 @@ internal fun MascotSplash(darkTheme: Boolean, onFinished: () -> Unit) {
 private fun DrawScope.drawEyes(color: Color, blink: Float, look: Float) {
     val density = this.density
     val eyeWidth = 16f * density
-    val eyeHeight = 40f * density * blink
+    val eyeHeight = 42f * density * blink
     val spacing = 46f * density
     val shift = look * 8f * density
     val center = Offset(size.width / 2f, size.height / 2f)

@@ -261,6 +261,13 @@ public sealed class ClientMessage {
         public val requestId: String,
     ) : ClientMessage()
 
+    @Serializable
+    @SerialName("delivery.list")
+    public data class DeliveryList(
+        public val requestId: String,
+        public val after: Long,
+    ) : ClientMessage()
+
     /**
      * Full session history, or a single page of it when [limit] / [beforeMessageId] are set.
      *

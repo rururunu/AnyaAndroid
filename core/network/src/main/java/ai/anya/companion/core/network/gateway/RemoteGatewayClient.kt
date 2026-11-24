@@ -67,6 +67,10 @@ public class RemoteGatewayClient @Inject constructor(
     private val connectedRef = AtomicReference<DeviceCredential?>(null)
     /** Bumped on every connect/disconnect so superseded OkHttp callbacks cannot mutate state. */
     private val connectGeneration = AtomicInteger(0)
+    private val lastInboundAt = java.util.concurrent.atomic.AtomicLong(0L)
+
+    public fun inboundIdleMillis(): Long =
+        android.os.SystemClock.elapsedRealtime() - lastInboundAt.get()
     private val rpcWaiters =
         ConcurrentHashMap<String, CompletableDeferred<ServerMessage.RpcResult>>()
     private val connectWatchdog = AtomicReference<ScheduledFuture<*>?>(null)
@@ -171,8 +175,11 @@ public class RemoteGatewayClient @Inject constructor(
             }
             is AnyaResult.Success -> Unit
         }
-        val result = withTimeoutOrNull(timeoutMs) { deferred.await() }
-        rpcWaiters.remove(requestId, deferred)
+        val result = try {
+            withTimeoutOrNull(timeoutMs) { deferred.await() }
+        } finally {
+            rpcWaiters.remove(requestId, deferred)
+        }
         return if (result != null) {
             AnyaResult.Success(result)
         } else {
@@ -289,10 +296,15 @@ public class RemoteGatewayClient @Inject constructor(
         override fun onOpen(webSocket: WebSocket, response: Response) {
             if (!isCurrent()) return
             cancelConnectWatchdog()
+            lastInboundAt.set(android.os.SystemClock.elapsedRealtime())
             // Send hello before returning so the first WS frame is on the wire
             // before OkHttp starts loopReader. Cloudflare / DPI often RST a
             // 101 that sits idle for even a few hundred milliseconds.
             val helloQueued = webSocket.send(helloPayload)
+            if (!helloQueued) {
+                webSocket.cancel()
+                return
+            }
             _state.value = GatewaySocketState.Open
             Timber.i(
                 "Gateway connected: %s (hello queued=%s)",
@@ -303,8 +315,14 @@ public class RemoteGatewayClient @Inject constructor(
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             if (!isCurrent()) return
+            lastInboundAt.set(android.os.SystemClock.elapsedRealtime())
             try {
                 val message = json.decodeFromString(ServerMessage.serializer(), text)
+                if (message is ServerMessage.Ping) {
+                    val pong = json.encodeToString(ClientMessage.serializer(), ClientMessage.Pong(message.ts))
+                    if (!webSocket.send(pong)) webSocket.cancel()
+                    return
+                }
                 if (message is ServerMessage.RpcResult) {
                     completeRpc(message)
                 }

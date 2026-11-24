@@ -117,6 +117,7 @@ public fun AnyaBrandMark(
     ) {
         MascotFace(
             modifier = Modifier.fillMaxSize(),
+            eyesOnly = true,
             state = state,
             tool = tool,
             interactive = interactive,
@@ -143,15 +144,6 @@ public fun AnyaLoadingIndicator(
         ),
         label = "anyaLoadScale",
     )
-    val glowAlpha by transition.animateFloat(
-        initialValue = 0.35f,
-        targetValue = 0.85f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1400, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "anyaLoadGlow",
-    )
     val orbit by transition.animateFloat(
         initialValue = 0f,
         targetValue = 360f,
@@ -170,19 +162,6 @@ public fun AnyaLoadingIndicator(
             modifier = Modifier.size(size * 1.35f),
             contentAlignment = Alignment.Center,
         ) {
-            Box(
-                modifier = Modifier
-                    .size(size * 1.2f)
-                    .graphicsLayer { rotationZ = orbit }
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.04f)),
-            )
-            Box(
-                modifier = Modifier
-                    .size(size * 1.05f)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = glowAlpha * 0.06f)),
-            )
             MascotFace(
                 modifier = Modifier
                     .size(size)
@@ -191,6 +170,7 @@ public fun AnyaLoadingIndicator(
                         scaleY = scale
                     },
                 state = MascotState.Working,
+                eyesOnly = true,
                 followPointer = false,
                 turnOnChange = false,
             )

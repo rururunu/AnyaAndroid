@@ -959,6 +959,7 @@ internal fun TurnFooter(
         if (duration != null) {
             MascotFace(
                 modifier = Modifier.size(20.dp),
+                eyesOnly = true,
                 state = state,
                 followPointer = false,
                 turnOnChange = true,

@@ -98,8 +98,8 @@ private const val MIN_GAP_MS = 1400L
 private const val PLEASED_MS = 1800L
 private const val WIGGLE_MS = 720
 
-private val EYE_L = Offset(208f, 290f)
-private val EYE_R = Offset(304f, 290f)
+private val EYE_L = Offset(208f, 268f)
+private val EYE_R = Offset(304f, 268f)
 
 /**
  * The blob mascot's face: two pill eyes that look at [lookAt] (window coordinates) or the
@@ -121,6 +121,7 @@ public fun MascotFace(
     faceColor: Color = MaterialTheme.colorScheme.background,
     contentDescription: String? = null,
     onClick: (() -> Unit)? = null,
+    eyesOnly: Boolean = false,
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
@@ -418,17 +419,17 @@ public fun MascotFace(
             }) {
                 val activeTool = shownTool
                 val pop = toolPop.value
-                if (activeTool != null && pop > 0.01f) {
+                if (!eyesOnly && activeTool != null && pop > 0.01f) {
                     // Sway as if being waved: rotate -4..5deg over 3.2s.
                     val bob = -4f + 9f * easeInOutLoop(now, 3200)
                     drawTool(paths, activeTool, pop, bob, bodyColor, faceColor)
                 }
 
-                drawPath(paths.body, bodyColor)
+                if (!eyesOnly) drawPath(paths.body, bodyColor)
 
                 withTransform({
                     translate(faceTx, 0f)
-                    scale(faceSx, 1f, pivot = Offset(256f, 290f))
+                    scale(faceSx, 1f, pivot = Offset(256f, 268f))
                 }) {
                     if (faceAlpha > 0.01f) {
                         val stateOffset = when (visualState) {
@@ -457,8 +458,10 @@ public fun MascotFace(
                             talkL = 1f
                             talkR = 1f
                         }
-                        val face = faceColor.copy(alpha = faceColor.alpha * faceAlpha)
-                        val glint = bodyColor.copy(alpha = bodyColor.alpha * faceAlpha)
+                        val eyeColor = if (eyesOnly) bodyColor else faceColor
+                        val glintColor = if (eyesOnly) faceColor else bodyColor
+                        val face = eyeColor.copy(alpha = eyeColor.alpha * faceAlpha)
+                        val glint = glintColor.copy(alpha = glintColor.alpha * faceAlpha)
                         val m = morph.value
                         translate(eyes.x, eyes.y) {
                             drawEye(paths, EYE_L, left = true, curKind, prevKind, m, blink.value * squint * talkL, face, glint)
@@ -649,10 +652,10 @@ private fun DrawScope.drawTool(
 private class MascotPaths {
     val body: Path = Path().apply {
         moveTo(256f, 108f)
-        cubicTo(356f, 108f, 428f, 164f, 428f, 272f)
-        cubicTo(428f, 388f, 381f, 428f, 256f, 428f)
-        cubicTo(131f, 428f, 84f, 388f, 84f, 272f)
-        cubicTo(84f, 164f, 156f, 108f, 256f, 108f)
+        cubicTo(344f, 108f, 416f, 180f, 416f, 268f)
+        cubicTo(416f, 356f, 344f, 428f, 256f, 428f)
+        cubicTo(168f, 428f, 96f, 356f, 96f, 268f)
+        cubicTo(96f, 180f, 168f, 108f, 256f, 108f)
         close()
     }
 

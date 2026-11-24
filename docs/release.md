@@ -15,7 +15,7 @@ If that file is missing, it falls back to the latest GitHub Release `.apk` asset
 | **Client URL**     | `releases/latest/download/latest.json` (latest non-prerelease) |
 
 App identity lives in `build-logic` `configureAppDefaults`: currently
-`versionName` `0.1.9`, `versionCode` `10`. Bump **both** on every store-less
+`versionName` `0.3.0`, `versionCode` `11`. Bump **both** on every store-less
 sideload.
 
 ---
@@ -60,7 +60,7 @@ skips those checks.
 
 | Field         | Required | Role                                      |
 | ------------- | -------- | ----------------------------------------- |
-| `version`     | yes      | Compared to `versionName` (`0.1.9`)       |
+| `version`     | yes      | Compared to `versionName` (`0.3.0`)       |
 | `versionCode` | yes      | Compared to Android `versionCode`         |
 | `apkUrl`      | yes      | Direct download URL for the APK           |
 | `notes`       | no       | Shown on About; notification uses 120 chars |

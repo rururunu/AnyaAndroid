@@ -32,6 +32,8 @@ public data class InboxResultRecord(
     public val urlViewed: Boolean = false,
     /** Paired desktop this row belongs to; empty = legacy (shown on every host). */
     public val deviceId: String = "",
+    public val workspaceId: String? = null,
+    public val syncedDelivery: Boolean = false,
 ) {
     public val needsAction: Boolean
         get() = when (kind) {

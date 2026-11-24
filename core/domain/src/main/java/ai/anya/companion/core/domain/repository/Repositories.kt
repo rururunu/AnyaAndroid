@@ -72,6 +72,7 @@ public interface ConnectionRepository {
 }
 
 public interface SessionRepository {
+    public fun requestDeliverySync() {}
     public val sessions: StateFlow<List<ChatSessionSummary>>
     /** Archived chats (desktop `session.listArchived`); not shown in the main list. */
     public val archivedSessions: StateFlow<List<ChatSessionSummary>>

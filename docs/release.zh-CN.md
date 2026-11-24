@@ -14,8 +14,8 @@ Companion 读取：
 | **GitHub Release** | 上传的附件，**文件名必须是 `latest.json`**                     |
 | **客户端访问**     | `releases/latest/download/latest.json`（最新非预发布）         |
 
-应用标识在 `build-logic` 的 `configureAppDefaults`：当前是 `versionName` `0.1.9`，
-`versionCode` `10`。每次旁加载发版必须**两个一起加**。
+应用标识在 `build-logic` 的 `configureAppDefaults`：当前是 `versionName` `0.3.0`，
+`versionCode` `11`。每次旁加载发版必须**两个一起加**。
 
 ---
 
@@ -57,7 +57,7 @@ $apk.Length
 
 | 字段          | 必填 | 作用                                      |
 | ------------- | ---- | ----------------------------------------- |
-| `version`     | 是   | 与 `versionName`（`0.1.9`）比较           |
+| `version`     | 是   | 与 `versionName`（`0.3.0`）比较           |
 | `versionCode` | 是   | 与 Android `versionCode` 比较             |
 | `apkUrl`      | 是   | APK 直链                                  |
 | `notes`       | 否   | 关于页展示；通知截取前 120 字             |

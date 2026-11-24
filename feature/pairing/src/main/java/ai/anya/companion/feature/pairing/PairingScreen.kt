@@ -107,6 +107,9 @@ public fun PairingScreen(
     val context = LocalContext.current
     val haptic = rememberAnyaHaptics()
     var scanning by remember { mutableStateOf(false) }
+    var linkOpen by remember { mutableStateOf(false) }
+    var pairLink by remember { mutableStateOf("") }
+    var invalidLink by remember { mutableStateOf(false) }
     var manualOpen by remember {
         mutableStateOf(state.host.isNotBlank() || state.token.isNotBlank())
     }
@@ -259,6 +262,43 @@ public fun PairingScreen(
                                 color = MaterialTheme.colorScheme.background.copy(alpha = 0.72f),
                             )
                         }
+                    }
+                }
+
+                androidx.compose.material3.OutlinedButton(
+                    onClick = { linkOpen = !linkOpen },
+                    enabled = !state.isSubmitting,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResource(R.string.pairing_link))
+                }
+                AnimatedVisibility(visible = linkOpen) {
+                    AnyaSurfaceCard {
+                        AnyaField(
+                            value = pairLink,
+                            onValueChange = {
+                                pairLink = it
+                                invalidLink = false
+                            },
+                            label = stringResource(R.string.pairing_link_input),
+                        )
+                        if (invalidLink) {
+                            FeedbackBanner(text = stringResource(R.string.pairing_link_invalid), danger = true)
+                        }
+                        AnyaPrimaryButton(
+                            text = stringResource(R.string.pairing_link_parse),
+                            enabled = pairLink.isNotBlank() && !state.isSubmitting,
+                            onClick = {
+                                if (parsePairLink(pairLink) == null) {
+                                    invalidLink = true
+                                } else {
+                                    onScanResult(pairLink)
+                                    pairLink = ""
+                                    linkOpen = false
+                                    manualOpen = true
+                                }
+                            },
+                        )
                     }
                 }
 

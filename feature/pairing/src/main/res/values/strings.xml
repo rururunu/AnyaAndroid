@@ -6,6 +6,10 @@
     <string name="pairing_subtitle">Open “Connect phone” on the desktop workbench and scan the QR code. You can name the host before connecting.</string>
     <string name="pairing_top_subtitle">Scan or enter pairing details</string>
     <string name="pairing_scan">Scan QR code</string>
+    <string name="pairing_link">Pair with a link</string>
+    <string name="pairing_link_input">Paste the desktop pairing link</string>
+    <string name="pairing_link_parse">Parse link</string>
+    <string name="pairing_link_invalid">Invalid pairing link. Copy it again from the desktop.</string>
     <string name="pairing_scan_hint">Recommended · confirm the host name after scan</string>
     <string name="pairing_display_name">Host name</string>
     <string name="pairing_display_name_hint">Shown in the top bar · %1$d / %2$d</string>

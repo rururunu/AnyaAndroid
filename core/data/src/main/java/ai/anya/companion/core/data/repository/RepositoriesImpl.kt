@@ -89,6 +89,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import timber.log.Timber
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -106,6 +108,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -179,7 +182,6 @@ public class DefaultConnectionRepository @Inject constructor(
     private val lastGoodEndpoint = java.util.concurrent.atomic.AtomicReference<String?>(null)
 
     /** Epoch ms of the last server app-level ping (or hello.ok). */
-    private val lastServerAliveAt = java.util.concurrent.atomic.AtomicLong(0L)
     /** True after hello.ok in this process. Cold-start failures must not retry forever. */
     private val sessionReachedConnected = java.util.concurrent.atomic.AtomicBoolean(false)
 
@@ -243,7 +245,11 @@ public class DefaultConnectionRepository @Inject constructor(
                         }
                     }
                     GatewaySocketState.Failed -> {
-                        _connectionState.value = ConnectionState.Error
+                        _connectionState.value = if (shouldKeepRetrying()) {
+                            ConnectionState.Reconnecting
+                        } else {
+                            ConnectionState.Error
+                        }
                         if (shouldKeepRetrying()) {
                             scheduleReconnect()
                         } else {
@@ -273,7 +279,6 @@ public class DefaultConnectionRepository @Inject constructor(
             gateway.incoming.collect { message ->
                 when (message) {
                     is ServerMessage.HelloOk -> {
-                        lastServerAliveAt.set(System.currentTimeMillis())
                         sessionReachedConnected.set(true)
                         reconnectJob?.cancel()
                         _connectionState.value = ConnectionState.Connected
@@ -283,11 +288,6 @@ public class DefaultConnectionRepository @Inject constructor(
                         _connectionState.value = ConnectionState.Error
                         wantConnected.value = false
                         gateway.disconnect()
-                    }
-                    is ServerMessage.Ping -> {
-                        lastServerAliveAt.set(System.currentTimeMillis())
-                        // Bidirectional keep-alive for Cloudflare / NAT (WS pings alone often die).
-                        gateway.send(ClientMessage.Pong(message.ts))
                     }
                     else -> Unit
                 }
@@ -351,11 +351,9 @@ public class DefaultConnectionRepository @Inject constructor(
                 if (!wantConnected.value) continue
                 if (_connectionState.value != ConnectionState.Connected) continue
                 if (gateway.state.value != GatewaySocketState.Open) continue
-                val last = lastServerAliveAt.get()
-                if (last == 0L) continue
-                val idle = System.currentTimeMillis() - last
+                val idle = gateway.inboundIdleMillis()
                 if (idle < STALE_DEADLINE_MS) continue
-                Timber.w("No server ping for %dms; recycling gateway socket", idle)
+                Timber.w("No server traffic for %dms; recycling gateway socket", idle)
                 gateway.disconnect()
                 reconnectJob?.cancel()
                 scheduleReconnect()
@@ -567,9 +565,8 @@ public class DefaultConnectionRepository @Inject constructor(
         current: android.net.Network,
     ): Boolean {
         if (previous == current) return true
-        val prevCaps = connectivity.getNetworkCapabilities(previous) ?: return false
-        val currCaps = connectivity.getNetworkCapabilities(current) ?: return false
-        if (!currCaps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return false
+        val prevCaps = connectivity.getNetworkCapabilities(previous) ?: return true
+        val currCaps = connectivity.getNetworkCapabilities(current) ?: return true
         return defaultTransports(prevCaps) == defaultTransports(currCaps)
     }
 
@@ -637,14 +634,13 @@ public class DefaultConnectionRepository @Inject constructor(
                     if (_connectionState.value == ConnectionState.Connected) {
                         AnyaResult.Success(Unit)
                     } else {
-                        // Socket is open but auth may not have finished — re-hello.
-                        sendHello(credential)
+                        awaitHello()
                     }
                 }
                 GatewaySocketState.Connecting -> {
                     val ready = waitForOpenOrFail()
                     if (ready is AnyaResult.Failure) return@withLock ready
-                    sendHello(credential)
+                    awaitHello()
                 }
                 else -> {
                     if (_connectionState.value != ConnectionState.Reconnecting) {
@@ -707,7 +703,7 @@ public class DefaultConnectionRepository @Inject constructor(
             if (!openedOk) continue
             // Always hello with the stored credential identity (deviceId / token);
             // only the transport endpoint differs per candidate.
-            when (val hello = sendHello(credential)) {
+            when (val hello = awaitHello()) {
                 is AnyaResult.Success -> return hello
                 is AnyaResult.Failure -> {
                     lastFailure = hello
@@ -809,30 +805,19 @@ public class DefaultConnectionRepository @Inject constructor(
         appScope.launch { credentialStore.upsert(updated, makeActive = true) }
     }
 
-    private suspend fun sendHello(credential: DeviceCredential): AnyaResult<Unit> {
-        if (_connectionState.value == ConnectionState.Connected) {
-            // Force callers to wait for a fresh auth edge when re-helloing.
-            _connectionState.value = ConnectionState.Connecting
-        }
-        val sent = gateway.send(
-            ClientMessage.Hello(
-                deviceId = credential.deviceId,
-                credential = credential.credential,
-                appVersion = appVersion,
-                deviceName = deviceName,
-            ),
-        )
-        if (sent is AnyaResult.Failure) {
-            _connectionState.value = ConnectionState.Error
-            return sent
-        }
-        // hello.ok flips Connected via the incoming collector; wait briefly so callers
-        // that refresh right after connect() see an authenticated session.
+    private suspend fun awaitHello(): AnyaResult<Unit> {
         val authed = withTimeoutOrNull(HELLO_TIMEOUT_MS) {
-            connectionState.first { it == ConnectionState.Connected || it == ConnectionState.Error }
+            combine(connectionState, gateway.state) { connection, socket ->
+                when {
+                    socket != GatewaySocketState.Open -> ConnectionState.Disconnected
+                    connection == ConnectionState.Connected || connection == ConnectionState.Error -> connection
+                    else -> null
+                }
+            }.first { it != null }
         }
         return when (authed) {
             ConnectionState.Connected -> AnyaResult.Success(Unit)
+            ConnectionState.Disconnected -> AnyaResult.Failure(AnyaError.Network("connection dropped during hello"))
             ConnectionState.Error -> {
                 val socket = gateway.state.value
                 if (socket == GatewaySocketState.Failed || socket == GatewaySocketState.Closed) {
@@ -929,6 +914,7 @@ public class DefaultSessionRepository @Inject constructor(
     private var historyPagingUnavailable: Boolean = false
     /** Companion-only shared-file cards; survive desktop history reloads. */
     private val localSharedBySession = MutableStateFlow<Map<String, List<ChatMessage>>>(emptyMap())
+    private val deliveryWakeup = Channel<Unit>(Channel.CONFLATED)
     private val composeBySession = MutableStateFlow<Map<String, SessionCompose>>(emptyMap())
     private val stagedBySession = MutableStateFlow<Map<String, List<String>>>(emptyMap())
     private val stagedFlushing = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
@@ -942,6 +928,23 @@ public class DefaultSessionRepository @Inject constructor(
     private val _models = MutableStateFlow(readCachedModels(currentDeviceId()))
 
     init {
+        appScope.launch {
+            combine(connectionRepository.connectionState, connectionRepository.credential) { state, credential ->
+                credential?.deviceId?.takeIf { state == ConnectionState.Connected }
+            }.distinctUntilChanged().collectLatest { deviceId ->
+                if (deviceId == null) return@collectLatest
+                while (isActive) {
+                    try {
+                        if (!syncDeliveries(deviceId)) break
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        Timber.w(error, "Delivery sync failed")
+                    }
+                    withTimeoutOrNull(30_000) { deliveryWakeup.receive() }
+                }
+            }
+        }
         appScope.launch {
             var seen = false
             var lastId: String? = null
@@ -985,9 +988,100 @@ public class DefaultSessionRepository @Inject constructor(
     }
 
     override fun messages(sessionId: String): Flow<List<ChatMessage>> =
-        combine(messagesBySession, localSharedBySession) { remote, local ->
-            mergeRemoteAndLocal(remote[sessionId].orEmpty(), local[sessionId].orEmpty())
+        combine(messagesBySession, localSharedBySession, inboxResults) { remote, local, inbox ->
+            val cards = local[sessionId].orEmpty().associateBy { it.id }.toMutableMap()
+            for (record in inbox) {
+                if (record.syncedDelivery && record.sessionId == sessionId) {
+                    val card = deliveryCard(record)
+                    val previous = cards[card.id]
+                    cards[card.id] = if (previous == null) card else mergeSharedMessagePreserveDownloads(previous, card)
+                }
+            }
+            mergeRemoteAndLocal(remote[sessionId].orEmpty(), cards.values.toList())
         }
+
+    override fun requestDeliverySync() {
+        deliveryWakeup.trySend(Unit)
+    }
+
+    private suspend fun syncDeliveries(deviceId: String): Boolean {
+        var after = inboxResultStore.deliveryCursor(deviceId)
+        while (currentDeviceId() == deviceId) {
+            val requestId = UUID.randomUUID().toString()
+            val result = gateway.request(ClientMessage.DeliveryList(requestId, after), requestId)
+            if (result !is AnyaResult.Success) return true
+            val rpc = result.data
+            if (!rpc.ok) return rpc.error != "unsupported method: delivery.list"
+            val page = rpc.data as? JsonObject ?: error("Invalid delivery page")
+            val next = page["next"]?.jsonPrimitive?.longOrNull ?: error("Missing delivery cursor")
+            val items = page["items"] as? JsonArray ?: error("Missing delivery items")
+            if (items.isEmpty()) return true
+            check(next > after) { "Delivery cursor did not advance" }
+            val records = items.map { item -> decodeDelivery(item as JsonObject, deviceId) }
+            if (currentDeviceId() != deviceId) return true
+            inboxResultStore.saveDeliveryPage(deviceId, next, records)
+            after = next
+            if (page["hasMore"]?.jsonPrimitive?.booleanOrNull != true) return true
+        }
+        return true
+    }
+
+    private fun decodeDelivery(item: JsonObject, deviceId: String): InboxResultRecord {
+        val data = item["data"] as? JsonObject ?: error("Missing delivery payload")
+        val kind = when (item.string("kind")) {
+            "file" -> InboxResultKind.File
+            "url" -> InboxResultKind.Url
+            else -> error("Unknown delivery kind")
+        }
+        val sessionId = requireNotNull(data.string("sessionId"))
+        val session = _sessions.value.find { it.id == sessionId }
+        return InboxResultRecord(
+            id = requireNotNull(data.string("offerId")),
+            kind = kind,
+            sessionId = sessionId,
+            sessionTitle = session?.title?.takeIf { it.isNotBlank() },
+            workspaceName = session?.workspaceName,
+            createdAtEpochMs = data["createdAtEpochMs"]?.jsonPrimitive?.longOrNull ?: 0L,
+            name = (data.string("name") ?: data.string("label")).orEmpty(),
+            path = data.string("path")?.let(::normalizeSharedFilePath).orEmpty(),
+            mime = data.string("mime").orEmpty(),
+            size = data["size"]?.jsonPrimitive?.longOrNull ?: 0L,
+            publicUrl = data.string("publicUrl").orEmpty(),
+            originUrl = data.string("originUrl").orEmpty(),
+            deviceId = deviceId,
+            workspaceId = data.string("workspaceId"),
+            syncedDelivery = true,
+        )
+    }
+
+    private fun deliveryCard(record: InboxResultRecord): ChatMessage {
+        val file = record.kind == InboxResultKind.File
+        return ChatMessage(
+            id = if (file) "shared-${record.id}" else "shared-url-${record.id}",
+            sessionId = record.sessionId,
+            role = ChatRole.System,
+            content = "",
+            status = MessageStatus.Complete,
+            createdAtEpochMs = record.createdAtEpochMs,
+            sharedFiles = if (file) listOf(
+                ChatSharedFile(
+                    offerId = record.id,
+                    path = record.path,
+                    name = record.name,
+                    mime = record.mime,
+                    size = record.size,
+                    status = if (record.fileStatus == SharedFileStatus.Pending) {
+                        SharedFileStatus.Offered
+                    } else record.fileStatus,
+                    localPath = record.localPath,
+                    workspaceId = record.workspaceId,
+                ),
+            ) else emptyList(),
+            sharedUrls = if (file) emptyList() else listOf(
+                ChatSharedUrl(record.id, record.name, record.publicUrl, record.originUrl),
+            ),
+        )
+    }
 
     override fun compose(sessionId: String): Flow<SessionCompose> =
         composeBySession.map { it[sessionId] ?: SessionCompose() }
@@ -2173,6 +2267,21 @@ public class DefaultSessionRepository @Inject constructor(
         offerId: String,
         transform: (ChatSharedFile) -> ChatSharedFile,
     ) {
+        val synced = inboxResults.value.firstOrNull {
+            it.syncedDelivery && it.id == offerId && it.sessionId == sessionId && it.kind == InboxResultKind.File
+        }
+        if (synced != null) {
+            val file = localSharedBySession.value[sessionId].orEmpty()
+                .flatMap { it.sharedFiles }.firstOrNull { it.offerId == offerId }
+                ?: deliveryCard(synced).sharedFiles.single()
+            val updated = transform(file)
+            val card = deliveryCard(synced).copy(sharedFiles = listOf(updated))
+            localSharedBySession.update { map ->
+                map + (sessionId to (map[sessionId].orEmpty().filterNot { it.id == card.id } + card))
+            }
+            inboxResultStore.patchFile(offerId, updated)
+            return
+        }
         localSharedBySession.update { map ->
             val current = map[sessionId].orEmpty()
             if (current.isEmpty()) return@update map
@@ -2353,6 +2462,11 @@ public class DefaultSessionRepository @Inject constructor(
             }
             "chat.started" -> {
                 val sessionId = data.string("sessionId") ?: return
+                if (!sessionId.startsWith("plugin:") && "-sub-" !in sessionId &&
+                    _sessions.value.none { it.id == sessionId }
+                ) {
+                    appScope.launch { refreshSessions() }
+                }
                 messagesBySession.update { map ->
                     val cleaned = map[sessionId].orEmpty().filterNot { it.id.startsWith("local-") }
                     map + (sessionId to cleaned)
@@ -2504,6 +2618,7 @@ public class DefaultSessionRepository @Inject constructor(
                 }
             }
             "file.offer", "file-offer", "FileOffer" -> {
+                deliveryWakeup.trySend(Unit)
                 val sessionId = data.string("sessionId") ?: return
                 val path = data.string("path")?.let(::normalizeSharedFilePath).orEmpty()
                 if (path.isEmpty()) return
@@ -2537,6 +2652,7 @@ public class DefaultSessionRepository @Inject constructor(
                 )
             }
             "url.offer", "url-offer", "UrlOffer" -> {
+                deliveryWakeup.trySend(Unit)
                 val sessionId = data.string("sessionId") ?: return
                 val publicUrl = data.string("publicUrl") ?: return
                 val offer = CompanionUrlOffer(
