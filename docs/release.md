@@ -18,12 +18,17 @@ App identity lives in `build-logic` `configureAppDefaults`: currently
 `versionName` `0.3.0`, `versionCode` `11`. Bump **both** on every store-less
 sideload.
 
+The checked-in [`../release/latest.json`](../release/latest.json) is still the
+published **v0.1.9** manifest (`versionCode` 10, with that APK’s size and
+sha256). Replace it when the v0.3.0 APK exists. Do not upload the old file
+under a v0.3.0 tag.
+
 ---
 
 ## Cut a release
 
-Replace `0.1.9` / `v0.1.9` with the version you are shipping. First public tag
-was `v0.1.0`.
+The steps below use the current identity, **0.3.0** / **v0.3.0**. First public
+tag was `v0.1.0`. Release notes for this cut: [`../release/v0.3.0.md`](../release/v0.3.0.md).
 
 1. Bump `versionName` and `versionCode` in `build-logic`, then build a
    **release** APK (not `ai.anya.companion.debug`):
@@ -33,12 +38,12 @@ gradlew.bat :app:assembleRelease
 ```
 
 Output is typically `app/build/outputs/apk/release/app-release.apk`. Rename to
-**`Anya-v0.1.9.apk`**.
+**`Anya-v0.3.0.apk`**.
 
 2. Fill size and checksum into [`../release/latest.json`](../release/latest.json):
 
 ```powershell
-$apk = Get-Item .\release\Anya-v0.1.9.apk
+$apk = Get-Item .\release\Anya-v0.3.0.apk
 Get-FileHash $apk.FullName -Algorithm SHA256
 $apk.Length
 ```
@@ -49,9 +54,9 @@ Leave size and hash out only if the APK is not built yet — the client then
 skips those checks.
 
 3. On GitHub → [Releases](https://github.com/rururunu/AnyaAndroid/releases),
-   create tag **`v0.1.9`**.
-   - Body: changelog for that tag (see [`../CHANGELOG.md`](../CHANGELOG.md))
-   - Attach `Anya-v0.1.9.apk` and `latest.json` (filename must stay `latest.json`)
+   create tag **`v0.3.0`**.
+   - Body: changelog for that tag (see [`../CHANGELOG.md`](../CHANGELOG.md) and [`../release/v0.3.0.md`](../release/v0.3.0.md))
+   - Attach `Anya-v0.3.0.apk` and `latest.json` (filename must stay `latest.json`)
 
 4. Confirm `https://github.com/rururunu/AnyaAndroid/releases/latest/download/latest.json`
    and tap **Check for updates** in Companion → About.
@@ -69,6 +74,6 @@ skips those checks.
 
 Example URL for the current identity:
 
-`https://github.com/rururunu/AnyaAndroid/releases/download/v0.1.9/Anya-v0.1.9.apk`
+`https://github.com/rururunu/AnyaAndroid/releases/download/v0.3.0/Anya-v0.3.0.apk`
 
 **Related:** [Architecture](./ARCHITECTURE.md) · [Changelog](../CHANGELOG.md) · [Docs index](./README.md)

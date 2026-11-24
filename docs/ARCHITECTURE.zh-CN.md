@@ -11,7 +11,7 @@
 | ---------- | ---------------------------------------------------------------------------- |
 | **产品**   | Anya Companion — [桌面 Anya](https://github.com/rururunu/Anya) 的远程控制台 |
 | **仓库**   | [rururunu/AnyaAndroid](https://github.com/rururunu/AnyaAndroid)              |
-| **版本**   | v0.1.9                                                                       |
+| **版本**   | v0.3.0                                                                       |
 | **运行时** | Android 8.0+（minSdk 26，compile/target 36）                                 |
 | **界面**   | Jetpack Compose · Hilt · Navigation                                          |
 | **传输**   | OkHttp WebSocket → 桌面 `/remote/v1`                                         |
@@ -60,13 +60,13 @@ flowchart LR
 
 | 界面 | 桌面持有 | 手机收发 |
 | ---- | -------- | -------- |
-| **随问** | ChatService / SQLite 里不绑项目的会话 | `session.list` + 快照事件。**+** 会在电脑上新建会话。黄标 **待审批** 表示 AgentRunner 已经停住。 |
+| **随问** | ChatService / SQLite 里不绑项目的会话 | `session.list` + 快照事件。**+** 会在电脑上新建会话。id 以 `plugin:` 开头、或含 `-sub-` 的子代理会话不进列表。黄标 **待审批** 表示 AgentRunner 已经停住。 |
 | **工作区** | 磁盘上的项目文件夹 | 同一批会话按工作区分组。目录来自 `workspace.snapshot` / `workspace.files` / `skills.list` / `mcp.list`。 |
 | **对话** | AgentRunner、工具、模型密钥 | `chat.send` / `chat.cancel` / `session.compose.*`。字是 `event` 增量推回来的——生成发生在电脑上。 |
 | **ask_user** | 暂停正在进行的 run | 两边同一张卡。`ask.respond` 之后 AgentRunner 才继续。 |
 | **工具审批** | AgentRunner 里的闸门 | 允许一次 / 本会话 / 拒绝，走 `approval.respond`。在 Windows 上点同一张卡是同一道闸。 |
 | **收件 → 待确认** | 同一批被卡住的工具 / 提问 | 点卡片跳回该会话，仍是 `approval.respond` / `ask.respond`。 |
-| **收件 → 结果** | 文件仍在电脑磁盘（`share_to_companion`） | 先推 offer `event`，字节用 `workspace.readFile` 分片拉。手机附件：`file.upload.*` → `.anya/uploads/{sessionId}/`（随问则进 Ask 收件箱）。 |
+| **收件 → 结果** | 文件仍在电脑磁盘（`share_to_companion`） | 实时 offer `event`，外加 `delivery.list` 补拉离线期间错过的分享。字节用 `workspace.readFile` 分片（或 `file.download.begin`）拉取。手机附件：`file.upload.*` → `.anya/uploads/{sessionId}/`（随问则进 Ask 收件箱）。 |
 
 带截图的产品走查：[../README.zh-CN.md](../README.zh-CN.md)。
 
@@ -155,7 +155,11 @@ flowchart TB
 
 启动握手：若始终收不到 `hello.ok`，Companion **不会**无限重连。超过 **5 秒**启动页出现 **取消连接**，调用 `abandonUnreachableBoot()` 并进入连接设置。
 
-Quick Tunnel 域名在桌面进程重启后会变；公网地址失效时请重新扫码。
+hello 成功之后，套接字断开会按退避重试（300 ms、700 ms、1.5 s、3 s，之后 8 s）。处于 `Connected` 时，手机每 **20 秒**发一次应用层 `pong`。连续 **45 秒**没有入站帧，这条连接按半开处理：关掉并重新拨号。套接字已打开但 **15 秒**内仍未完成 hello，同样回收。回到前台会调用 `nudge()`，并请求一次交付同步。
+
+`hello` 在 `onOpen` 里发出，早于把套接字标成已打开。这一帧排不进发送队列时，套接字会被取消。
+
+Quick Tunnel 域名在桌面进程重启后会变；公网地址失效时请重新扫码，或粘贴新的配对链接。
 
 ---
 
@@ -179,11 +183,11 @@ sequenceDiagram
   end
 ```
 
-深度链接：`anya://pair?…`（主机、端口、令牌、可选公网主机）。首次 `hello` 成功后，手机把设备凭证写入 DataStore **设备名册**（可保存多台主机），之后启动复用当前主机，直到用户解除配对。
+深度链接：`anya://pair?…`（主机、端口、令牌、可选局域网主机与公网 scheme）。`anya-companion://pair` 解析同一组查询参数。配对页可以扫这个载荷、在 **链接配对** 里粘贴，或手填主机 / 端口 / 令牌。首次 `hello` 成功后，手机把设备凭证写入 DataStore **设备名册**（可保存多台主机），之后启动复用当前主机，直到用户解除配对。
 
 用户可为每台主机设定不超过 16 字的显示名（顶栏「Anya」会换成该名称）。设置里的主机列表、或长按左上角 logo 可切换。桌面更新了隧道域名 / 令牌时，对该主机 **重新配对** 会保留显示名与 deviceId，只更新连接信息。
 
-保活：服务端发应用层 `ping`，客户端回 `pong`。不依赖原生 WebSocket ping（代理常会丢掉）。
+保活：服务端发应用层 `ping`，`RemoteGatewayClient` 在这条套接字上直接回 `pong`，不把 ping 送进界面状态。手机自己也每 20 秒发一次 `pong`。不依赖原生 WebSocket ping（代理常会丢掉）。
 
 ---
 
@@ -200,13 +204,18 @@ JSON 帧，用 `type` 区分。协议版本 **1**。
 
 | `type`                   | 作用                                              |
 | ------------------------ | ------------------------------------------------- |
-| `session.list`           | 会话目录                                          |
+| `session.list`           | 会话目录。随问 / 工作区列表会去掉 `plugin:` 前缀、以及 id 中含 `-sub-` 的会话。 |
+| `delivery.list`          | 按本机保存的 device id 游标（`after`）分页拉取文件与链接分享。旧桌面返回 `unsupported method: delivery.list` 后，手机停止轮询该 RPC。 |
 | `session.history`        | 分页加载线程；`detail=light` 只取回复摘要，`beforeMessageId` 向前翻页 |
 | `session.messageDetail`  | 展开时按消息 ID 拉取推理、工具和工作时间线 |
 | `session.readCodePreview` | 按成功读取活动 ID 获取当前代码文件；失败或变更时保留读取快照（桌面新接口） |
 | `session.staged.get/push/remove/guide/pop/clear` | 忙碌时管理暂存消息队列 |
 | `context.usage`         | 当前会话和草稿的上下文用量 |
 | `session.delete`         | 删除会话                                          |
+| `session.rename` / `session.archive` / `session.listArchived` / `session.rewind` | 重命名、归档、列出已归档会话、回退一轮 |
+| `workspace.pin` / `workspace.update` / `workspace.archive` / `workspace.listArchived` / `workspace.workingTreeDiff` | 置顶、改名、归档、列出已归档工作区、统一视图的工作区 diff |
+| `context.environment`    | `/context` 使用的桌面实时环境                     |
+| `imageGen.options` / `imageGen.setModel` | 图像模式工具栏与桌面生图模型 |
 | `chat.send`              | 发送用户文本（含模式 / 模型 / 工作区）            |
 | `chat.cancel`            | 取消进行中的 run                                  |
 | `session.compose.get/set`| 该会话的模式、模型与权限范围；权限值仍用 `ask` / `auto` / `alwaysAllow` |
@@ -219,12 +228,15 @@ JSON 帧，用 `type` 区分。协议版本 **1**。
 | `workspace.readFile`     | 文本预览，或 `mode=download` 拉一片字节           |
 | `skills.list` / `mcp.list` | 桌面 Skills / MCP                               |
 | `file.upload.begin/chunk/finish/abort` | 手机 → 桌面附件                         |
+| `file.download.begin`    | 桌面 → 手机的优先取字节方式；失败后再用 `workspace.readFile` 分片 |
 
 ### 事件（桌面 → 手机）
 
 以 `event` 帧推送：对话增量、审批、compose 变更、文件分享卡片、会话快照、连接状态。手机只做 **投影**，不重跑 Agent。
 
 连接成功后，手机请求 `models.list`，按配对桌面缓存模型目录和新对话默认项。桌面设置变化时通过 `settings.defaults` 事件更新默认项。完整设置文件和密钥不会通过此接口发送。
+
+同一次连接也会开始 `delivery.list`。游标（`next`）按该凭证的 device id 存在手机上。每一页按 offer id 合并：手机上已经保存的文件保留本地路径，已查看的链接保持已查看。实时 `file.offer` / `url.offer` 仍会写入卡片并再唤醒一次同步。应用回到前台时同样唤醒。
 
 权限范围在手机上显示为 **只读 / 工作区写入 / 完全访问**。这三档分别沿用 `ask` / `auto` / `alwaysAllow` 线路值；选择完全访问需再次确认。代码读取卡先展示工具返回时的快照，再以活动 ID 请求当前文件，内容变化时继续标注并显示快照。
 
@@ -259,7 +271,7 @@ sequenceDiagram
   end
 ```
 
-手机附件落到工作区 `.anya/uploads/{sessionId}/`（随问则进 Ask 收件箱）。`share_to_companion` 只推卡片，字节用 `workspace.readFile` 拉取，避免一条巨大 Base64 打爆手机。
+手机附件落到工作区 `.anya/uploads/{sessionId}/`（随问则进 Ask 收件箱）。`share_to_companion` 只推卡片。下载时先走 `file.download.begin` 的 HTTP 地址，失败再用 `workspace.readFile` 分片，避免一条巨大 Base64 打爆手机。
 
 本地网页预览走同一网关上的 HTTP `/p/{id}/`（反向代理），不走 WebSocket。
 
@@ -269,10 +281,11 @@ sequenceDiagram
 
 | 主题         | 行为                                                                      |
 | ------------ | ------------------------------------------------------------------------- |
-| 保活         | 已连接时使用前台服务                                                      |
+| 保活         | 已连接时使用前台服务；每 20 秒客户端 `pong`；45 秒无入站流量则回收套接字 |
+| 交付补收     | hello 之后、收到 offer 事件时、以及应用回到前台时调用 `delivery.list`     |
 | 应用内更新   | 前台下载 + APK 校验（体积 / 可选 sha256 / 包名 / 签名）                   |
 | 包名         | `ai.anya.companion`（debug：`.debug`）                                    |
-| 相机         | 可选；仍可手动填写主机 / 令牌                                             |
+| 相机         | 可选；仍可粘贴配对链接或手动填写主机 / 令牌                               |
 
 ---
 
@@ -283,7 +296,8 @@ sequenceDiagram
 | 导航 / 启动取消连接          | `app/.../navigation/AnyaNavHost.kt`                 |
 | 连接与放弃启动握手           | `core/data` connection repository                   |
 | WebSocket 客户端             | `core/network` `RemoteGatewayClient`                |
-| 配对扫码 / 深度链接          | `feature/pairing`                                   |
+| 配对扫码 / 链接 / 深度链接   | `feature/pairing`（`parsePairLink`）                |
+| 错过的文件与链接分享         | `core/data` `InboxResultStore` + `delivery.list`    |
 | 随问 / 工作区会话列表        | `feature/sessions`                                  |
 | 对话流式与附件               | `feature/chat`                                      |
 | 审批与收件                   | `feature/approval`                                  |

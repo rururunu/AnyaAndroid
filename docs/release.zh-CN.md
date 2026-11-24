@@ -17,11 +17,16 @@ Companion 读取：
 应用标识在 `build-logic` 的 `configureAppDefaults`：当前是 `versionName` `0.3.0`，
 `versionCode` `11`。每次旁加载发版必须**两个一起加**。
 
+仓库里的 [`../release/latest.json`](../release/latest.json) 仍是已发布的
+**v0.1.9** 清单（`versionCode` 10，以及那份 APK 的体积和 sha256）。打出 v0.3.0
+的 APK 后再替换。不要把旧文件挂到 v0.3.0 标签上。
+
 ---
 
 ## 发一版
 
-把下面的 `0.1.9` / `v0.1.9` 换成你要发的版本。首个公开标签是 `v0.1.0`。
+下面按当前标识 **0.3.0** / **v0.3.0** 书写。首个公开标签是 `v0.1.0`。这一版的说明见
+[`../release/v0.3.0.md`](../release/v0.3.0.md)。
 
 1. 在 `build-logic` 里同时提高 `versionName` 与 `versionCode`，再构建 **release**
    APK（不要用 `ai.anya.companion.debug`）：
@@ -31,12 +36,12 @@ gradlew.bat :app:assembleRelease
 ```
 
 产物一般在 `app/build/outputs/apk/release/app-release.apk`。改名为
-**`Anya-v0.1.9.apk`**。
+**`Anya-v0.3.0.apk`**。
 
 2. 把体积和校验和写入 [`../release/latest.json`](../release/latest.json)：
 
 ```powershell
-$apk = Get-Item .\release\Anya-v0.1.9.apk
+$apk = Get-Item .\release\Anya-v0.3.0.apk
 Get-FileHash $apk.FullName -Algorithm SHA256
 $apk.Length
 ```
@@ -46,9 +51,9 @@ $apk.Length
 ——客户端会跳过这两项校验。
 
 3. 在 GitHub → [Releases](https://github.com/rururunu/AnyaAndroid/releases) 创建标签
-   **`v0.1.9`**。
-   - 正文用该 tag 的更新说明（见 [`../CHANGELOG.zh-CN.md`](../CHANGELOG.zh-CN.md)）
-   - 上传 `Anya-v0.1.9.apk` 和 `latest.json`（**文件名保持 `latest.json`**）
+   **`v0.3.0`**。
+   - 正文用该 tag 的更新说明（见 [`../CHANGELOG.zh-CN.md`](../CHANGELOG.zh-CN.md) 与 [`../release/v0.3.0.md`](../release/v0.3.0.md)）
+   - 上传 `Anya-v0.3.0.apk` 和 `latest.json`（**文件名保持 `latest.json`**）
 
 4. 打开 `https://github.com/rururunu/AnyaAndroid/releases/latest/download/latest.json`
    确认，再在 Companion → 关于里点 **检测更新**。
@@ -66,6 +71,6 @@ $apk.Length
 
 当前标识对应的地址示例：
 
-`https://github.com/rururunu/AnyaAndroid/releases/download/v0.1.9/Anya-v0.1.9.apk`
+`https://github.com/rururunu/AnyaAndroid/releases/download/v0.3.0/Anya-v0.3.0.apk`
 
 **相关：** [架构](./ARCHITECTURE.zh-CN.md) · [更新日志](../CHANGELOG.zh-CN.md) · [文档索引](./README.zh-CN.md)

@@ -2,6 +2,26 @@
 
 Companion 的版本记录。桌面 Anya 的变更见 [rururunu/Anya](https://github.com/rururunu/Anya)。
 
+## [0.3.0] - 2026-11-24
+
+支持链接配对，断线后补收错过的分享，并收紧重连。
+
+### 新增
+
+- 配对页可粘贴桌面分享的配对链接（`anya://pair` 或 `anya-companion://pair`）
+- 重连后用 `delivery.list` 补拉离线期间错过的文件和链接。游标按该设备 id 存在手机上；已经保存的卡片保留本地文件
+
+### 改进与修复
+
+- 随问和工作区列表隐藏插件会话（`plugin:`）以及子代理会话（id 含 `-sub-`）
+- 连续 45 秒没有入站流量时回收半开套接字。桌面 ping 在套接字上直接回复，手机每 20 秒发送一次保活，回到前台时再次检查连接
+- 应用图标、启动页和对话状态吉祥物改为 Anya 眼睛
+- Gradle Wrapper 为 9.9.1（AGP 9.3.3，Kotlin 2.2.10）。`versionCode` 为 11
+
+### 说明
+
+`delivery.list` 需要桌面实现该 RPC。更旧的桌面仍推送实时 `file.offer` / `url.offer`；手机在收到不支持该方法的错误后停止轮询。Companion 不会自己调用模型服务商。
+
 ## [0.1.9] - 2026-10-11
 
 收件结果、代码读取和新对话默认设置的体验改进。
@@ -174,6 +194,7 @@ Companion 的版本记录。桌面 Anya 的变更见 [rururunu/Anya](https://git
 
 需要已开启 Remote Gateway 的桌面 Anya。Companion 不会自己调用模型服务商。
 
+[0.3.0]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.3.0
 [0.1.9]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.9
 [0.1.8]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.8
 [0.1.6]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.6

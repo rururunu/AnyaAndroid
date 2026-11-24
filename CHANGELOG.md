@@ -2,6 +2,26 @@
 
 All notable Companion releases. Desktop Anya has its own changelog in [rururunu/Anya](https://github.com/rururunu/Anya).
 
+## [0.3.0] - 2026-11-24
+
+Link pairing, catch-up for offers missed while offline, and a tighter reconnect loop.
+
+### Added
+
+- Paste a desktop pairing link (`anya://pair` or `anya-companion://pair`) on the pairing screen
+- After reconnect, pull file and URL offers missed while offline with `delivery.list`. The cursor is stored on the phone for that device id, and a card already saved keeps its local file
+
+### Improved and fixed
+
+- Ask and Workspace lists hide plugin sessions (`plugin:`) and sub-agent sessions (ids containing `-sub-`)
+- Recycle a half-open socket after 45 seconds without inbound traffic. Answer desktop pings on the socket, send a client keep-alive every 20 seconds, and check the link again when the app returns to the foreground
+- App icon, splash, and the chat status mascot use the Anya eyes
+- Gradle Wrapper is 9.9.1 (AGP 9.3.3, Kotlin 2.2.10). `versionCode` is 11
+
+### Notes
+
+`delivery.list` needs a desktop that implements it. Older desktops keep live `file.offer` / `url.offer` events; the phone stops polling the missing RPC. Companion does not call model providers itself.
+
 ## [0.1.9] - 2026-10-11
 
 Improvements to inbox results, code reads, and defaults for new chats.
@@ -174,6 +194,7 @@ First public Android remote.
 
 Requires desktop Anya with Remote Gateway. Companion does not call model providers itself.
 
+[0.3.0]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.3.0
 [0.1.9]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.9
 [0.1.8]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.8
 [0.1.6]: https://github.com/rururunu/AnyaAndroid/releases/tag/v0.1.6

@@ -21,7 +21,7 @@
 
 <p align="center">
   <img alt="platform" src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=flat-square" />
-  <img alt="release" src="https://img.shields.io/badge/version-v0.1.9-4D6BFE?style=flat-square" />
+  <img alt="release" src="https://img.shields.io/badge/version-v0.3.0-4D6BFE?style=flat-square" />
   <img alt="stack" src="https://img.shields.io/badge/Compose%20%2B%20Hilt%20%2B%20OkHttp-black?style=flat-square" />
 </p>
 
@@ -37,13 +37,13 @@
 
 |              |                                                                                          |
 | ------------ | ---------------------------------------------------------------------------------------- |
-| **配对**     | 扫描桌面「连接手机」二维码，或手动填写主机 / 令牌。深度链接：`anya://pair`。             |
-| **对话**     | 与电脑同一批会话：发送、流式回复、取消，切换 Ask / Agent / Plan / Image。                |
+| **配对**     | 扫描桌面「连接手机」二维码，粘贴配对链接，或手动填写主机 / 令牌。深度链接：`anya://pair`。 |
+| **对话**     | 与电脑同一批会话：发送、流式回复、取消，切换 Ask / Agent / Plan / Image。插件会话与子代理线程留在桌面。 |
 | **审批**     | 工具允许一次 / 本会话 / 拒绝，以及 `ask_user` 与计划批准卡。                             |
 | **权限范围** | 只读 / 工作区写入 / 完全访问；启用完全访问前再次确认。 |
 | **代码读取** | 展开工具活动查看读取快照；支持核对当前文件，变化时保留快照。 |
-| **文件**     | 手机附件分片上传（上限 500MB）；点桌面分享卡片分片下载。                                 |
-| **可达性**   | 同一 Wi-Fi 走局域网 `ws://`；外出走 Cloudflare 隧道 `wss://`。                           |
+| **文件**     | 手机附件分片上传（上限 500MB）；点桌面分享卡片分片下载。断线期间错过的分享会在重连后补上。 |
+| **可达性**   | 同一 Wi-Fi 走局域网 `ws://`；外出走 Cloudflare 隧道 `wss://`。长时间没有入站数据的连接会被断开并重拨。 |
 
 **文档：** [架构](./docs/ARCHITECTURE.zh-CN.md) · [发布](./docs/release.zh-CN.md) · [更新日志](./CHANGELOG.zh-CN.md) · [索引](./docs/README.zh-CN.md)
 
@@ -55,10 +55,10 @@
 
 1. 在 Windows 上安装并打开 [Anya](https://github.com/rururunu/Anya)。
 2. 打开 **连接手机**，等到二维码出现局域网地址（若已开启公网隧道，还会有公网主机名）。
-3. 手机扫码（或填写主机 / 端口 / 令牌），并为这台主机起一个短名称。
+3. 手机扫码、粘贴桌面配对链接，或填写主机 / 端口 / 令牌，并为这台主机起一个短名称。
 4. `hello.ok` 之后，对话、审批与工作区卡片与桌面保持同步。
 
-握手超过五秒，启动页会出现 **取消连接**，进入连接设置——可重连，切换已保存的主机，或对隧道域名失效的主机重新配对。Quick Tunnel 域名在桌面重启后会变；公网地址失效时请对该主机重新扫码。
+握手超过五秒，启动页会出现 **取消连接**，进入连接设置——可重连，切换已保存的主机，或对隧道域名失效的主机重新配对。Quick Tunnel 域名在桌面重启后会变；公网地址失效时请重新扫码或粘贴新链接。回到应用会检查这条连接。连续 45 秒没有入站数据时，手机会断开并重新拨号。
 
 ```mermaid
 flowchart LR
@@ -73,7 +73,7 @@ flowchart LR
 
 ## 能做什么
 
-配对完成后，手机上的 **随问** 不是另一份聊天记录，而是电脑 ChatService 里那批「不绑项目」会话的投影。你在桌面新建、跑完、或卡住的线程，都会以卡片出现在这里。黄标 **待审批** 表示电脑上的 Agent 已经停住，在等手机或电脑点一下。右下角加号会在桌面 SQLite 再开一条随问会话，两边立刻能看到。
+配对完成后，手机上的 **随问** 不是另一份聊天记录，而是电脑 ChatService 里那批「不绑项目」会话的投影。你在桌面新建、跑完、或卡住的线程，都会以卡片出现在这里。插件会话和子代理线程留在电脑上，不会变成卡片。黄标 **待审批** 表示电脑上的 Agent 已经停住，在等手机或电脑点一下。右下角加号会在桌面 SQLite 再开一条随问会话，两边立刻能看到。
 
 <p align="center">
   <img src="./docs/img/home.png" alt="随问 — 桌面会话投影到手机，其中一条在等审批" width="280" />
@@ -109,13 +109,13 @@ Agent 需要你拍板时，会在桌面调用 `ask_user` 并暂停整条 run。�
   <img src="./docs/img/inbox_approval.png" alt="收件待确认 — 离开对话后仍能处理桌面卡住的审批" width="280" />
 </p>
 
-Agent 在电脑上找到的文件，不会一次性灌进手机。**收件 → 结果** 是桌面 `share_to_companion` 的清单：**未接收** 的还在电脑磁盘上，点按后分片拉取；**已保存** 的才是本机副本。反过来，手机附件经分片上传（上限 500MB）落到工作区 `.anya/uploads/{sessionId}/`（随问则进 Ask 收件箱）。本地网页预览走同一网关上的 `/p/{id}/`。
+Agent 在电脑上找到的文件，不会一次性灌进手机。**收件 → 结果** 是桌面 `share_to_companion` 的清单：**未接收** 的还在电脑磁盘上，点按后分片拉取；**已保存** 的才是本机副本。手机离线期间错过的分享，会在重连后用 `delivery.list` 补上，已经保存过的卡片不会再下一遍。反过来，手机附件经分片上传（上限 500MB）落到工作区 `.anya/uploads/{sessionId}/`（随问则进 Ask 收件箱）。本地网页预览走同一网关上的 `/p/{id}/`。
 
 <p align="center">
   <img src="./docs/img/inbox_result.png" alt="收件结果 — 桌面 Agent 分享的文件，按需拉取" width="280" />
 </p>
 
-**设置** 决定连哪一台 Anya.exe：多主机切换、重连、隧道域名失效后重新扫码、解除配对，以及语言、主题和应用内更新。模型 API Key 始终只在电脑上。
+**设置** 决定连哪一台 Anya.exe：多主机切换、重连、隧道域名失效后重新扫码、解除配对，以及语言、主题和应用内更新。再次打开应用会检查连接，并向桌面补要离开期间错过的交付。模型 API Key 始终只在电脑上。
 
 ---
 
@@ -125,7 +125,7 @@ Agent 在电脑上找到的文件，不会一次性灌进手机。**收件 → �
 2. 按上文与正在运行的桌面 Anya 配对。
 3. 尽量与电脑同一 Wi-Fi——比 Quick Tunnel 稳定，国内尤其如此。
 
-最低 **Android 8.0（API 26）**。相机可选（仍可手动填写配对）。
+最低 **Android 8.0（API 26）**。相机可选（仍可粘贴配对链接或手动填写主机 / 令牌）。
 
 ---
 
@@ -141,11 +141,11 @@ gradlew.bat :app:assembleDebug
 
 | 工具链                            | 版本           |
 | --------------------------------- | -------------- |
-| AGP / Gradle / Kotlin             | 9.0 / 9.1 / 2.2 |
-| compileSdk / minSdk / targetSdk   | 36 / 26 / 36   |
-| Android 编译 JDK                  | 17             |
+| AGP / Gradle / Kotlin             | 9.3.3 / 9.9.1 / 2.2.10 |
+| compileSdk / minSdk / targetSdk   | 36 / 26 / 36           |
+| Android 编译 JDK                  | 17                     |
 
-宿主编译若用 **Java 25**，需要 **Gradle ≥ 9.1**（已配置）。
+Wrapper 为 Gradle **9.9.1**。宿主编译若用 **Java 25**，仍需要 **Gradle ≥ 9.1**。
 
 ---
 
@@ -157,7 +157,7 @@ app → feature:* → domain ← data
 data → network → OkHttp WebSocket → 桌面 /remote/v1
 ```
 
-Agent、工具、SQLite 与模型密钥都在电脑上。Companion 投影 `event` 帧（对话增量、审批、文件卡片），并发送 RPC（`chat.send`、`approval.respond`、`file.upload.*` 等）。各界面与协议的对应见 [技术架构](./docs/ARCHITECTURE.zh-CN.md#界面如何驱动桌面)。
+Agent、工具、SQLite 与模型密钥都在电脑上。Companion 投影 `event` 帧（对话增量、审批、文件卡片），并发送 RPC（`chat.send`、`approval.respond`、`file.upload.*`、`delivery.list` 等）。各界面与协议的对应见 [技术架构](./docs/ARCHITECTURE.zh-CN.md#界面如何驱动桌面)。
 
 ---
 

@@ -13,7 +13,7 @@ reconnects.
 | ------------- | ---------------------------------------------------------------------------- |
 | **Product**   | Anya Companion — remote console for [desktop Anya](https://github.com/rururunu/Anya) |
 | **Repo**      | [rururunu/AnyaAndroid](https://github.com/rururunu/AnyaAndroid)              |
-| **Version**   | v0.1.9                                                                       |
+| **Version**   | v0.3.0                                                                       |
 | **Runtime**   | Android 8.0+ (minSdk 26, compile/target 36)                                  |
 | **UI**        | Jetpack Compose · Hilt · Navigation                                          |
 | **Transport** | OkHttp WebSocket → desktop `/remote/v1`                                      |
@@ -65,13 +65,13 @@ PC. There is one Agent, one approval latch, two screens.
 
 | Surface | Desktop owns | Phone sends / receives |
 | ------- | ------------ | ---------------------- |
-| **Ask** | Unbound sessions in ChatService / SQLite | `session.list` + snapshot events. **+** creates a session on the PC. A **Pending approval** badge means AgentRunner is already blocked. |
+| **Ask** | Unbound sessions in ChatService / SQLite | `session.list` + snapshot events. **+** creates a session on the PC. Plugin sessions (`plugin:`) and sub-agent sessions (`-sub-` in the id) are hidden. A **Pending approval** badge means AgentRunner is already blocked. |
 | **Workspace** | Project folders on disk | Same sessions, grouped by workspace. Catalog via `workspace.snapshot` / `workspace.files` / `skills.list` / `mcp.list`. |
 | **Chat** | AgentRunner, tools, model keys | `chat.send` / `chat.cancel` / `session.compose.*`. Tokens arrive as `event` deltas — the typing is the computer generating. |
 | **ask_user** | Pauses the in-flight run | Same card on both screens. `ask.respond` resumes AgentRunner. |
 | **Tool approval** | Gate in AgentRunner | Allow once / session / deny via `approval.respond`. Tapping the card on Windows hits the same latch. |
 | **Inbox → Pending** | The same blocked tools / questions | Open the card → jump to that session → same `approval.respond` / `ask.respond`. |
-| **Inbox → Results** | Files still on disk (`share_to_companion`) | Offer `event`; bytes pulled with `workspace.readFile` slices. Phone attach: `file.upload.*` → `.anya/uploads/{sessionId}/` (or the Ask inbox). |
+| **Inbox → Results** | Files still on disk (`share_to_companion`) | Live offer `event`, plus `delivery.list` pages for offers missed while offline. Bytes pulled with `workspace.readFile` slices (or `file.download.begin`). Phone attach: `file.upload.*` → `.anya/uploads/{sessionId}/` (or the Ask inbox). |
 
 Product walkthrough with screenshots: [../README.md](../README.md).
 
@@ -165,8 +165,18 @@ Boot handshake: if `hello.ok` never arrives, Companion does **not** retry
 forever. After **5 seconds** the boot screen offers **Cancel connection**, which
 calls `abandonUnreachableBoot()` and opens connection settings.
 
+After a successful hello, a dropped socket is retried with backoff
+(300 ms, 700 ms, 1.5 s, 3 s, then 8 s). While `Connected`, the phone sends an
+application `pong` every **20 seconds**. If no inbound frame arrives for
+**45 seconds**, the socket is treated as half-open, closed, and dialed again.
+A socket that stays open for **15 seconds** without finishing hello is recycled
+the same way. Returning to the app calls `nudge()` and asks for a delivery sync.
+
+`hello` is sent inside `onOpen`, before the socket is marked open. If that
+frame cannot be queued, the socket is cancelled.
+
 Quick Tunnel hostnames change when the desktop process restarts. Re-scan the QR
-if the public URL went stale.
+or paste a fresh pairing link if the public URL went stale.
 
 ---
 
@@ -190,10 +200,12 @@ sequenceDiagram
   end
 ```
 
-Deep link: `anya://pair?…` (host, port, token, optional public host). After the
-first successful hello, the phone stores a device credential in a DataStore
-**roster** (multiple desktops). Later launches reuse the active host until the
-user unpairs it.
+Deep link: `anya://pair?…` (host, port, token, optional LAN host and public
+scheme). `anya-companion://pair` parses the same query. The pairing screen can
+scan that payload, paste it under **Pair with a link**, or take host / port /
+token by hand. After the first successful hello, the phone stores a device
+credential in a DataStore **roster** (multiple desktops). Later launches reuse
+the active host until the user unpairs it.
 
 Each host can have a display name of at most 16 characters (the top-bar “Anya”
 label becomes that name). Switch from the host list in Settings, or by
@@ -201,8 +213,10 @@ long-pressing the top-left logo. If the desktop rotates its tunnel hostname or
 pairing token, **re-pair** that host: the local name and `deviceId` stay, only
 the connection fields update.
 
-Keep-alive: the server sends an application `ping`; the client replies `pong`.
-Native WebSocket pings are not relied on (proxies often drop them).
+Keep-alive: the server sends an application `ping`; `RemoteGatewayClient`
+replies `pong` on that socket and does not forward the ping into UI state.
+The phone also sends its own `pong` every 20 seconds. Native WebSocket pings
+are not relied on (proxies often drop them).
 
 ---
 
@@ -219,13 +233,18 @@ JSON frames, tagged `type`. Protocol version **1**.
 
 | `type`                   | Role                                              |
 | ------------------------ | ------------------------------------------------- |
-| `session.list`           | Session catalog                                   |
+| `session.list`           | Session catalog. The Ask / Workspace lists drop ids prefixed `plugin:` and ids containing `-sub-`. |
+| `delivery.list`          | Page file and URL offers after the cursor stored for this device id (`after`). Older desktops return `unsupported method: delivery.list`; the phone then stops polling that RPC. |
 | `session.history`        | Page through history; `detail=light` omits execution details and `beforeMessageId` pages backward |
 | `session.messageDetail`  | Fetch reasoning, tools, and work timeline for expanded messages |
 | `session.readCodePreview` | Fetch the current code file by successful read activity ID; keep the captured snapshot if it changed (new desktop RPC) |
 | `session.staged.get/push/remove/guide/pop/clear` | Manage the staged message queue during a run |
 | `context.usage`         | Context usage for the session and draft |
 | `session.delete`         | Delete a session                                  |
+| `session.rename` / `session.archive` / `session.listArchived` / `session.rewind` | Rename, archive, list archived chats, rewind a turn |
+| `workspace.pin` / `workspace.update` / `workspace.archive` / `workspace.listArchived` / `workspace.workingTreeDiff` | Pin, rename, archive, list archived workspaces, unified working-tree diff |
+| `context.environment`    | Live desktop environment for `/context`           |
+| `imageGen.options` / `imageGen.setModel` | Image-mode toolbar and the desktop image model |
 | `chat.send`              | Send user text (+ mode / model / workspace)       |
 | `chat.cancel`            | Cancel an in-flight run                           |
 | `session.compose.get/set`| Session mode, model, and permission scope; wire values remain `ask` / `auto` / `alwaysAllow` |
@@ -238,6 +257,7 @@ JSON frames, tagged `type`. Protocol version **1**.
 | `workspace.readFile`     | Text peek, or `mode=download` one byte slice      |
 | `skills.list` / `mcp.list` | Desktop skills / MCP servers                    |
 | `file.upload.begin/chunk/finish/abort` | Phone → desktop attachment             |
+| `file.download.begin`    | Preferred desktop → phone byte fetch; `workspace.readFile` slices are the fallback |
 
 ### Events (desktop → phone)
 
@@ -246,6 +266,8 @@ offers, session snapshot, connection status. The phone **projects** them into
 Compose state; it does not re-run the Agent.
 
 On connection, the phone requests `models.list` and caches its catalog and compose defaults per paired desktop. A new conversation starts from those defaults; `settings.defaults` events refresh them after desktop changes. The full settings file and credentials never cross this interface.
+
+The same connect also starts `delivery.list`. The cursor (`next`) is stored on the phone under that credential's device id. Each page is merged by offer id: a file already saved on the phone keeps its local path, and a viewed link stays viewed. Live `file.offer` / `url.offer` events still upsert a card and wake another sync. Foregrounding the app does the same wake-up.
 
 The phone labels the permission scopes **Read-only / Workspace-write / Full-access**. They retain the wire values `ask` / `auto` / `alwaysAllow`; selecting Full-access requires confirmation. A code-read card first shows the captured tool result, then requests the current file by activity ID. If the content changed, it keeps and labels the captured snapshot.
 
@@ -282,8 +304,9 @@ sequenceDiagram
 ```
 
 Phone attachments land under the workspace `.anya/uploads/{sessionId}/` (or the
-Ask inbox). `share_to_companion` only pushes a card; bytes are pulled with
-`workspace.readFile` so a single huge Base64 frame cannot blow up the phone.
+Ask inbox). `share_to_companion` only pushes a card. Downloads try
+`file.download.begin` first and fall back to `workspace.readFile` slices, so a
+single huge Base64 frame cannot blow up the phone.
 
 Preview of local web apps uses HTTP `/p/{id}/` on the same gateway (reverse
 proxy), not the WebSocket.
@@ -294,10 +317,11 @@ proxy), not the WebSocket.
 
 | Topic              | Behavior                                                                 |
 | ------------------ | ------------------------------------------------------------------------ |
-| Keep-alive         | Foreground service while connected                                       |
+| Keep-alive         | Foreground service while connected; 20s client `pong`; recycle after 45s without inbound traffic |
+| Delivery catch-up  | `delivery.list` after hello, on offer events, and when the app returns to the foreground |
 | In-app update      | Foreground download + APK verify (size / optional sha256 / package / sig) |
 | Package id         | `ai.anya.companion` (debug: `.debug`)                                    |
-| Camera             | Optional; manual host/token still works                                  |
+| Camera             | Optional; a pairing link or manual host/token still works               |
 
 ---
 
@@ -308,7 +332,8 @@ proxy), not the WebSocket.
 | Nav / boot cancel               | `app/.../navigation/AnyaNavHost.kt`                     |
 | Connection + abandon boot       | `core/data` connection repository                       |
 | WebSocket client                | `core/network` `RemoteGatewayClient`                    |
-| Pairing QR / deep link          | `feature/pairing`                                       |
+| Pairing QR / link / deep link   | `feature/pairing` (`parsePairLink`)                     |
+| Missed file and URL offers      | `core/data` `InboxResultStore` + `delivery.list`        |
 | Ask / Workspace session lists   | `feature/sessions`                                      |
 | Chat stream + attachments       | `feature/chat`                                          |
 | Approvals + Inbox               | `feature/approval`                                      |
